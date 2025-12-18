@@ -98,13 +98,13 @@ We welcome contributions from the HarmonyOS developer community! Please read our
 ### Development Setup
 
 1. **Fork the repository**
-   ```bash
-   git clone https://github.com/Open-Tech-Project/OpenBoard.git
-   cd OpenBoard
+```bash
+git clone https://github.com/Open-Tech-Project/OpenBoard.git
+cd OpenBoard
 Open in DevEco Studio
 ```bash
-   Import project into DevEco Studio
-   Set up signing certificates
+Import project into DevEco Studio
+Set up signing certificates
 ```
 Build and Test thoroughly
 ```bash
@@ -141,6 +141,7 @@ AGPL Requirement: If you modify and run a version of OpenBoard as a public netwo
 ---
 
 Made with ❤️ by the OpenTech community
+
 
 
 
