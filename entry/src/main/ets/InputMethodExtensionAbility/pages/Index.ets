@@ -10,7 +10,8 @@ import {
   ShiftState,
   symbolsLayout1,
   symbolsLayout2,
-  persianLayout
+  persianLayout,
+  russianLayout
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
@@ -24,9 +25,9 @@ const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, 
 interface Position { x: number; y: number; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
-type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa';
+type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
-const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa'];
+const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 
 // Speech recognition simulation types
@@ -43,6 +44,7 @@ function getLanguageName(code: LanguageCode): string {
     case 'it': return 'Italian';
     case 'pl': return 'Polish';
     case 'fa': return 'Persian';
+    case 'ru': return 'Русский';
     default: return 'English';
   }
 }
@@ -54,6 +56,7 @@ function getVoiceDictationStatus(code: LanguageCode): string {
     case 'it': return 'Digitazione vocale...';
     case 'ar': return 'الكتابة الصوتية...';
     case 'fa': return 'تایپ صوتی...';
+    case 'ru': return 'Голосовой ввод...';
     default: return 'Voice typing...';
   }
 }
@@ -66,6 +69,7 @@ function getVoiceInterruptionMessage(code: LanguageCode): string {
     case 'it': return 'Inserimento vocale interrotto';
     case 'ar': return 'تم مقاطعة الإدخال الصوتي';
     case 'fa': return 'ورودی صوتی قطع شد';
+    case 'ru': return 'Голосовой ввод прерван';
     default: return 'Voice input interrupted';
   }
 }
@@ -77,6 +81,7 @@ function getVoicePermissionError(code: LanguageCode): string {
     case 'it': return 'Permesso microfono negato';
     case 'ar': return 'تم رفض إذن الميكروفون';
     case 'fa': return 'اجازه میکروفون رد شد';
+    case 'ru': return 'Доступ к микрофону запрещен';
     default: return 'Microphone permission denied';
   }
 }
@@ -88,6 +93,7 @@ function getVoiceRecognitionError(code: LanguageCode): string {
     case 'it': return 'Riconoscimento vocale fallito';
     case 'ar': return 'فشل التعرف على الكلام';
     case 'fa': return 'تشخیص گفتار ناموفق بود';
+    case 'ru': return 'Распознавание речи не удалось';
     default: return 'Speech recognition failed';
   }
 }
@@ -566,7 +572,8 @@ struct Index {
               this.currentLanguage === 'pl' ? 'Wpis ręczny' :
                 this.currentLanguage === 'it' ? 'Input manuale' :
                   this.currentLanguage === 'ar' ? 'إدخال يدوي' :
-                    this.currentLanguage === 'fa' ? 'ورودی دستی' : 'Manual input');
+                    this.currentLanguage === 'fa' ? 'ورودی دستی' :
+                      this.currentLanguage === 'ru' ? 'Ручной ввод' : 'Manual input');
           break;
         case 'clipboard':
           message = getVoiceInterruptionMessage(this.currentLanguage) + ' - ' +
@@ -574,7 +581,8 @@ struct Index {
               this.currentLanguage === 'pl' ? 'Dostęp do schowka' :
                 this.currentLanguage === 'it' ? 'Accesso agli appunti' :
                   this.currentLanguage === 'ar' ? 'الوصول إلى الحافظة' :
-                    this.currentLanguage === 'fa' ? 'دسترسی به کلیپ بورد' : 'Clipboard access');
+                    this.currentLanguage === 'fa' ? 'دسترسی به کلیپ بورد' :
+                      this.currentLanguage === 'ru' ? 'Доступ к буферу обмена' : 'Clipboard access');
           break;
         case 'error':
           message = getVoiceRecognitionError(this.currentLanguage);
@@ -1355,6 +1363,7 @@ struct Index {
           case 'it': return insertEmojiKey(italianLayout);
           case 'pl': return insertEmojiKey(polishLayout);
           case 'fa': return insertEmojiKey(persianLayout);
+          case 'ru': return insertEmojiKey(russianLayout);
           default: return insertEmojiKey(englishLayout);
         }
       case KeyboardLayout.Symbols1: return symbolsLayout1;
