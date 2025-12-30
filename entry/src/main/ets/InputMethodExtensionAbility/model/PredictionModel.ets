@@ -184,7 +184,8 @@ class PredictionModel {
       .slice(0, wordsToRemove); // Take bottom 10%
 
     // Remove these words from all data structures
-    sortedWords.forEach(([word, _]) => {
+    sortedWords.forEach((entry) => {
+      const word = entry[0];
       m.uni.delete(word);
       m.wordRank.delete(word);
       m.lastUsed.delete(word);
