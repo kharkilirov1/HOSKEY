@@ -758,13 +758,16 @@ struct Index {
 
     switch (key.action) {
       case KeyAction.Char:
+        // Remember if shift was on BEFORE typing this character
+        const wasShiftOnBeforeTyping = (this.shiftState === ShiftState.On);
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
         console.info('[AutoCap] Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
         keyboardController.insertText(text);
         this.onTextTyped(text);
-        if (this.shiftState === ShiftState.On) {
+        // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
+        if (wasShiftOnBeforeTyping) {
           console.info('[AutoCap] Disabling shift after typing character');
           this.shiftState = ShiftState.Off;
         }
