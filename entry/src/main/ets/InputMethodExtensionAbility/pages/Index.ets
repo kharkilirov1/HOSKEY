@@ -589,6 +589,8 @@ struct Index {
       this.currentLanguage = this.availableLanguages[0];
     }
     this.startInactivityTimer();
+    // Auto-capitalize at the start of new typing session
+    this.enableAutoCapitalization();
   }
 
   aboutToAppear(): void {
@@ -853,6 +855,26 @@ struct Index {
     return boundaries.indexOf(ch) >= 0;
   }
 
+  // Check if we should auto-capitalize after this character
+  private shouldAutoCapitalize(ch: string): boolean {
+    if (!ch) return false;
+    // Auto-capitalize after sentence-ending punctuation
+    const sentenceEnders = ['.', '!', '?', '\n'];
+    return sentenceEnders.indexOf(ch) >= 0;
+  }
+
+  // Enable auto-capitalization for next character
+  private enableAutoCapitalization(): void {
+    // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
+    if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
+      return;
+    }
+    // Only enable if not already in CapsLock mode
+    if (this.shiftState !== ShiftState.CapsLock) {
+      this.shiftState = ShiftState.On;
+    }
+  }
+
   private onTextTyped(text: string): void {
     if (!text) return;
     if (this.isBoundaryChar(text)) {
@@ -864,7 +886,7 @@ struct Index {
     this.resetInactivityTimer();
   }
 
-  private onBoundaryTyped(_: string): void {
+  private onBoundaryTyped(ch: string): void {
     if (this.currentWord) {
       predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
       this.previousWord = this.currentWord;
@@ -872,6 +894,11 @@ struct Index {
     }
     this.updateSuggestions();
     this.resetInactivityTimer();
+
+    // Auto-capitalize after sentence-ending punctuation
+    if (this.shouldAutoCapitalize(ch)) {
+      this.enableAutoCapitalization();
+    }
   }
 
   private onBackspaceTyped(): void {
@@ -886,6 +913,8 @@ struct Index {
       this.currentWord = '';
       this.updateSuggestions();
       this.showPreTypingToolbar = true;
+      // Auto-capitalize at the start of text
+      this.enableAutoCapitalization();
     } else {
       this.showPreTypingToolbar = false;
     }
