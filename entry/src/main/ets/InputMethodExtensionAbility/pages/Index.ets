@@ -87,7 +87,7 @@ function getVoiceRecognitionError(code: LanguageCode): string {
     case 'pl': return 'Rozpoznawanie mowy nie powiodło się';
     case 'it': return 'Riconoscimento vocale fallito';
     case 'ar': return 'فشل التعرف على الكلام';
-    case 'fa': return 'تشخیص گفتار失敗 شد';
+    case 'fa': return 'تشخیص گفتار ناموفق بود';
     default: return 'Speech recognition failed';
   }
 }
@@ -375,6 +375,7 @@ struct Index {
   @State private suggestions: string[] = ['', '', ''];
 
   @State private isRecording: boolean = false;
+  @State private isProcessingVoiceToggle: boolean = false;
   @State private languageIndicatorOpacity: number = 0;
 
   // Speech recognition states
@@ -520,20 +521,30 @@ struct Index {
     processNextResult();
   }
 
-  // Enhanced microphone click handler
-  private handleMicrophoneClick(): void {
-    if (this.isRecording) {
-      // Stop recording
-      this.isRecording = false;
-      this.stopVoiceRecognition();
-      console.info('Voice typing stopped by user');
-    } else {
-      // Start recording
-      this.isRecording = true;
-      this.showEmojiPanel = false;
-      this.resetInactivityTimer();
-      this.startVoiceRecognition();
-      console.info('Voice typing started');
+  // Enhanced microphone click handler with race condition protection
+  private async handleMicrophoneClick(): Promise<void> {
+    if (this.isProcessingVoiceToggle) {
+      console.info('Voice toggle already in progress, ignoring click');
+      return;
+    }
+
+    this.isProcessingVoiceToggle = true;
+    try {
+      if (this.isRecording) {
+        // Stop recording
+        this.isRecording = false;
+        await this.stopVoiceRecognition();
+        console.info('Voice typing stopped by user');
+      } else {
+        // Start recording
+        this.isRecording = true;
+        this.showEmojiPanel = false;
+        this.resetInactivityTimer();
+        await this.startVoiceRecognition();
+        console.info('Voice typing started');
+      }
+    } finally {
+      this.isProcessingVoiceToggle = false;
     }
   }
 
@@ -591,15 +602,16 @@ struct Index {
   aboutToDisappear(): void {
     if (this.rapidDeleteTimer !== -1) {
       clearInterval(this.rapidDeleteTimer);
+      this.rapidDeleteTimer = -1;
     }
-    if (this.inactivityTimer !== -1) {
-      clearTimeout(this.inactivityTimer);
-    }
+    this.stopInactivityTimer();
     if (this.speechRecognitionTimer !== -1) {
       clearTimeout(this.speechRecognitionTimer);
+      this.speechRecognitionTimer = -1;
     }
     if (this.interruptionPopupTimer !== -1) {
       clearTimeout(this.interruptionPopupTimer);
+      this.interruptionPopupTimer = -1;
     }
     // Clean up speech recognition
     if (this.isRecording) {
@@ -608,16 +620,20 @@ struct Index {
   }
 
   private startInactivityTimer(): void {
-    if (this.inactivityTimer !== -1) {
-      clearTimeout(this.inactivityTimer);
-    }
-    this.inactivityTimer = setTimeout(() => {
+    this.stopInactivityTimer();
+    this.inactivityTimer = setInterval(() => {
       const timeSinceLastActivity = Date.now() - this.lastTypingActivity;
       if (!this.isRecording && !this.showEmojiPanel && timeSinceLastActivity >= 5000) {
         this.showPreTypingToolbar = true;
       }
-      this.startInactivityTimer(); // Continue checking
     }, 1000); // Check every second
+  }
+
+  private stopInactivityTimer(): void {
+    if (this.inactivityTimer !== -1) {
+      clearInterval(this.inactivityTimer);
+      this.inactivityTimer = -1;
+    }
   }
 
   private resetInactivityTimer(): void {
@@ -1199,7 +1215,9 @@ struct Index {
                     .height(46)
                     .onClick(() => {
                       keyboardController.insertText(emoji);
-                      this.onTextTyped(emoji);
+                      // Emoji is a boundary - don't add to currentWord
+                      this.onBoundaryTyped('');
+                      this.resetInactivityTimer();
                     })
                 })
               }
