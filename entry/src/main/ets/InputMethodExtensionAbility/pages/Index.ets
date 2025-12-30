@@ -775,6 +775,10 @@ struct Index {
       case KeyAction.Space:
         keyboardController.insertText(' ');
         this.onBoundaryTyped(' ');
+        // Auto-return to alphabet layout after typing space in symbols layout
+        if (this.keyboardLayout === KeyboardLayout.Symbols1 || this.keyboardLayout === KeyboardLayout.Symbols2) {
+          this.keyboardLayout = KeyboardLayout.Alphabet;
+        }
         break;
       case KeyAction.Enter:
         keyboardController.sendEnterKey();
