@@ -38,6 +38,11 @@ class PredictionModel {
   private readonly MIN_COUNT_THRESHOLD = 0.5; // Remove words with count below this
   private readonly LEARN_THRESHOLD = 3; // Word must be typed 3 times to be learned
 
+  // Model size limits to prevent unbounded memory growth
+  private readonly MAX_WORDS_PER_LANGUAGE = 10000; // Maximum unique words per language
+  private readonly MAX_BIGRAMS_PER_WORD = 100; // Maximum bigram entries per word
+  private readonly MAX_TRIGRAMS_PER_KEY = 50; // Maximum trigram entries per key
+
   constructor() {
     this.models = new Map();
   }
@@ -69,22 +74,37 @@ class PredictionModel {
     return `${prev1}|${prev2}`;
   }
 
-  // Calculate Levenshtein distance for similarity comparison
-  private levenshteinDistance(a: string, b: string): number {
-    if (a.length === 0) return b.length;
-    if (b.length === 0) return a.length;
+  // Calculate Levenshtein distance for similarity comparison (optimized)
+  private levenshteinDistance(a: string, b: string, maxDistance: number = 2): number {
+    // Early exit: if strings are equal
+    if (a === b) return 0;
+
+    // Early exit: if length difference exceeds max distance
+    const lengthDiff = Math.abs(a.length - b.length);
+    if (lengthDiff > maxDistance) {
+      return maxDistance + 1;
+    }
+
+    // Early exit: if either string is empty
+    if (a.length === 0) return Math.min(b.length, maxDistance + 1);
+    if (b.length === 0) return Math.min(a.length, maxDistance + 1);
 
     const matrix: number[][] = [];
 
+    // Initialize first column
     for (let i = 0; i <= b.length; i++) {
       matrix[i] = [i];
     }
 
+    // Initialize first row
     for (let j = 0; j <= a.length; j++) {
       matrix[0][j] = j;
     }
 
+    // Fill matrix with early exit optimization
     for (let i = 1; i <= b.length; i++) {
+      let minInRow = Number.MAX_VALUE;
+
       for (let j = 1; j <= a.length; j++) {
         if (b.charAt(i - 1) === a.charAt(j - 1)) {
           matrix[i][j] = matrix[i - 1][j - 1];
@@ -95,6 +115,12 @@ class PredictionModel {
             matrix[i - 1][j] + 1 // deletion
           );
         }
+        minInRow = Math.min(minInRow, matrix[i][j]);
+      }
+
+      // Early exit: if minimum in current row exceeds threshold, abort
+      if (minInRow > maxDistance) {
+        return maxDistance + 1;
       }
     }
 
@@ -111,7 +137,8 @@ class PredictionModel {
     // Check against all learned words (words in uni with count >= LEARN_THRESHOLD)
     m.uni.forEach((count, learnedWord) => {
       if (learnedWord !== word && Math.abs(learnedWord.length - word.length) <= threshold) {
-        const distance = this.levenshteinDistance(word, learnedWord);
+        // Pass threshold to levenshteinDistance for early exit optimization
+        const distance = this.levenshteinDistance(word, learnedWord, threshold);
         if (distance < bestDistance && distance <= threshold) {
           bestDistance = distance;
           bestMatch = learnedWord;
@@ -144,6 +171,58 @@ class PredictionModel {
     toDelete.forEach(word => map.delete(word));
   }
 
+  // Prune model to keep it within size limits
+  private pruneModel(m: LangModel): void {
+    console.info(`OpenBoard: Model size limit reached (${m.uni.size} words), pruning...`);
+
+    // Remove bottom 10% of least frequently used words
+    const wordsToRemove = Math.floor(m.uni.size * 0.1);
+
+    // Sort words by rank (usage count)
+    const sortedWords = Array.from(m.wordRank.entries())
+      .sort((a, b) => a[1] - b[1]) // Sort ascending by count
+      .slice(0, wordsToRemove); // Take bottom 10%
+
+    // Remove these words from all data structures
+    sortedWords.forEach(([word, _]) => {
+      m.uni.delete(word);
+      m.wordRank.delete(word);
+      m.lastUsed.delete(word);
+
+      // Remove from bigrams where this word appears as next word
+      m.bi.forEach((nextMap) => {
+        nextMap.delete(word);
+      });
+
+      // Remove from trigrams where this word appears as next word
+      m.tri.forEach((nextMap) => {
+        nextMap.delete(word);
+      });
+
+      // Also remove if it's a bigram key with too many entries
+      const biMap = m.bi.get(word);
+      if (biMap && biMap.size > this.MAX_BIGRAMS_PER_WORD) {
+        // Keep only top entries
+        const sortedBigrams = Array.from(biMap.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, this.MAX_BIGRAMS_PER_WORD);
+        m.bi.set(word, new Map(sortedBigrams));
+      }
+    });
+
+    // Clean up trigrams
+    m.tri.forEach((triMap, key) => {
+      if (triMap.size > this.MAX_TRIGRAMS_PER_KEY) {
+        const sortedTrigrams = Array.from(triMap.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, this.MAX_TRIGRAMS_PER_KEY);
+        m.tri.set(key, new Map(sortedTrigrams));
+      }
+    });
+
+    console.info(`OpenBoard: Pruned ${wordsToRemove} words, new size: ${m.uni.size}`);
+  }
+
   recordWord(lang: string, prev: string | null, word: string, prev2: string | null = null): void {
     if (!word) {
       return;
@@ -152,6 +231,11 @@ class PredictionModel {
     const m = this.ensure(lang);
     const w = word.toLowerCase(); // Normalize to lowercase for better matching
     const now = Date.now();
+
+    // Prune model if it's getting too large (before adding new word)
+    if (m.uni.size >= this.MAX_WORDS_PER_LANGUAGE) {
+      this.pruneModel(m);
+    }
 
     // Step 0: Check if word is blocked
     if (m.blockedWords.has(w)) {

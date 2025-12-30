@@ -366,6 +366,10 @@ struct Index {
   @State enterKeyLabel: string = 'Enter';
   @State availableLanguages: LanguageCode[] = ['en'];
 
+  // Layout cache for performance optimization
+  private cachedLayout: KeyData[][] = [];
+  private cachedLayoutKey: string = '';
+
   @State showEmojiPanel: boolean = false;
   @State emojiCategory: string = 'Smileys & Emotion';
   private emojiScroller: Scroller = new Scroller();
@@ -1300,6 +1304,25 @@ struct Index {
   }
 
   getCurrentLayout(): KeyData[][] {
+    // Create cache key based on current layout and language
+    const cacheKey = `${this.keyboardLayout}-${this.currentLanguage}`;
+
+    // Return cached layout if available
+    if (cacheKey === this.cachedLayoutKey && this.cachedLayout.length > 0) {
+      return this.cachedLayout;
+    }
+
+    // Compute layout if cache miss
+    const layout = this.computeLayout();
+
+    // Update cache
+    this.cachedLayoutKey = cacheKey;
+    this.cachedLayout = layout;
+
+    return layout;
+  }
+
+  private computeLayout(): KeyData[][] {
     const insertEmojiKey = (layout: KeyData[][] | undefined): KeyData[][] => {
       if (!layout || layout.length < 4) return layout || [];
       const lastRow = layout[layout.length - 1].slice();
