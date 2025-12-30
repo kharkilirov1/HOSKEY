@@ -52,15 +52,25 @@ export class KeyboardController {
   public hideKeyboard(): void {
     if (this.panel) {
       try {
-        inputMethodAbility.destroyPanel(this.panel);
+        this.panel.hide();
+        console.info('OpenBoard Keyboard: Panel hidden');
       } catch (err) {
         const error = err as BusinessError;
         console.error(`OpenBoard Keyboard: Failed to hide panel. Code: ${error.code}, Msg: ${error.message}`);
       }
-      this.panel = undefined;
     }
-    this.textInputClient = undefined;
-    this.currentEnterKeyType = inputMethodEngine.ENTER_KEY_TYPE_UNSPECIFIED;
+  }
+
+  private showKeyboard(): void {
+    if (this.panel) {
+      try {
+        this.panel.show();
+        console.info('OpenBoard Keyboard: Panel shown');
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`OpenBoard Keyboard: Failed to show panel. Code: ${error.code}, Msg: ${error.message}`);
+      }
+    }
   }
 
   public insertText(text: string): void {
@@ -239,6 +249,7 @@ export class KeyboardController {
     this.updateEnterKeyType();
     await this.syncInitialBuffer();
     this.hideIfDestroyedAndRecreate();
+    this.showKeyboard();
   };
 
   private registerInputListener(): void {
