@@ -194,6 +194,8 @@ struct KeyView {
   onKeyLongPressEnd: () => void = () => {};
   onKeyContinuousPressStart: (key: KeyData) => void = () => {};
   onKeyContinuousPressEnd: (key: KeyData) => void = () => {};
+  onKeyTouchDown: (key: KeyData, position: Position) => void = () => {};
+  onKeyTouchUp: () => void = () => {};
   onSwipe?: (direction: LayoutSwipeDirection) => void;
 
   @State isPressed: boolean = false;
@@ -293,6 +295,11 @@ struct KeyView {
           this.longPressTriggered = false;
           this.swipeHandled = false;
 
+          // Show popup for character keys
+          if (this.keyData.action === KeyAction.Char) {
+            this.onKeyTouchDown(this.keyData, currentPosition);
+          }
+
           this.longPressTimer = setTimeout(() => {
             this.longPressTriggered = true;
             this.isPressed = false;
@@ -344,6 +351,9 @@ struct KeyView {
           } else if (event.type === TouchType.Up && !this.longPressTriggered) {
             this.onKeyPress(this.keyData);
           }
+
+          // Hide popup
+          this.onKeyTouchUp();
 
           this.isPressed = false;
           this.longPressTriggered = false;
@@ -740,6 +750,20 @@ struct Index {
     }
     this.longPressInfo = null;
     this.hoveredChar = null;
+  }
+
+  private handleKeyTouchDown(key: KeyData, position: Position): void {
+    // Show popup with the character that will be typed
+    const char = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' &&
+                  (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
+      ? (key.shiftValue ?? key.mainValue)
+      : key.mainValue;
+    this.singleCharPopupInfo = { char: char, position: position };
+  }
+
+  private handleKeyTouchUp(): void {
+    // Hide the popup
+    this.singleCharPopupInfo = null;
   }
 
   handleKeyPress(key: KeyData): void {
@@ -1225,6 +1249,8 @@ struct Index {
                       onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
                       onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
                       onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
+                      onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
+                      onKeyTouchUp: (): void => this.handleKeyTouchUp(),
                       onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
                     })
                       .layoutWeight(key.flex)
