@@ -825,17 +825,15 @@ struct Index {
 
     try {
       const systemPasteboard = pasteboard.getSystemPasteboard();
-      const hasData = systemPasteboard.hasDataSync();
+      const data = await systemPasteboard.getData();
+      const text = data.getPrimaryText();
 
-      if (hasData) {
-        const data = await systemPasteboard.getData();
-        const text = data.getPrimaryText();
-
-        if (text && text.length > 0) {
-          keyboardController.insertText(text);
-          this.onTextTyped(text);
-          console.info('OpenBoard: Pasted clipboard text');
-        }
+      if (text && text.length > 0) {
+        keyboardController.insertText(text);
+        this.onTextTyped(text);
+        console.info('OpenBoard: Pasted clipboard text');
+      } else {
+        console.info('OpenBoard: Clipboard is empty');
       }
     } catch (e) {
       console.error('OpenBoard: Clipboard paste failed', e);

@@ -20,6 +20,7 @@ const BACKSPACE_KEY: KeyData = { mainValue: '⌫', action: KeyAction.Backspace, 
 const ENTER_KEY: KeyData = { mainValue: '↵', action: KeyAction.Enter, flex: 1.5 };
 const SYMBOLS_KEY: KeyData = { mainValue: '?123', action: KeyAction.SwitchSymbols, flex: 1.2 };
 const SPACE_KEY: KeyData = { mainValue: 'space', action: KeyAction.Space, flex: 6 };
+const SPACE_KEY_RU: KeyData = { mainValue: 'пробел', action: KeyAction.Space, flex: 6 };
 const ALPHABET_KEY: KeyData = { mainValue: 'ABC', action: KeyAction.SwitchAlphabet, flex: 1.2 };
 const SYMBOLS_ALT_KEY: KeyData = { mainValue: '=\\<', action: KeyAction.SwitchSymbolsAlt, flex: 1.2 };
 
@@ -382,7 +383,7 @@ export const russianLayout: KeyData[][] = [
   [
     SYMBOLS_KEY,
     { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
-    SPACE_KEY,
+    SPACE_KEY_RU,
     { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
   ]
