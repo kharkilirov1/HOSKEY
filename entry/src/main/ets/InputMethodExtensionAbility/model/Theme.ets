@@ -1,13 +1,22 @@
-// File location: entry/src/main/ets/InputMethodExtensionAbility/model/Theme.ts
+// File location: entry/src/main/ets/InputMethodExtensionAbility/model/Theme.ets
+// OpenBoard Theme using HarmonyOS system color tokens
+// These colors automatically adapt to system light/dark mode
 export class OpenBoardTheme {
-  static readonly background: string = '#ff121415';
-  static readonly backgroundDark: string = '#1E2B3D';
-  static readonly backgroundDarker: string = '#223247';
-  static readonly surface: string = '#24262C';
-  static readonly accent: string = '#3A7BD5';
-  static readonly primaryText: string = '#FAFAFA';
-  static readonly secondaryText: string = '#B0B8C4';
-  static readonly specialKey: string = '#2E3138';
-  static readonly regularKey: string = '#3A3F49';
-  static readonly divider: string = '#3F444E';
+  // Main backgrounds - adapt to system theme
+  static readonly background = $r('sys.color.ohos_id_color_background');
+  static readonly backgroundDark = $r('sys.color.ohos_id_color_sub_background');
+  static readonly backgroundDarker = $r('sys.color.ohos_id_color_sub_background');
+  static readonly surface = $r('sys.color.ohos_id_color_sub_background');
+
+  // Accent color - using system emphasize color for consistency
+  static readonly accent = $r('sys.color.ohos_id_color_emphasize');
+
+  // Text colors - adapt to system theme
+  static readonly primaryText = $r('sys.color.ohos_id_color_text_primary');
+  static readonly secondaryText = $r('sys.color.ohos_id_color_text_secondary');
+
+  // Key colors - using system tertiary and auxiliary colors
+  static readonly specialKey = $r('sys.color.ohos_id_color_tertiary');
+  static readonly regularKey = $r('sys.color.ohos_id_color_sub_background');
+  static readonly divider = $r('sys.color.ohos_id_color_palette_aux1');
 }
