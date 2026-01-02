@@ -778,6 +778,7 @@ struct Index {
       this.swipePath = [position];
       this.swipeKeys = [char.toLowerCase()];
       this.swipePreviewWord = char.toLowerCase();
+      console.info('[Swipe] Started swipe with:', char.toLowerCase(), 'at position:', position.x, position.y);
     }
   }
 
@@ -785,13 +786,17 @@ struct Index {
     // Hide the popup
     this.singleCharPopupInfo = null;
 
+    console.info('[Swipe] Touch up - isSwipeTyping:', this.isSwipeTyping, 'keys:', this.swipeKeys.length, 'path:', this.swipePath.length);
+
     // Complete swipe typing
     if (this.isSwipeTyping && this.swipeKeys.length > 1) {
       // If swiped across multiple keys, insert the word
       const swipedWord = this.swipeKeys.join('');
       keyboardController.insertText(swipedWord);
       this.onTextTyped(swipedWord);
-      console.info('OpenBoard: Swipe typed:', swipedWord);
+      console.info('[Swipe] Inserted swipe word:', swipedWord);
+    } else if (this.isSwipeTyping) {
+      console.info('[Swipe] Single key tap, letting normal key press handle it');
     }
 
     // Reset swipe state
@@ -802,7 +807,10 @@ struct Index {
   }
 
   private handleSwipeMove(key: KeyData, position: Position): void {
-    if (!this.isSwipeTyping) return;
+    if (!this.isSwipeTyping) {
+      console.info('[Swipe] Move called but not swiping');
+      return;
+    }
 
     // Get the character for this key
     const char = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' &&
@@ -810,13 +818,17 @@ struct Index {
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
 
-    // Add to swipe path if it's a new key
+    console.info('[Swipe] Move over key:', char.toLowerCase());
+
+    // Update swipe path position for visual feedback
+    this.swipePath.push(position);
+
+    // Add to swipe keys if it's a new key
     const lastKey = this.swipeKeys.length > 0 ? this.swipeKeys[this.swipeKeys.length - 1] : '';
     if (char.toLowerCase() !== lastKey) {
       this.swipeKeys.push(char.toLowerCase());
-      this.swipePath.push(position);
       this.swipePreviewWord = this.swipeKeys.join('');
-      console.info('OpenBoard: Swipe path:', this.swipePreviewWord);
+      console.info('[Swipe] Added key, path now:', this.swipePreviewWord);
     }
   }
 
@@ -1283,41 +1295,45 @@ struct Index {
 
         // MAIN CONTENT
         if (!this.showEmojiPanel) {
-          // Main keyboard
-          Column({ space: 1 }) {
-            ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row() {
-                ForEach(row, (key: KeyData) => {
-                  if (key.action === KeyAction.Spacer) {
-                    Flex().layoutWeight(key.flex)
-                  } else {
-                    KeyView({
-                      keyData: key,
-                      shiftState: this.shiftState,
-                      currentLanguage: this.currentLanguage,
-                      availableLanguages: this.availableLanguages,
-                      enterKeyLabel: this.enterKeyLabel,
-                      onKeyPress: (k: KeyData): void => this.handleKeyPress(k),
-                      onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
-                      onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
-                      onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
-                      onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
-                      onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
-                      onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
-                      onKeyTouchUp: (): void => this.handleKeyTouchUp(),
-                      onSwipeMove: key.action === KeyAction.Char ? (k: KeyData, p: Position): void => this.handleSwipeMove(k, p) : undefined,
-                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
-                    })
-                      .layoutWeight(key.flex)
-                  }
-                })
-              }
-              .width('100%')
-              .layoutWeight(1)
-            })
+          // Main keyboard with global touch handler for swipe typing
+          Stack() {
+            Column({ space: 1 }) {
+              ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
+                Row() {
+                  ForEach(row, (key: KeyData) => {
+                    if (key.action === KeyAction.Spacer) {
+                      Flex().layoutWeight(key.flex)
+                    } else {
+                      KeyView({
+                        keyData: key,
+                        shiftState: this.shiftState,
+                        currentLanguage: this.currentLanguage,
+                        availableLanguages: this.availableLanguages,
+                        enterKeyLabel: this.enterKeyLabel,
+                        onKeyPress: (k: KeyData): void => this.handleKeyPress(k),
+                        onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
+                        onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
+                        onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
+                        onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
+                        onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
+                        onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
+                        onKeyTouchUp: (): void => this.handleKeyTouchUp(),
+                        onSwipeMove: key.action === KeyAction.Char ? (k: KeyData, p: Position): void => this.handleSwipeMove(k, p) : undefined,
+                        onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
+                      })
+                        .layoutWeight(key.flex)
+                        .id(`key_${key.mainValue}`)
+                    }
+                  })
+                }
+                .width('100%')
+                .layoutWeight(1)
+              })
+            }
+            .layoutWeight(1)
+            .padding({ left: 2, right: 2, bottom: 2 })
           }
-          .layoutWeight(1)
-          .padding({ left: 2, right: 2, bottom: 2 })
+          .hitTestBehavior(HitTestMode.Transparent)
         } else {
           // Emoji Panel
           Column({ space: 10 }) {
