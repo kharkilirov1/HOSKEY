@@ -1230,7 +1230,7 @@ struct Index {
         // MAIN CONTENT
         if (!this.showEmojiPanel) {
           // Main keyboard
-          Column({ space: 1 }) {
+          Column({ space: 4 }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
               Row() {
                 ForEach(row, (key: KeyData) => {

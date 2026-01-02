@@ -357,7 +357,6 @@ export const russianLayout: KeyData[][] = [
     { mainValue: 'х', shiftValue: 'Х', action: KeyAction.Char, flex: 1 },
   ],
   [
-    SPACER_LEFT_KEY,
     { mainValue: 'ф', shiftValue: 'Ф', action: KeyAction.Char, flex: 1 },
     { mainValue: 'ы', shiftValue: 'Ы', action: KeyAction.Char, flex: 1 },
     { mainValue: 'в', shiftValue: 'В', action: KeyAction.Char, flex: 1 },
@@ -369,7 +368,6 @@ export const russianLayout: KeyData[][] = [
     { mainValue: 'д', shiftValue: 'Д', action: KeyAction.Char, flex: 1 },
     { mainValue: 'ж', shiftValue: 'Ж', action: KeyAction.Char, flex: 1 },
     { mainValue: 'э', shiftValue: 'Э', action: KeyAction.Char, flex: 1 },
-    SPACER_RIGHT_KEY,
   ],
   [
     SHIFT_KEY_RU,
