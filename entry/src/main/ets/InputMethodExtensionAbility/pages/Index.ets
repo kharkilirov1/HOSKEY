@@ -1258,7 +1258,7 @@ struct Index {
                 })
               }
               .width('100%')
-              .layoutWeight(1)
+              .height(44)
             })
           }
           .layoutWeight(1)
