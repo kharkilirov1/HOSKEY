@@ -24,6 +24,10 @@ const SPACE_KEY_RU: KeyData = { mainValue: 'пробел', action: KeyAction.Spa
 const ALPHABET_KEY: KeyData = { mainValue: 'ABC', action: KeyAction.SwitchAlphabet, flex: 1.2 };
 const SYMBOLS_ALT_KEY: KeyData = { mainValue: '=\\<', action: KeyAction.SwitchSymbolsAlt, flex: 1.2 };
 
+// Russian-specific keys with same size as letters
+const SHIFT_KEY_RU: KeyData = { mainValue: '⇧', action: KeyAction.Shift, flex: 1 };
+const BACKSPACE_KEY_RU: KeyData = { mainValue: '⌫', action: KeyAction.Backspace, flex: 1 };
+
 const SPACER_LEFT_KEY: KeyData = { mainValue: 'spacer_left', action: KeyAction.Spacer, flex: 0.5 };
 const SPACER_RIGHT_KEY: KeyData = { mainValue: 'spacer_right', action: KeyAction.Spacer, flex: 0.5 };
 
@@ -368,7 +372,7 @@ export const russianLayout: KeyData[][] = [
     SPACER_RIGHT_KEY,
   ],
   [
-    SHIFT_KEY,
+    SHIFT_KEY_RU,
     { mainValue: 'я', shiftValue: 'Я', action: KeyAction.Char, flex: 1 },
     { mainValue: 'ч', shiftValue: 'Ч', action: KeyAction.Char, flex: 1 },
     { mainValue: 'с', shiftValue: 'С', action: KeyAction.Char, flex: 1 },
@@ -378,7 +382,7 @@ export const russianLayout: KeyData[][] = [
     { mainValue: 'ь', shiftValue: 'Ь', secondaryValue: 'ъ', action: KeyAction.Char, flex: 1 },
     { mainValue: 'б', shiftValue: 'Б', action: KeyAction.Char, flex: 1 },
     { mainValue: 'ю', shiftValue: 'Ю', action: KeyAction.Char, flex: 1 },
-    BACKSPACE_KEY,
+    BACKSPACE_KEY_RU,
   ],
   [
     SYMBOLS_KEY,
