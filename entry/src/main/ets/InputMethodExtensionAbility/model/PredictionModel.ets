@@ -31,7 +31,7 @@ interface SerializedModel {
 
 class PredictionModel {
   private models: Map<string, LangModel>;
-  private context: common.UIAbilityContext | null = null;
+  private context: common.Context | null = null;
   private saveCounter: number = 0;
   private readonly SAVE_THRESHOLD = 10; // Save after every 10 words learned
   private readonly DECAY_FACTOR = 0.95; // Decay competing words by 5%
@@ -47,7 +47,7 @@ class PredictionModel {
     this.models = new Map();
   }
 
-  setContext(ctx: common.UIAbilityContext): void {
+  setContext(ctx: common.Context): void {
     this.context = ctx;
   }
 

@@ -11,7 +11,7 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     predictionModel.setContext(this.context);
     predictionModel.load().then(() => {
       console.info('OpenBoard: Prediction model loaded successfully');
-    }).catch((err) => {
+    }).catch((err: Error) => {
       console.error('OpenBoard: Failed to load prediction model', err);
     });
   }
@@ -22,7 +22,7 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     // Save prediction model before destroying
     predictionModel.save().then(() => {
       console.info('OpenBoard: Prediction model saved successfully');
-    }).catch((err) => {
+    }).catch((err: Error) => {
       console.error('OpenBoard: Failed to save prediction model', err);
     });
 
