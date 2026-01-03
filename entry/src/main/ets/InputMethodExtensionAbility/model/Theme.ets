@@ -2,11 +2,11 @@
 // OpenBoard Theme using HarmonyOS system color tokens
 // These colors automatically adapt to system light/dark mode
 export class OpenBoardTheme {
-  // Main backgrounds - using sub_background for warmer grey tone (like Celia)
-  static readonly background = $r('sys.color.ohos_id_color_sub_background');
-  static readonly backgroundDark = $r('sys.color.ohos_id_color_sub_background');
-  static readonly backgroundDarker = $r('sys.color.ohos_id_color_sub_background');
-  static readonly surface = $r('sys.color.ohos_id_color_sub_background');
+  // Main backgrounds - using Celia's exact background color
+  static readonly background = '#242424'; // Celia keyboard background
+  static readonly backgroundDark = '#242424';
+  static readonly backgroundDarker = '#242424';
+  static readonly surface = $r('sys.color.ohos_id_color_sub_background'); // toolbar surface
 
   // Accent color - using system emphasize color for consistency
   static readonly accent = $r('sys.color.ohos_id_color_emphasize');
