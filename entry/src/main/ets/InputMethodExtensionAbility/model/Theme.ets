@@ -2,8 +2,8 @@
 // OpenBoard Theme using HarmonyOS system color tokens
 // These colors automatically adapt to system light/dark mode
 export class OpenBoardTheme {
-  // Main backgrounds - adapt to system theme
-  static readonly background = $r('sys.color.ohos_id_color_background');
+  // Main backgrounds - using sub_background for warmer grey tone (like Celia)
+  static readonly background = $r('sys.color.ohos_id_color_sub_background');
   static readonly backgroundDark = $r('sys.color.ohos_id_color_sub_background');
   static readonly backgroundDarker = $r('sys.color.ohos_id_color_sub_background');
   static readonly surface = $r('sys.color.ohos_id_color_sub_background');
