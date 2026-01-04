@@ -208,7 +208,7 @@ export class KeyboardController {
       const error = err as BusinessError;
       console.error(`OpenBoard Keyboard: Failed to get display. Code: ${error.code}, Msg: ${error.message}`);
     }
-    let keyHeightRate = 0.35; // 35% of screen height for all devices
+    let keyHeightRate = 0.30; // 30% of screen height for all devices
     let keyHeight = dHeight * keyHeightRate;
     let nonBarPosition = dHeight - keyHeight;
 
