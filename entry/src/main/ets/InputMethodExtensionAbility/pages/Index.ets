@@ -1230,9 +1230,9 @@ struct Index {
         // MAIN CONTENT
         if (!this.showEmojiPanel) {
           // Main keyboard
-          Column({ space: 4 }) {
+          Column({ space: 12 }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row({ space: 3 }) {
+              Row({ space: 6 }) {
                 ForEach(row, (key: KeyData) => {
                   if (key.action === KeyAction.Spacer) {
                     Flex().layoutWeight(key.flex)
