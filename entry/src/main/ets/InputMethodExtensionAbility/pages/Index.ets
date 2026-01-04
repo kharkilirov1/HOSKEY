@@ -694,7 +694,7 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
     }
     this.rapidDeleteTimer = setInterval(() => {
-      keyboardController.deleteForward(1);
+      keyboardController.deleteBackward(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -809,7 +809,7 @@ struct Index {
         this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBackward(1);
         this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
@@ -970,7 +970,7 @@ struct Index {
 
   private pickSuggestion(word: string): void {
     this.resetInactivityTimer();
-    keyboardController.deleteForward(this.currentWord.length);
+    keyboardController.deleteBackward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
