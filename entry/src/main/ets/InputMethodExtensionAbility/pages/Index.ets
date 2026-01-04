@@ -87,7 +87,7 @@ function getVoiceRecognitionError(code: LanguageCode): string {
     case 'pl': return 'Rozpoznawanie mowy nie powiodło się';
     case 'it': return 'Riconoscimento vocale fallito';
     case 'ar': return 'فشل التعرف على الكلام';
-    case 'fa': return 'تشخیص گفتار失敗 شد';
+    case 'fa': return 'تشخیص گفتار ناموفق بود';
     default: return 'Speech recognition failed';
   }
 }
@@ -654,7 +654,7 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
     }
     this.rapidDeleteTimer = setInterval(() => {
-      keyboardController.deleteForward(1);
+      keyboardController.deleteBackward(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -746,7 +746,7 @@ struct Index {
         this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBackward(1);
         this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
@@ -877,7 +877,7 @@ struct Index {
 
   private pickSuggestion(word: string): void {
     this.resetInactivityTimer();
-    keyboardController.deleteForward(this.currentWord.length);
+    keyboardController.deleteBackward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 

@@ -235,12 +235,7 @@ export class KeyboardController {
   }
 
   private registerInputListener(): void {
-    inputMethodAbility.on('inputStart', async (_, textInputClient) => {
-      this.textInputClient = textInputClient;
-      this.updateEnterKeyType();
-      await this.syncInitialBuffer();
-      this.hideIfDestroyedAndRecreate();
-    });
+    inputMethodAbility.on('inputStart', this.inputStartCallback);
     inputMethodAbility.on('inputStop', this.inputStopCallback);
   }
 
@@ -281,8 +276,15 @@ export class KeyboardController {
     this.currentEnterKeyType = inputMethodEngine.ENTER_KEY_TYPE_UNSPECIFIED;
   };
 
+  private inputStartCallback = async (_: inputMethodEngine.KeyboardController, textInputClient: inputMethodEngine.InputClient): Promise<void> => {
+    this.textInputClient = textInputClient;
+    this.updateEnterKeyType();
+    await this.syncInitialBuffer();
+    this.hideIfDestroyedAndRecreate();
+  };
+
   private unregisterListener(): void {
-    inputMethodAbility.off('inputStart', this.registerInputListener);
+    inputMethodAbility.off('inputStart', this.inputStartCallback);
     inputMethodAbility.off('inputStop', this.inputStopCallback);
   }
 }
