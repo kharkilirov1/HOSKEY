@@ -6,7 +6,7 @@ export class OpenBoardTheme {
   static readonly background = '#242424'; // Celia keyboard background
   static readonly backgroundDark = '#242424';
   static readonly backgroundDarker = '#242424';
-  static readonly surface = $r('sys.color.ohos_id_color_sub_background'); // toolbar surface
+  static readonly surface = '#242424'; // toolbar uses same color as keyboard
 
   // Accent color - using system emphasize color for consistency
   static readonly accent = $r('sys.color.ohos_id_color_emphasize');
