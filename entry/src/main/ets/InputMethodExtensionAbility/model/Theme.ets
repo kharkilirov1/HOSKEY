@@ -15,8 +15,8 @@ export class OpenBoardTheme {
   static readonly primaryText = $r('sys.color.ohos_id_color_text_primary');
   static readonly secondaryText = $r('sys.color.ohos_id_color_text_secondary');
 
-  // Key colors - all keys use same color for consistency (like Celia)
-  static readonly specialKey = $r('sys.color.ohos_id_color_tertiary');
+  // Key colors - special keys darker, regular keys same as before
+  static readonly specialKey = '#3D3D3D'; // Shift, Enter, Backspace
   static readonly regularKey = $r('sys.color.ohos_id_color_tertiary');
   static readonly divider = $r('sys.color.ohos_id_color_palette_aux1');
 }
