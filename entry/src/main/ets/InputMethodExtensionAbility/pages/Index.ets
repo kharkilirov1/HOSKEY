@@ -1232,7 +1232,7 @@ struct Index {
           // Main keyboard
           Column({ space: 4 }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row() {
+              Row({ space: 2 }) {
                 ForEach(row, (key: KeyData) => {
                   if (key.action === KeyAction.Spacer) {
                     Flex().layoutWeight(key.flex)
