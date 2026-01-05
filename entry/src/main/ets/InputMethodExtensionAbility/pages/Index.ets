@@ -452,6 +452,7 @@ struct Index {
   @State private previousWord: string = '';
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
+  @State private lastAutocorrection: { original: string; corrected: string } | null = null;
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -1007,8 +1008,20 @@ struct Index {
 
   private updateSuggestions(): void {
     try {
-      const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
-      this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+      // Check for autocorrection first
+      const autocorrection = this.currentWord.length >= 2
+        ? predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+        : null;
+
+      if (autocorrection && autocorrection !== this.currentWord) {
+        // Show autocorrection as first suggestion, then predictions
+        const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2);
+        this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
+      } else {
+        // Normal predictions
+        const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
+        this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+      }
     } catch (e) {
       console.warn('Prediction model error:', e);
       this.suggestions = ['', '', ''];
@@ -1058,8 +1071,38 @@ struct Index {
 
   private onBoundaryTyped(ch: string): void {
     if (this.currentWord) {
-      predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
-      this.previousWord = this.currentWord;
+      // Check for autocorrection on space
+      if (ch === ' ') {
+        const correction = predictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
+        if (correction && correction !== this.currentWord) {
+          // Autocorrection found! Replace the typed word
+          console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
+
+          // Delete the typed word
+          keyboardController.deleteForward(this.currentWord.length);
+
+          // Insert the corrected word
+          keyboardController.insertText(correction);
+
+          // Track the autocorrection for potential undo
+          this.lastAutocorrection = {
+            original: this.currentWord,
+            corrected: correction
+          };
+
+          // Update previous word to the corrected version
+          this.previousWord = correction;
+        } else {
+          // No correction, record the word as typed
+          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
+          this.previousWord = this.currentWord;
+        }
+      } else {
+        // Non-space boundary, just record the word
+        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
+        this.previousWord = this.currentWord;
+      }
+
       this.currentWord = '';
     }
     this.updateSuggestions();

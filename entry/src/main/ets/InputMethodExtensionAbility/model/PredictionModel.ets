@@ -381,6 +381,71 @@ class PredictionModel {
     }
   }
 
+  // Capitalization helper methods
+  private applyCasing(word: string, reference: string): string {
+    if (!reference || reference.length === 0) return word;
+
+    // Check if reference is all uppercase
+    if (reference === reference.toUpperCase() && reference !== reference.toLowerCase()) {
+      return word.toUpperCase();
+    }
+
+    // Check if reference starts with uppercase
+    if (reference[0] === reference[0].toUpperCase() && reference[0] !== reference[0].toLowerCase()) {
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }
+
+    // Otherwise, return lowercase
+    return word.toLowerCase();
+  }
+
+  private shouldCapitalize(prevWord: string | null): boolean {
+    if (!prevWord) return true; // Capitalize at start
+
+    // Capitalize after sentence-ending punctuation
+    const sentenceEnders = ['.', '!', '?', '。', '！', '？'];
+    return sentenceEnders.includes(prevWord);
+  }
+
+  // Find best autocorrection candidate
+  findAutocorrection(lang: string, word: string): string | null {
+    if (!word || word.length < 2) return null;
+
+    const m = this.ensure(lang);
+    const wordLower = word.toLowerCase();
+
+    // Don't autocorrect if word is already in dictionary
+    if (m.uni.has(wordLower)) return null;
+
+    // Find similar learned word
+    const threshold = Math.min(2, Math.floor(word.length * 0.3));
+    let bestMatch: string | null = null;
+    let bestDistance = threshold + 1;
+    let bestRank = 0;
+
+    m.uni.forEach((count, learnedWord) => {
+      if (Math.abs(learnedWord.length - wordLower.length) <= threshold) {
+        const distance = this.levenshteinDistance(wordLower, learnedWord, threshold);
+        const rank = m.wordRank.get(learnedWord) ?? 0;
+
+        // Prefer corrections with better rank if distances are equal
+        if (distance < bestDistance || (distance === bestDistance && rank > bestRank)) {
+          bestDistance = distance;
+          bestMatch = learnedWord;
+          bestRank = rank;
+        }
+      }
+    });
+
+    // Only return correction if it's a common word (rank > 5)
+    if (bestMatch && bestDistance <= threshold && bestRank > 5) {
+      // Apply original capitalization to the correction
+      return this.applyCasing(bestMatch, word);
+    }
+
+    return null;
+  }
+
   predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): string[] {
     const m = this.ensure(lang);
     const list: RankedWord[] = [];
@@ -458,13 +523,25 @@ class PredictionModel {
     // Sort by score (highest first)
     list.sort((a, b) => b.score - a.score);
 
-    // Extract top k unique words
+    // Extract top k unique words with proper capitalization
     const seen = new Set<string>();
     const out: string[] = [];
+    const shouldCap = this.shouldCapitalize(prev);
+
     for (let i = 0; i < list.length && out.length < k; i++) {
-      const w = list[i].w;
+      let w = list[i].w;
       if (!seen.has(w)) {
         seen.add(w);
+
+        // Apply capitalization based on context
+        if (prefix && prefix.length > 0) {
+          // Match capitalization of user's input
+          w = this.applyCasing(w, prefix);
+        } else if (shouldCap) {
+          // Capitalize at start or after sentence-ending punctuation
+          w = w.charAt(0).toUpperCase() + w.slice(1);
+        }
+
         out.push(w);
       }
     }
