@@ -11,8 +11,13 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     predictionModel.setContext(this.context);
     predictionModel.load().then(() => {
       console.info('OpenBoard: Prediction model loaded successfully');
+
+      // Load dictionaries after loading saved data
+      return predictionModel.loadDictionaries();
+    }).then(() => {
+      console.info('OpenBoard: Dictionaries loaded successfully');
     }).catch((err: Error) => {
-      console.error('OpenBoard: Failed to load prediction model', err);
+      console.error('OpenBoard: Failed to initialize prediction model', err);
     });
   }
 

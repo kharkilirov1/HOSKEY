@@ -1,6 +1,8 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { resourceManager } from '@kit.LocalizationKit';
+import { util } from '@kit.ArkTS';
 
 // Interfaces for language models
 interface LangModel {
@@ -732,6 +734,74 @@ class PredictionModel {
   // Clear all learned data (optional utility)
   clearAll(): void {
     this.models.clear();
+  }
+
+  // Load dictionary from rawfile
+  private async loadDictionaryFromFile(filename: string): Promise<string[]> {
+    if (!this.context) {
+      console.warn('OpenBoard: Cannot load dictionary - context not set');
+      return [];
+    }
+
+    try {
+      const resMgr = this.context.resourceManager;
+      const fileData = await resMgr.getRawFileContent(filename);
+      const decoder = new util.TextDecoder('utf-8');
+      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
+
+      // Split by newlines and filter empty lines
+      const words = text.split('\n')
+        .map(w => w.trim())
+        .filter(w => w.length > 0);
+
+      console.info(`OpenBoard: Loaded ${words.length} words from ${filename}`);
+      return words;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error(`OpenBoard: Failed to load dictionary ${filename}. Code: ${error.code}, Msg: ${error.message}`);
+      return [];
+    }
+  }
+
+  // Pre-populate model with dictionary words
+  async loadDictionaries(): Promise<void> {
+    const dictionaries = [
+      { lang: 'en', file: 'dictionary_en.txt' },
+      { lang: 'ru', file: 'dictionary_ru.txt' }
+    ];
+
+    for (const dict of dictionaries) {
+      const words = await this.loadDictionaryFromFile(dict.file);
+      if (words.length > 0) {
+        const m = this.ensure(dict.lang);
+
+        // Add words to model with initial count
+        // Higher initial count for common words (they appear first in the file)
+        words.forEach((word, index) => {
+          const w = word.toLowerCase();
+
+          // Skip if already in model
+          if (m.uni.has(w)) return;
+
+          // Weight: earlier words (more common) get higher count
+          // First 100 words: count 50-150
+          // Next 400 words: count 20-50
+          // Rest: count 10-20
+          let initialCount = 10;
+          if (index < 100) {
+            initialCount = 150 - index;
+          } else if (index < 500) {
+            initialCount = 50 - Math.floor((index - 100) / 10);
+          }
+
+          m.uni.set(w, initialCount);
+          m.wordRank.set(w, initialCount);
+          m.lastUsed.set(w, Date.now());
+        });
+
+        console.info(`OpenBoard: Pre-loaded ${words.length} words for language '${dict.lang}'`);
+      }
+    }
   }
 }
 
