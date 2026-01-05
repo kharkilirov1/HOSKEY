@@ -18,7 +18,7 @@ export interface KeyData {
 const SHIFT_KEY: KeyData = { mainValue: '⇧', action: KeyAction.Shift, flex: 1.5 };
 const BACKSPACE_KEY: KeyData = { mainValue: '⌫', action: KeyAction.Backspace, flex: 1.5 };
 const ENTER_KEY: KeyData = { mainValue: '↵', action: KeyAction.Enter, flex: 1.5 };
-const SYMBOLS_KEY: KeyData = { mainValue: '?123', action: KeyAction.SwitchSymbols, flex: 1.2 };
+const SYMBOLS_KEY: KeyData = { mainValue: '123', action: KeyAction.SwitchSymbols, flex: 1.2 };
 const SPACE_KEY: KeyData = { mainValue: 'space', action: KeyAction.Space, flex: 6 };
 const SPACE_KEY_RU: KeyData = { mainValue: 'пробел', action: KeyAction.Space, flex: 6 };
 const ALPHABET_KEY: KeyData = { mainValue: 'ABC', action: KeyAction.SwitchAlphabet, flex: 1.2 };
