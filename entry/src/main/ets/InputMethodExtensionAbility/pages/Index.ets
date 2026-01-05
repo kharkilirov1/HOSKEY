@@ -259,7 +259,7 @@ struct KeyView {
             }
           } else {
             Text(this.getDisplayValue())
-              .fontSize(20)
+              .fontSize(18)
               .fontWeight(this.keyData.action === KeyAction.Char ? 400 : 500)
               .fontColor(OpenBoardTheme.primaryText)
           }
@@ -1372,10 +1372,10 @@ struct Index {
     const insertEmojiKey = (layout: KeyData[][] | undefined): KeyData[][] => {
       if (!layout || layout.length < 4) return layout || [];
       const lastRow = layout[layout.length - 1].slice();
-      const commaIndex = lastRow.findIndex(k => k.mainValue === ',' || k.mainValue === '،');
-      if (commaIndex !== -1 && lastRow[commaIndex + 1]?.action === KeyAction.Space) {
-        lastRow.splice(commaIndex + 1, 0, EMOJI_KEY_DATA);
-        const originalSpaceKey = lastRow[commaIndex + 2];
+      const symbolsIndex = lastRow.findIndex(k => k.action === KeyAction.SwitchSymbols);
+      if (symbolsIndex !== -1 && lastRow[symbolsIndex + 1]?.action === KeyAction.Space) {
+        lastRow.splice(symbolsIndex + 1, 0, EMOJI_KEY_DATA);
+        const originalSpaceKey = lastRow[symbolsIndex + 2];
         if (originalSpaceKey) {
           const newSpaceKey: KeyData = {
             mainValue: originalSpaceKey.mainValue,
@@ -1384,7 +1384,7 @@ struct Index {
             action: originalSpaceKey.action,
             flex: Math.max(originalSpaceKey.flex - EMOJI_KEY_DATA.flex + 0.5, 3.5)
           };
-          lastRow[commaIndex + 2] = newSpaceKey;
+          lastRow[symbolsIndex + 2] = newSpaceKey;
         }
         const newLayout = layout.slice(0, layout.length - 1);
         newLayout.push(lastRow);
