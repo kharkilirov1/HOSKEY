@@ -1,6 +1,7 @@
 import { Want } from '@kit.AbilityKit';
 import keyboardController from './model/KeyboardController';
 import predictionModel from './model/PredictionModel';
+import clipboardHistory from './model/ClipboardHistory';
 import { InputMethodExtensionAbility } from '@kit.IMEKit';
 
 export default class InputDemoService extends InputMethodExtensionAbility {
@@ -18,6 +19,14 @@ export default class InputDemoService extends InputMethodExtensionAbility {
       console.info('OpenBoard: Dictionaries loaded successfully');
     }).catch((err: Error) => {
       console.error('OpenBoard: Failed to initialize prediction model', err);
+    });
+
+    // Initialize clipboard history
+    clipboardHistory.setContext(this.context);
+    clipboardHistory.load().then(() => {
+      console.info('OpenBoard: Clipboard history loaded successfully');
+    }).catch((err: Error) => {
+      console.error('OpenBoard: Failed to initialize clipboard history', err);
     });
   }
 

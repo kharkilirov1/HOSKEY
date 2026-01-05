@@ -15,6 +15,7 @@ import {
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
+import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
@@ -449,6 +450,13 @@ struct Index {
   @State emojiCategory: string = 'Smileys & Emotion';
   private emojiScroller: Scroller = new Scroller();
 
+  @State showClipboardPanel: boolean = false;
+  @State clipboardFilter: ClipboardItemType | 'all' = 'all';
+  @State clipboardSearchQuery: string = '';
+  private clipboardScroller: Scroller = new Scroller();
+  private lastClipboardText: string = '';
+  private clipboardMonitorTimer: number = -1;
+
   @State private previousWord: string = '';
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
@@ -628,6 +636,48 @@ struct Index {
     }
   }
 
+  // Clipboard monitoring
+  private async monitorClipboard(): Promise<void> {
+    try {
+      const systemPasteboard = pasteboard.getSystemPasteboard();
+      const data = await systemPasteboard.getData();
+      const text = data.getPrimaryText();
+
+      if (text && text.length > 0 && text !== this.lastClipboardText) {
+        // New clipboard content detected
+        console.info('OpenBoard: New clipboard content detected');
+        clipboardHistory.addItem(text);
+        this.lastClipboardText = text;
+      }
+    } catch (e) {
+      console.error('OpenBoard: Clipboard monitoring failed', e);
+    }
+  }
+
+  private startClipboardMonitoring(): void {
+    if (this.clipboardMonitorTimer !== -1) {
+      return; // Already monitoring
+    }
+
+    // Initial check
+    this.monitorClipboard();
+
+    // Check every 2 seconds
+    this.clipboardMonitorTimer = setInterval(() => {
+      this.monitorClipboard();
+    }, 2000);
+
+    console.info('OpenBoard: Clipboard monitoring started');
+  }
+
+  private stopClipboardMonitoring(): void {
+    if (this.clipboardMonitorTimer !== -1) {
+      clearInterval(this.clipboardMonitorTimer);
+      this.clipboardMonitorTimer = -1;
+      console.info('OpenBoard: Clipboard monitoring stopped');
+    }
+  }
+
   // Handle voice interruption with popup
   private handleVoiceInterruption(interruptionType: 'manual' | 'clipboard' | 'error'): void {
     if (this.isRecording) {
@@ -671,6 +721,7 @@ struct Index {
       this.currentLanguage = this.availableLanguages[0];
     }
     this.startInactivityTimer();
+    this.startClipboardMonitoring();
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
   }
@@ -689,6 +740,7 @@ struct Index {
       this.rapidDeleteTimer = -1;
     }
     this.stopInactivityTimer();
+    this.stopClipboardMonitoring();
     if (this.speechRecognitionTimer !== -1) {
       clearTimeout(this.speechRecognitionTimer);
       this.speechRecognitionTimer = -1;
@@ -963,28 +1015,33 @@ struct Index {
     }
   }
 
-  // PASTE CURRENT CLIPBOARD ITEM ONLY
-  private async handleClipboardClick(): Promise<void> {
+  // TOGGLE CLIPBOARD PANEL
+  private handleClipboardClick(): void {
     this.resetInactivityTimer();
 
     if (this.isRecording) {
       this.handleVoiceInterruption('clipboard');
     }
 
-    try {
-      const systemPasteboard = pasteboard.getSystemPasteboard();
-      const data = await systemPasteboard.getData();
-      const text = data.getPrimaryText();
+    this.showClipboardPanel = !this.showClipboardPanel;
+    if (this.showClipboardPanel) {
+      this.showEmojiPanel = false;
+      this.clipboardSearchQuery = '';
+      this.clipboardFilter = 'all';
+    }
+  }
 
-      if (text && text.length > 0) {
-        keyboardController.insertText(text);
-        this.onTextTyped(text);
-        console.info('OpenBoard: Pasted clipboard text');
-      } else {
-        console.info('OpenBoard: Clipboard is empty');
-      }
-    } catch (e) {
-      console.error('OpenBoard: Clipboard paste failed', e);
+  // PASTE CLIPBOARD ITEM BY ID
+  private async pasteClipboardItem(item: ClipboardItem): Promise<void> {
+    this.resetInactivityTimer();
+
+    if (item.text && item.text.length > 0) {
+      keyboardController.insertText(item.text);
+      this.onTextTyped(item.text);
+      console.info('OpenBoard: Pasted clipboard item:', item.id);
+
+      // Close clipboard panel after pasting
+      this.showClipboardPanel = false;
     }
   }
 
@@ -1207,6 +1264,21 @@ struct Index {
       }
       .layoutWeight(1)
 
+      // CLIPBOARD
+      Column() {
+        Image($r('app.media.clipboard_icon'))
+          .width(18)
+          .height(18)
+          .fillColor(OpenBoardTheme.primaryText)
+      }
+      .width(34)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(17)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .onClick(() => { this.handleClipboardClick(); })
+
       // MICROPHONE
       Column() {
         Image($r('app.media.mic_icon'))
@@ -1359,6 +1431,289 @@ struct Index {
     }
   }
 
+  private getClipboardTypeIcon(type: ClipboardItemType): string {
+    switch (type) {
+      case ClipboardItemType.URL:
+        return '🔗';
+      case ClipboardItemType.Email:
+        return '📧';
+      case ClipboardItemType.Phone:
+        return '📞';
+      case ClipboardItemType.Text:
+      default:
+        return '📝';
+    }
+  }
+
+  private getFilteredClipboardItems(): ClipboardItem[] {
+    let items: ClipboardItem[] = [];
+
+    if (this.clipboardFilter === 'all') {
+      items = clipboardHistory.getItems();
+    } else {
+      items = clipboardHistory.getItemsByType(this.clipboardFilter as ClipboardItemType);
+    }
+
+    if (this.clipboardSearchQuery && this.clipboardSearchQuery.trim().length > 0) {
+      items = clipboardHistory.searchItems(this.clipboardSearchQuery);
+    }
+
+    return items;
+  }
+
+  @Builder
+  buildClipboardPanel() {
+    Column({ space: 10 }) {
+      // Category filters
+      Scroll() {
+        Row({ space: 8 }) {
+          // All
+          Text('All')
+            .fontSize(14)
+            .fontWeight(500)
+            .fontColor(this.clipboardFilter === 'all' ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor(this.clipboardFilter === 'all' ? OpenBoardTheme.surface : OpenBoardTheme.background)
+            .borderRadius(20)
+            .onClick(() => { this.clipboardFilter = 'all'; })
+
+          // Text
+          Row({ space: 4 }) {
+            Text('📝')
+              .fontSize(14)
+            Text('Text')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(20)
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Text; })
+
+          // URL
+          Row({ space: 4 }) {
+            Text('🔗')
+              .fontSize(14)
+            Text('Links')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(20)
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.URL; })
+
+          // Email
+          Row({ space: 4 }) {
+            Text('📧')
+              .fontSize(14)
+            Text('Email')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(20)
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Email; })
+
+          // Phone
+          Row({ space: 4 }) {
+            Text('📞')
+              .fontSize(14)
+            Text('Phone')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(20)
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Phone; })
+        }
+        .padding({ left: 8, right: 8 })
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+
+      // Clipboard items list
+      Scroll(this.clipboardScroller) {
+        Column({ space: 8 }) {
+          ForEach(this.getFilteredClipboardItems(), (item: ClipboardItem) => {
+            Row({ space: 12 }) {
+              // Type icon
+              Text(this.getClipboardTypeIcon(item.type))
+                .fontSize(20)
+                .width(30)
+                .textAlign(TextAlign.Center)
+
+              // Item content
+              Column({ space: 4 }) {
+                Text(item.text)
+                  .fontSize(14)
+                  .fontWeight(400)
+                  .fontColor(OpenBoardTheme.primaryText)
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+                // Timestamp
+                Text(this.formatTimestamp(item.timestamp))
+                  .fontSize(11)
+                  .fontColor(OpenBoardTheme.secondaryText)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              .onClick(() => {
+                this.pasteClipboardItem(item);
+              })
+
+              // Pin button
+              Column() {
+                Text(item.isPinned ? '📌' : '📍')
+                  .fontSize(16)
+              }
+              .width(40)
+              .height(40)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(20)
+              .backgroundColor(item.isPinned ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+              .onClick(() => {
+                clipboardHistory.togglePin(item.id);
+              })
+
+              // Delete button
+              Column() {
+                Text('🗑️')
+                  .fontSize(16)
+              }
+              .width(40)
+              .height(40)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(20)
+              .backgroundColor(OpenBoardTheme.specialKey)
+              .onClick(() => {
+                clipboardHistory.deleteItem(item.id);
+              })
+            }
+            .width('100%')
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+            .backgroundColor(OpenBoardTheme.surface)
+            .borderRadius(12)
+          }, (item: ClipboardItem) => item.id)
+
+          // Empty state
+          if (this.getFilteredClipboardItems().length === 0) {
+            Column({ space: 8 }) {
+              Text('📋')
+                .fontSize(48)
+                .opacity(0.3)
+
+              Text('No clipboard items')
+                .fontSize(16)
+                .fontColor(OpenBoardTheme.secondaryText)
+                .fontWeight(500)
+
+              Text('Copy text to see it here')
+                .fontSize(14)
+                .fontColor(OpenBoardTheme.secondaryText)
+            }
+            .width('100%')
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+            .padding({ top: 60 })
+          }
+        }
+        .width('100%')
+        .padding({ left: 8, right: 8 })
+      }
+      .scrollable(ScrollDirection.Vertical)
+      .scrollBar(BarState.On)
+      .layoutWeight(1)
+    }
+    .layoutWeight(1)
+    .padding({ left: 2, right: 2, bottom: 2, top: 8 })
+  }
+
+  private formatTimestamp(timestamp: number): string {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (seconds < 60) {
+      return 'Just now';
+    } else if (minutes < 60) {
+      return `${minutes}m ago`;
+    } else if (hours < 24) {
+      return `${hours}h ago`;
+    } else if (days < 7) {
+      return `${days}d ago`;
+    } else {
+      const date = new Date(timestamp);
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    }
+  }
+
+  @Builder
+  buildClipboardToolbar() {
+    Row({ space: 3 }) {
+      // RETURN TO KEYBOARD BUTTON
+      Column() {
+        Image($r('app.media.return_icon'))
+          .width(20)
+          .height(20)
+          .fillColor(OpenBoardTheme.primaryText)
+      }
+      .width(34)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(17)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .onClick(() => {
+        this.showClipboardPanel = false;
+      })
+
+      // SEARCH INPUT
+      Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
+        TextInput({ placeholder: 'Search clipboard...', text: this.clipboardSearchQuery })
+          .fontSize(14)
+          .fontColor(OpenBoardTheme.primaryText)
+          .placeholderColor(OpenBoardTheme.secondaryText)
+          .backgroundColor('transparent')
+          .border({ width: 0 })
+          .onChange((value: string) => {
+            this.clipboardSearchQuery = value;
+          })
+      }
+      .layoutWeight(1)
+
+      // CLEAR ALL BUTTON
+      Column() {
+        Text('Clear')
+          .fontSize(12)
+          .fontWeight(500)
+          .fontColor(OpenBoardTheme.primaryText)
+      }
+      .width(50)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(17)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .onClick(() => {
+        clipboardHistory.clearAll();
+      })
+    }
+  }
+
   build() {
     Stack() {
       Column() {}
@@ -1374,6 +1729,9 @@ struct Index {
           if (this.isRecording) {
             // Toolbar when typing with voice
             this.buildVoiceToolbar()
+          } else if (this.showClipboardPanel) {
+            // Toolbar when in clipboard panel
+            this.buildClipboardToolbar()
           } else if (this.showEmojiPanel) {
             // Toolbar when in emoji tab
             this.buildEmojiToolbar()
@@ -1394,7 +1752,10 @@ struct Index {
         .shadow({ radius: 8, color: '#40000000', offsetY: 2 })
 
         // MAIN CONTENT
-        if (!this.showEmojiPanel) {
+        if (this.showClipboardPanel) {
+          // Clipboard Panel
+          this.buildClipboardPanel()
+        } else if (!this.showEmojiPanel) {
           // Main keyboard
           Column({ space: 5 }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
