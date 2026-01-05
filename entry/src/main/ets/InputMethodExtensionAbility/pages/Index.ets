@@ -197,6 +197,9 @@ struct KeyView {
   onKeyTouchDown: (key: KeyData, position: Position) => void = () => {};
   onKeyTouchUp: () => void = () => {};
   onSwipe?: (direction: LayoutSwipeDirection) => void;
+  onBackspaceSwipeStart: (x: number) => void = () => {};
+  onBackspaceSwipeMove: (x: number) => void = () => {};
+  onBackspaceSwipeEnd: () => void = () => {};
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
@@ -300,6 +303,11 @@ struct KeyView {
             this.onKeyTouchDown(this.keyData, currentPosition);
           }
 
+          // Start backspace swipe tracking
+          if (this.keyData.action === KeyAction.Backspace) {
+            this.onBackspaceSwipeStart(currentPosition.x);
+          }
+
           this.longPressTimer = setTimeout(() => {
             this.longPressTriggered = true;
             this.isPressed = false;
@@ -317,6 +325,21 @@ struct KeyView {
         if (event.type === TouchType.Move) {
           if (this.longPressTriggered && this.keyData.secondaryValue) {
             this.onKeyLongPressDrag(currentPosition);
+          }
+
+          // Handle backspace swipe
+          if (this.keyData.action === KeyAction.Backspace) {
+            const swipeDistance = Math.abs(currentPosition.x - this.touchStartX);
+            const SWIPE_THRESHOLD = 20;
+
+            if (!this.swipeHandled && swipeDistance > SWIPE_THRESHOLD) {
+              // Disable long press timer when swipe is detected
+              clearTimeout(this.longPressTimer);
+              this.swipeHandled = true;
+            }
+
+            // Always track movement for swipe-based deletion/restoration
+            this.onBackspaceSwipeMove(currentPosition.x);
           }
 
           if (this.keyData.action === KeyAction.Space) {
@@ -342,13 +365,20 @@ struct KeyView {
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
           clearTimeout(this.longPressTimer);
+
+          // End backspace swipe tracking
+          if (this.keyData.action === KeyAction.Backspace) {
+            this.onBackspaceSwipeEnd();
+          }
+
           if (this.longPressTriggered) {
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressEnd(this.keyData);
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
-          } else if (event.type === TouchType.Up && !this.longPressTriggered) {
+          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled) {
+            // Only trigger keyPress if no swipe was handled
             this.onKeyPress(this.keyData);
           }
 
@@ -381,6 +411,12 @@ struct Index {
   @State rapidDeleteTimer: number = -1;
   @State enterKeyLabel: string = 'Enter';
   @State availableLanguages: LanguageCode[] = ['en'];
+
+  // Swipe-based backspace state
+  @State backspaceSwipeActive: boolean = false;
+  @State backspaceDeletedBuffer: string[] = [];
+  @State backspaceInitialX: number = 0;
+  @State backspaceCurrentX: number = 0;
 
   // Layout cache for performance optimization
   private cachedLayout: KeyData[][] = [];
@@ -704,6 +740,45 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
       this.rapidDeleteTimer = -1;
     }
+  }
+
+  private handleBackspaceSwipeStart(x: number): void {
+    this.backspaceSwipeActive = true;
+    this.backspaceInitialX = x;
+    this.backspaceCurrentX = x;
+    this.backspaceDeletedBuffer = [];
+  }
+
+  private handleBackspaceSwipeMove(x: number): void {
+    if (!this.backspaceSwipeActive) return;
+
+    const swipeDistance = x - this.backspaceCurrentX;
+    const SWIPE_THRESHOLD = 15; // pixels needed to trigger action
+
+    if (swipeDistance < -SWIPE_THRESHOLD) {
+      // Swiping left - delete character
+      const textBefore = keyboardController.getTextBeforeCursor(1);
+      if (textBefore.length > 0) {
+        this.backspaceDeletedBuffer.push(textBefore);
+        keyboardController.deleteForward(1);
+        this.onBackspaceTyped();
+      }
+      this.backspaceCurrentX = x;
+    } else if (swipeDistance > SWIPE_THRESHOLD && this.backspaceDeletedBuffer.length > 0) {
+      // Swiping right - restore character
+      const lastDeleted = this.backspaceDeletedBuffer.pop();
+      if (lastDeleted) {
+        keyboardController.insertText(lastDeleted);
+      }
+      this.backspaceCurrentX = x;
+    }
+  }
+
+  private handleBackspaceSwipeEnd(): void {
+    this.backspaceSwipeActive = false;
+    this.backspaceDeletedBuffer = [];
+    this.backspaceInitialX = 0;
+    this.backspaceCurrentX = 0;
   }
 
   private updatePopupMetrics(touchPosition: Position): void {
@@ -1251,7 +1326,10 @@ struct Index {
                       onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
                       onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
                       onKeyTouchUp: (): void => this.handleKeyTouchUp(),
-                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
+                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
+                      onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
+                      onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
+                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd()
                     })
                       .layoutWeight(key.flex)
                   }
