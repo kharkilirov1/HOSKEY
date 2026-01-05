@@ -109,6 +109,18 @@ export class KeyboardController {
     }
   }
 
+  public moveCursor(direction: number): void {
+    if (this.textInputClient) {
+      try {
+        this.textInputClient.moveCursor(direction);
+        this.updateCacheOnCursorMove(direction);
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`OpenBoard Keyboard: Failed to move cursor. Code: ${error.code}, Msg: ${error.message}`);
+      }
+    }
+  }
+
   public sendEnterKey(): void {
     if (this.textInputClient) {
       try {
@@ -164,6 +176,11 @@ export class KeyboardController {
       this.textBufferCache.slice(0, this.cursorPosition - length) +
       this.textBufferCache.slice(this.cursorPosition);
     this.cursorPosition = Math.max(0, this.cursorPosition - length);
+  }
+
+  private updateCacheOnCursorMove(direction: number): void {
+    // direction: positive = right/forward, negative = left/backward
+    this.cursorPosition = Math.max(0, Math.min(this.textBufferCache.length, this.cursorPosition + direction));
   }
 
   private async syncInitialBuffer(): Promise<void> {

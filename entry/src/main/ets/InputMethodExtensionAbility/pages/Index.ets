@@ -200,6 +200,9 @@ struct KeyView {
   onBackspaceSwipeStart: (x: number) => void = () => {};
   onBackspaceSwipeMove: (x: number) => void = () => {};
   onBackspaceSwipeEnd: () => void = () => {};
+  onCursorModeStart: (x: number) => void = () => {};
+  onCursorModeMove: (x: number) => void = () => {};
+  onCursorModeEnd: () => void = () => {};
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
@@ -314,6 +317,8 @@ struct KeyView {
 
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressStart(this.keyData);
+            } else if (this.keyData.action === KeyAction.Space) {
+              this.onCursorModeStart(currentPosition.x);
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPress(this.keyData, currentPosition);
             } else if (this.keyData.action === KeyAction.Shift) {
@@ -343,22 +348,28 @@ struct KeyView {
           }
 
           if (this.keyData.action === KeyAction.Space) {
-            const swipeDistance = Math.abs(currentPosition.x - this.touchStartX);
-            const SWIPE_THRESHOLD = 30;
+            // If long press triggered, activate cursor mode
+            if (this.longPressTriggered) {
+              this.onCursorModeMove(currentPosition.x);
+            } else {
+              // Before long press, handle language switch swipe
+              const swipeDistance = Math.abs(currentPosition.x - this.touchStartX);
+              const SWIPE_THRESHOLD = 30;
 
-            if (!this.swipeHandled && swipeDistance > SWIPE_THRESHOLD) {
-              clearTimeout(this.longPressTimer);
-              this.longPressTriggered = true;
-              this.swipeHandled = true;
+              if (!this.swipeHandled && swipeDistance > SWIPE_THRESHOLD) {
+                clearTimeout(this.longPressTimer);
+                this.longPressTriggered = true;
+                this.swipeHandled = true;
 
-              if (this.onSwipe) {
-                const direction = (currentPosition.x - this.touchStartX) > 0
-                  ? LayoutSwipeDirection.Right
-                  : LayoutSwipeDirection.Left;
-                this.onSwipe(direction);
+                if (this.onSwipe) {
+                  const direction = (currentPosition.x - this.touchStartX) > 0
+                    ? LayoutSwipeDirection.Right
+                    : LayoutSwipeDirection.Left;
+                  this.onSwipe(direction);
+                }
+
+                this.isPressed = false;
               }
-
-              this.isPressed = false;
             }
           }
         }
@@ -371,9 +382,16 @@ struct KeyView {
             this.onBackspaceSwipeEnd();
           }
 
+          // End cursor mode tracking
+          if (this.keyData.action === KeyAction.Space) {
+            this.onCursorModeEnd();
+          }
+
           if (this.longPressTriggered) {
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressEnd(this.keyData);
+            } else if (this.keyData.action === KeyAction.Space) {
+              // Cursor mode was active, don't insert space
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
@@ -417,6 +435,11 @@ struct Index {
   @State backspaceDeletedBuffer: string[] = [];
   @State backspaceInitialX: number = 0;
   @State backspaceCurrentX: number = 0;
+
+  // Cursor control mode state
+  @State cursorModeActive: boolean = false;
+  @State cursorInitialX: number = 0;
+  @State cursorCurrentX: number = 0;
 
   // Layout cache for performance optimization
   private cachedLayout: KeyData[][] = [];
@@ -779,6 +802,31 @@ struct Index {
     this.backspaceDeletedBuffer = [];
     this.backspaceInitialX = 0;
     this.backspaceCurrentX = 0;
+  }
+
+  private handleCursorModeStart(x: number): void {
+    this.cursorModeActive = true;
+    this.cursorInitialX = x;
+    this.cursorCurrentX = x;
+  }
+
+  private handleCursorModeMove(x: number): void {
+    if (!this.cursorModeActive) return;
+
+    const swipeDistance = x - this.cursorCurrentX;
+    const CURSOR_THRESHOLD = 20; // pixels needed to move cursor
+
+    if (Math.abs(swipeDistance) > CURSOR_THRESHOLD) {
+      const direction = swipeDistance > 0 ? 1 : -1; // 1 = right, -1 = left
+      keyboardController.moveCursor(direction);
+      this.cursorCurrentX = x;
+    }
+  }
+
+  private handleCursorModeEnd(): void {
+    this.cursorModeActive = false;
+    this.cursorInitialX = 0;
+    this.cursorCurrentX = 0;
   }
 
   private updatePopupMetrics(touchPosition: Position): void {
@@ -1329,7 +1377,10 @@ struct Index {
                       onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
                       onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
                       onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
-                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd()
+                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
+                      onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
+                      onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
+                      onCursorModeEnd: (): void => this.handleCursorModeEnd()
                     })
                       .layoutWeight(key.flex)
                   }
