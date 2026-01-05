@@ -82,8 +82,8 @@ export const englishLayout: KeyData[][] = [
     BACKSPACE_KEY,
   ],
   [
-    { mainValue: ',', shiftValue: '<', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: '<', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
     { mainValue: '.', shiftValue: '>', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -129,8 +129,8 @@ export const arabicLayout: KeyData[][] = [
     BACKSPACE_KEY,
   ],
   [
-    { mainValue: '،', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: '،', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
     { mainValue: '.', secondaryValue: '!,?,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -175,8 +175,8 @@ export const italianLayout: KeyData[][] = [
     BACKSPACE_KEY,
   ],
   [
-    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
     { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -221,8 +221,8 @@ export const polishLayout: KeyData[][] = [
     BACKSPACE_KEY,
   ],
   [
-    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
     { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -334,8 +334,8 @@ export const persianLayout: KeyData[][] = [
     BACKSPACE_KEY,
   ],
   [
-    { mainValue: '،', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: '،', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
     { mainValue: '.', secondaryValue: '!,?,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -383,8 +383,8 @@ export const russianLayout: KeyData[][] = [
     BACKSPACE_KEY_RU,
   ],
   [
-    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY_RU,
     { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
