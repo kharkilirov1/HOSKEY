@@ -129,6 +129,12 @@ class PredictionModel {
     return matrix[b.length][a.length];
   }
 
+  // Check if a word is truly learned (count >= LEARN_THRESHOLD)
+  private isWordLearned(m: LangModel, word: string): boolean {
+    const count = m.uni.get(word) ?? 0;
+    return count >= this.LEARN_THRESHOLD;
+  }
+
   // Find if there's a similar learned word (for typo detection)
   private findSimilarLearnedWord(m: LangModel, word: string): string | null {
     const threshold = Math.min(2, Math.floor(word.length * 0.3)); // Max 2 char difference or 30% of word length
@@ -138,7 +144,8 @@ class PredictionModel {
 
     // Check against all learned words (words in uni with count >= LEARN_THRESHOLD)
     m.uni.forEach((count, learnedWord) => {
-      if (learnedWord !== word && Math.abs(learnedWord.length - word.length) <= threshold) {
+      // Only consider words that are truly learned
+      if (count >= this.LEARN_THRESHOLD && learnedWord !== word && Math.abs(learnedWord.length - word.length) <= threshold) {
         // Pass threshold to levenshteinDistance for early exit optimization
         const distance = this.levenshteinDistance(word, learnedWord, threshold);
         if (distance < bestDistance && distance <= threshold) {
@@ -339,9 +346,9 @@ class PredictionModel {
           // Remove from pending
           m.pendingWords.delete(w);
 
-          // Add to learned model
-          m.uni.set(w, 1);
-          m.wordRank.set(w, 1);
+          // Add to learned model with count = LEARN_THRESHOLD (it was already typed 3 times)
+          m.uni.set(w, this.LEARN_THRESHOLD);
+          m.wordRank.set(w, this.LEARN_THRESHOLD);
           m.lastUsed.set(w, now);
 
           // Also add to bigram/trigram if context exists
@@ -416,8 +423,8 @@ class PredictionModel {
     const m = this.ensure(lang);
     const wordLower = word.toLowerCase();
 
-    // Don't autocorrect if word is already in dictionary
-    if (m.uni.has(wordLower)) return null;
+    // Don't autocorrect if word is already learned (count >= LEARN_THRESHOLD)
+    if (this.isWordLearned(m, wordLower)) return null;
 
     // Find similar learned word
     const threshold = Math.min(2, Math.floor(word.length * 0.3));
@@ -426,7 +433,8 @@ class PredictionModel {
     let bestRank = 0;
 
     m.uni.forEach((count, learnedWord) => {
-      if (Math.abs(learnedWord.length - wordLower.length) <= threshold) {
+      // Only consider truly learned words (count >= LEARN_THRESHOLD)
+      if (count >= this.LEARN_THRESHOLD && Math.abs(learnedWord.length - wordLower.length) <= threshold) {
         const distance = this.levenshteinDistance(wordLower, learnedWord, threshold);
         const rank = m.wordRank.get(learnedWord) ?? 0;
 
@@ -491,7 +499,8 @@ class PredictionModel {
       const triMap = m.tri.get(triKeyStr);
       if (triMap) {
         triMap.forEach((c, w) => {
-          if (filter(w)) {
+          // Only suggest truly learned words
+          if (filter(w) && this.isWordLearned(m, w)) {
             const score = calculateScore(w, c, true); // Context-based
             list.push({ w: w, c: c, score: score });
           }
@@ -504,7 +513,8 @@ class PredictionModel {
       const nextMap = m.bi.get(prevLower);
       if (nextMap) {
         nextMap.forEach((c, w) => {
-          if (filter(w) && !list.find(item => item.w === w)) {
+          // Only suggest truly learned words
+          if (filter(w) && this.isWordLearned(m, w) && !list.find(item => item.w === w)) {
             const score = calculateScore(w, c, true); // Context-based
             list.push({ w: w, c: c, score: score });
           }
@@ -515,7 +525,8 @@ class PredictionModel {
     // Priority 3: Fall back to unigram (most frequently used words)
     if (list.length < k) {
       m.uni.forEach((c, w) => {
-        if (filter(w) && !list.find(item => item.w === w)) {
+        // Only suggest truly learned words (count >= LEARN_THRESHOLD)
+        if (c >= this.LEARN_THRESHOLD && filter(w) && !list.find(item => item.w === w)) {
           const score = calculateScore(w, c, false); // NOT context-based
           list.push({ w: w, c: c, score: score });
         }
