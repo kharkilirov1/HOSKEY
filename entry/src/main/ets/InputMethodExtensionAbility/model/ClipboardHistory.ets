@@ -36,16 +36,18 @@ class ClipboardHistory {
     try {
       this.prefsStore = await preferences.getPreferences(this.context, 'clipboard_history');
       const stored = this.prefsStore.getSync('items', '[]') as string;
-      const parsed = JSON.parse(stored);
+      const parsed: ClipboardItem[] = JSON.parse(stored) as ClipboardItem[];
 
       if (Array.isArray(parsed)) {
-        this.items = parsed.map((item: ClipboardItem) => ({
-          id: item.id || this.generateId(),
-          text: item.text || '',
-          type: item.type || ClipboardItemType.Text,
-          timestamp: item.timestamp || Date.now(),
-          isPinned: item.isPinned || false
-        }));
+        this.items = parsed.map((item: ClipboardItem): ClipboardItem => {
+          return {
+            id: item.id || this.generateId(),
+            text: item.text || '',
+            type: item.type || ClipboardItemType.Text,
+            timestamp: item.timestamp || Date.now(),
+            isPinned: item.isPinned || false
+          };
+        });
       }
 
       console.info(`ClipboardHistory: Loaded ${this.items.length} items from storage`);
