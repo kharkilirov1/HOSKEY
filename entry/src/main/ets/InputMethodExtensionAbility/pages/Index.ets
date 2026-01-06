@@ -287,8 +287,8 @@ struct KeyView {
       .height('100%')
       .backgroundColor(this.isPressed ?
         OpenBoardTheme.surface : (this.keyData.action === KeyAction.Char ? OpenBoardTheme.regularKey : OpenBoardTheme.specialKey))
-      .borderRadius(8)
-      .shadow(this.isPressed ? { radius: 10, color: '#80000000', offsetX: 0, offsetY: 2 } : { radius: 0 })
+      .borderRadius(OpenBoardTheme.radiusMedium)
+      .shadow(this.isPressed ? OpenBoardTheme.shadowPressed : OpenBoardTheme.shadowKey)
       .zIndex(this.isPressed ? 100 : 0)
       .animation({ duration: 100 })
       .onTouch((event) => {
@@ -342,9 +342,15 @@ struct KeyView {
               // Disable long press timer when swipe is detected
               clearTimeout(this.longPressTimer);
               this.swipeHandled = true;
+
+              // If long press was already triggered (rapid delete active), stop it
+              if (this.longPressTriggered) {
+                this.onKeyContinuousPressEnd(this.keyData);
+                this.longPressTriggered = false;
+              }
             }
 
-            // Always track movement for swipe-based deletion/restoration
+            // Always track movement for swipe-based deletion
             this.onBackspaceSwipeMove(currentPosition.x);
           }
 
@@ -433,7 +439,6 @@ struct Index {
 
   // Swipe-based backspace state
   @State backspaceSwipeActive: boolean = false;
-  @State backspaceDeletedBuffer: string[] = [];
   @State backspaceInitialX: number = 0;
   @State backspaceCurrentX: number = 0;
 
@@ -822,7 +827,6 @@ struct Index {
     this.backspaceSwipeActive = true;
     this.backspaceInitialX = x;
     this.backspaceCurrentX = x;
-    this.backspaceDeletedBuffer = [];
   }
 
   private handleBackspaceSwipeMove(x: number): void {
@@ -835,16 +839,8 @@ struct Index {
       // Swiping left - delete character
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
-        this.backspaceDeletedBuffer.push(textBefore);
         keyboardController.deleteForward(1);
         this.onBackspaceTyped();
-      }
-      this.backspaceCurrentX = x;
-    } else if (swipeDistance > SWIPE_THRESHOLD && this.backspaceDeletedBuffer.length > 0) {
-      // Swiping right - restore character
-      const lastDeleted = this.backspaceDeletedBuffer.pop();
-      if (lastDeleted) {
-        keyboardController.insertText(lastDeleted);
       }
       this.backspaceCurrentX = x;
     }
@@ -852,7 +848,6 @@ struct Index {
 
   private handleBackspaceSwipeEnd(): void {
     this.backspaceSwipeActive = false;
-    this.backspaceDeletedBuffer = [];
     this.backspaceInitialX = 0;
     this.backspaceCurrentX = 0;
   }
@@ -1227,8 +1222,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
       // SUGGESTIONS
@@ -1275,8 +1271,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleClipboardClick(); })
 
       // MICROPHONE
@@ -1290,8 +1287,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
@@ -1309,8 +1307,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
       // LEFT SPACER for centering
@@ -1327,8 +1326,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleClipboardClick(); })
 
       // RIGHT SPACER for centering
@@ -1345,8 +1345,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
@@ -1365,8 +1366,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         this.showEmojiPanel = false;
       })
@@ -1392,8 +1394,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         keyboardController.hideKeyboard();
         if (this.isRecording) {
@@ -1474,7 +1477,8 @@ struct Index {
             .fontColor(this.clipboardFilter === 'all' ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
             .padding({ left: 16, right: 16, top: 8, bottom: 8 })
             .backgroundColor(this.clipboardFilter === 'all' ? OpenBoardTheme.surface : OpenBoardTheme.background)
-            .borderRadius(20)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(this.clipboardFilter === 'all' ? OpenBoardTheme.shadowKey : { radius: 0 })
             .onClick(() => { this.clipboardFilter = 'all'; })
 
           // Text
@@ -1488,7 +1492,8 @@ struct Index {
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
-          .borderRadius(20)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.shadowKey : { radius: 0 })
           .onClick(() => { this.clipboardFilter = ClipboardItemType.Text; })
 
           // URL
@@ -1502,7 +1507,8 @@ struct Index {
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.surface : OpenBoardTheme.background)
-          .borderRadius(20)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.shadowKey : { radius: 0 })
           .onClick(() => { this.clipboardFilter = ClipboardItemType.URL; })
 
           // Email
@@ -1516,7 +1522,8 @@ struct Index {
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.surface : OpenBoardTheme.background)
-          .borderRadius(20)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.shadowKey : { radius: 0 })
           .onClick(() => { this.clipboardFilter = ClipboardItemType.Email; })
 
           // Phone
@@ -1530,7 +1537,8 @@ struct Index {
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.surface : OpenBoardTheme.background)
-          .borderRadius(20)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.shadowKey : { radius: 0 })
           .onClick(() => { this.clipboardFilter = ClipboardItemType.Phone; })
         }
         .padding({ left: 8, right: 8 })
@@ -1578,8 +1586,9 @@ struct Index {
               .height(40)
               .justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
-              .borderRadius(20)
+              .borderRadius(OpenBoardTheme.radiusSmall)
               .backgroundColor(item.isPinned ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+              .shadow(OpenBoardTheme.shadowKey)
               .onClick(() => {
                 clipboardHistory.togglePin(item.id);
               })
@@ -1593,8 +1602,9 @@ struct Index {
               .height(40)
               .justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
-              .borderRadius(20)
+              .borderRadius(OpenBoardTheme.radiusSmall)
               .backgroundColor(OpenBoardTheme.specialKey)
+              .shadow(OpenBoardTheme.shadowKey)
               .onClick(() => {
                 clipboardHistory.deleteItem(item.id);
               })
@@ -1602,7 +1612,8 @@ struct Index {
             .width('100%')
             .padding({ left: 12, right: 12, top: 10, bottom: 10 })
             .backgroundColor(OpenBoardTheme.surface)
-            .borderRadius(12)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(OpenBoardTheme.shadowKey)
           }, (item: ClipboardItem) => item.id)
 
           // Empty state
@@ -1675,8 +1686,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         this.showClipboardPanel = false;
       })
@@ -1706,8 +1718,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         clipboardHistory.clearAll();
       })
@@ -1747,9 +1760,9 @@ struct Index {
         .height(46)
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
         .backgroundColor(OpenBoardTheme.surface)
-        .borderRadius(12)
+        .borderRadius(OpenBoardTheme.radiusMedium)
         .border({ width: 1, color: OpenBoardTheme.divider })
-        .shadow({ radius: 8, color: '#40000000', offsetY: 2 })
+        .shadow(OpenBoardTheme.shadowPanel)
 
         // MAIN CONTENT
         if (this.showClipboardPanel) {
@@ -1809,7 +1822,8 @@ struct Index {
                     .fontColor(this.emojiCategory === cat ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
                     .padding({ left: 16, right: 16, top: 8, bottom: 8 })
                     .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
-                    .borderRadius(20)
+                    .borderRadius(OpenBoardTheme.radiusMedium)
+                    .shadow(this.emojiCategory === cat ? OpenBoardTheme.shadowKey : { radius: 0 })
                     .onClick(() => { this.emojiCategory = cat; })
                 })
               }
