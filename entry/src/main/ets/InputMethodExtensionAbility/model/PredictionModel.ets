@@ -4,7 +4,12 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { util } from '@kit.ArkTS';
 
-// Interfaces for language models
+// Base dictionary (read-only, loaded from rawfile)
+interface BaseDict {
+  rank: Map<string, number>; // Word -> base rank (frequency in dictionary)
+}
+
+// User language model (learned, mutable)
 interface LangModel {
   uni: Map<string, number>; // Unigram: word -> count
   bi: Map<string, Map<string, number>>; // Bigram: prev_word -> (next_word -> count)
@@ -32,7 +37,8 @@ interface SerializedModel {
 }
 
 class PredictionModel {
-  private models: Map<string, LangModel>;
+  private models: Map<string, LangModel>; // User-learned models (mutable)
+  private baseDicts: Map<string, BaseDict>; // Base dictionaries (read-only, from rawfile)
   private context: common.Context | null = null;
   private saveCounter: number = 0;
   private readonly SAVE_THRESHOLD = 10; // Save after every 10 words learned
@@ -47,10 +53,32 @@ class PredictionModel {
 
   constructor() {
     this.models = new Map();
+    this.baseDicts = new Map();
   }
 
   setContext(ctx: common.Context): void {
     this.context = ctx;
+  }
+
+  // Get base dictionary for language (read-only)
+  private getBaseDict(lang: string): BaseDict | null {
+    return this.baseDicts.get(lang) ?? null;
+  }
+
+  // Check if word exists in base dictionary
+  private isBaseWord(lang: string, word: string): boolean {
+    const baseDict = this.getBaseDict(lang);
+    return baseDict !== null && baseDict.rank.has(word);
+  }
+
+  // Ensure base dictionary exists for language
+  private ensureBaseDict(lang: string): BaseDict {
+    let base = this.baseDicts.get(lang);
+    if (!base) {
+      base = { rank: new Map<string, number>() };
+      this.baseDicts.set(lang, base);
+    }
+    return base;
   }
 
   private ensure(lang: string): LangModel {
@@ -74,6 +102,49 @@ class PredictionModel {
   // Create a composite key for trigram lookups
   private triKey(prev1: string, prev2: string): string {
     return `${prev1}|${prev2}`;
+  }
+
+  // Update bigram and trigram context (helper method)
+  private updateBigramTrigram(m: LangModel, word: string, prev: string | null, prev2: string | null, now: number): void {
+    if (prev && prev.length > 0) {
+      const prevLower = prev.toLowerCase();
+      let nextMap = m.bi.get(prevLower);
+      if (!nextMap) {
+        nextMap = new Map<string, number>();
+        m.bi.set(prevLower, nextMap);
+      }
+      const c = nextMap.get(word) ?? 0;
+      nextMap.set(word, c + 1);
+
+      // Apply decay to competing bigrams
+      this.applyDecayAndCleanup(nextMap, word);
+
+      // Remove empty bigram entries
+      if (nextMap.size === 0) {
+        m.bi.delete(prevLower);
+      }
+
+      // Update trigram if we have two previous words
+      if (prev2 && prev2.length > 0) {
+        const prev2Lower = prev2.toLowerCase();
+        const triKeyStr = this.triKey(prev2Lower, prevLower);
+        let triMap = m.tri.get(triKeyStr);
+        if (!triMap) {
+          triMap = new Map<string, number>();
+          m.tri.set(triKeyStr, triMap);
+        }
+        const tc = triMap.get(word) ?? 0;
+        triMap.set(word, tc + 1);
+
+        // Apply decay to competing trigrams
+        this.applyDecayAndCleanup(triMap, word);
+
+        // Remove empty trigram entries
+        if (triMap.size === 0) {
+          m.tri.delete(triKeyStr);
+        }
+      }
+    }
   }
 
   // Calculate Levenshtein distance for similarity comparison (optimized)
@@ -135,14 +206,14 @@ class PredictionModel {
     return count >= this.LEARN_THRESHOLD;
   }
 
-  // Find if there's a similar learned word (for typo detection)
-  private findSimilarLearnedWord(m: LangModel, word: string): string | null {
+  // Find if there's a similar learned word (for typo detection) - checks user learned + base dictionary
+  private findSimilarLearnedWord(m: LangModel, word: string, lang: string): string | null {
     const threshold = Math.min(2, Math.floor(word.length * 0.3)); // Max 2 char difference or 30% of word length
 
     let bestMatch: string | null = null;
     let bestDistance = threshold + 1;
 
-    // Check against all learned words (words in uni with count >= LEARN_THRESHOLD)
+    // Check against user learned words (words in uni with count >= LEARN_THRESHOLD)
     m.uni.forEach((count, learnedWord) => {
       // Only consider words that are truly learned
       if (count >= this.LEARN_THRESHOLD && learnedWord !== word && Math.abs(learnedWord.length - word.length) <= threshold) {
@@ -154,6 +225,20 @@ class PredictionModel {
         }
       }
     });
+
+    // Also check against base dictionary
+    const baseDict = this.getBaseDict(lang);
+    if (baseDict) {
+      baseDict.rank.forEach((baseRank, baseWord) => {
+        if (baseWord !== word && Math.abs(baseWord.length - word.length) <= threshold) {
+          const distance = this.levenshteinDistance(word, baseWord, threshold);
+          if (distance < bestDistance && distance <= threshold) {
+            bestDistance = distance;
+            bestMatch = baseWord;
+          }
+        }
+      });
+    }
 
     return bestMatch;
   }
@@ -253,11 +338,12 @@ class PredictionModel {
       return;
     }
 
-    // Step 1: Check if word is already learned
-    const isLearned = m.uni.has(w);
+    // Step 1: Check word status
+    const isUserLearned = m.uni.has(w); // Word in user model
+    const isBase = this.isBaseWord(lang, w); // Word in base dictionary
 
-    if (isLearned) {
-      // Word is already learned, update normally
+    if (isUserLearned) {
+      // Case 1: Word is in user model - update normally
       const u = m.uni.get(w) ?? 0;
       m.uni.set(w, u + 1);
 
@@ -271,48 +357,23 @@ class PredictionModel {
       // Update last used timestamp
       m.lastUsed.set(w, now);
 
-      // Update bigram if we have previous word
-      if (prev && prev.length > 0) {
-        const prevLower = prev.toLowerCase();
-        let nextMap = m.bi.get(prevLower);
-        if (!nextMap) {
-          nextMap = new Map<string, number>();
-          m.bi.set(prevLower, nextMap);
-        }
-        const c = nextMap.get(w) ?? 0;
-        nextMap.set(w, c + 1);
+      // Update bigram/trigram context
+      this.updateBigramTrigram(m, w, prev, prev2, now);
 
-        // Apply decay to competing bigrams
-        this.applyDecayAndCleanup(nextMap, w);
+    } else if (isBase) {
+      // Case 2: Word is in base dictionary (but not in user model)
+      // Personalize: track usage for recency bonus, but don't add to uni (no decay/prune)
+      const rank = m.wordRank.get(w) ?? 0;
+      m.wordRank.set(w, rank + 1);
+      m.lastUsed.set(w, now);
 
-        // Remove empty bigram entries
-        if (nextMap.size === 0) {
-          m.bi.delete(prevLower);
-        }
+      // Update bigram/trigram context for better predictions
+      this.updateBigramTrigram(m, w, prev, prev2, now);
 
-        // Update trigram if we have two previous words
-        if (prev2 && prev2.length > 0) {
-          const prev2Lower = prev2.toLowerCase();
-          const triKeyStr = this.triKey(prev2Lower, prevLower);
-          let triMap = m.tri.get(triKeyStr);
-          if (!triMap) {
-            triMap = new Map<string, number>();
-            m.tri.set(triKeyStr, triMap);
-          }
-          const tc = triMap.get(w) ?? 0;
-          triMap.set(w, tc + 1);
+      console.info(`OpenBoard: Base word "${w}" personalized (rank: ${rank + 1})`);
 
-          // Apply decay to competing trigrams
-          this.applyDecayAndCleanup(triMap, w);
-
-          // Remove empty trigram entries
-          if (triMap.size === 0) {
-            m.tri.delete(triKeyStr);
-          }
-        }
-      }
     } else {
-      // Word is NOT yet learned - check pending status
+      // Case 3: Word is NOT in base and NOT in user model - pending logic
       const pendingCount = m.pendingWords.get(w) ?? 0;
       const newPendingCount = pendingCount + 1;
 
@@ -322,7 +383,7 @@ class PredictionModel {
         // Word has been typed 3 times! Time to learn it
 
         // Check if there's a similar learned word (typo detection)
-        const similarWord = this.findSimilarLearnedWord(m, w);
+        const similarWord = this.findSimilarLearnedWord(m, w, lang);
 
         if (similarWord) {
           // This might be a typo of an already learned word
@@ -341,37 +402,18 @@ class PredictionModel {
           m.lastUsed.set(similarWord, now);
         } else {
           // No similar word found, learn this word!
-          console.info(`OpenBoard: Learning word "${w}" after ${this.LEARN_THRESHOLD} occurrences`);
+          console.info(`OpenBoard: Learning new word "${w}" after ${this.LEARN_THRESHOLD} occurrences`);
 
           // Remove from pending
           m.pendingWords.delete(w);
 
-          // Add to learned model with count = LEARN_THRESHOLD (it was already typed 3 times)
+          // Add to learned user model with count = LEARN_THRESHOLD (it was already typed 3 times)
           m.uni.set(w, this.LEARN_THRESHOLD);
           m.wordRank.set(w, this.LEARN_THRESHOLD);
           m.lastUsed.set(w, now);
 
           // Also add to bigram/trigram if context exists
-          if (prev && prev.length > 0) {
-            const prevLower = prev.toLowerCase();
-            let nextMap = m.bi.get(prevLower);
-            if (!nextMap) {
-              nextMap = new Map<string, number>();
-              m.bi.set(prevLower, nextMap);
-            }
-            nextMap.set(w, 1);
-
-            if (prev2 && prev2.length > 0) {
-              const prev2Lower = prev2.toLowerCase();
-              const triKeyStr = this.triKey(prev2Lower, prevLower);
-              let triMap = m.tri.get(triKeyStr);
-              if (!triMap) {
-                triMap = new Map<string, number>();
-                m.tri.set(triKeyStr, triMap);
-              }
-              triMap.set(w, 1);
-            }
-          }
+          this.updateBigramTrigram(m, w, prev, prev2, now);
         }
       } else {
         // Still pending, increment count
@@ -416,27 +458,29 @@ class PredictionModel {
     return sentenceEnders.includes(prevWord);
   }
 
-  // Find best autocorrection candidate
+  // Find best autocorrection candidate (from user learned words AND base dictionary)
   findAutocorrection(lang: string, word: string): string | null {
     if (!word || word.length < 2) return null;
 
     const m = this.ensure(lang);
+    const baseDict = this.getBaseDict(lang);
     const wordLower = word.toLowerCase();
 
-    // Don't autocorrect if word is already learned (count >= LEARN_THRESHOLD)
-    if (this.isWordLearned(m, wordLower)) return null;
+    // Don't autocorrect if word is already learned OR in base dictionary
+    if (this.isWordLearned(m, wordLower) || this.isBaseWord(lang, wordLower)) return null;
 
-    // Find similar learned word
+    // Find similar word from user learned words OR base dictionary
     const threshold = Math.min(2, Math.floor(word.length * 0.3));
     let bestMatch: string | null = null;
     let bestDistance = threshold + 1;
     let bestRank = 0;
 
+    // Check user learned words
     m.uni.forEach((count, learnedWord) => {
       // Only consider truly learned words (count >= LEARN_THRESHOLD)
       if (count >= this.LEARN_THRESHOLD && Math.abs(learnedWord.length - wordLower.length) <= threshold) {
         const distance = this.levenshteinDistance(wordLower, learnedWord, threshold);
-        const rank = m.wordRank.get(learnedWord) ?? 0;
+        const rank = m.wordRank.get(learnedWord) ?? count;
 
         // Prefer corrections with better rank if distances are equal
         if (distance < bestDistance || (distance === bestDistance && rank > bestRank)) {
@@ -446,6 +490,23 @@ class PredictionModel {
         }
       }
     });
+
+    // Check base dictionary words
+    if (baseDict) {
+      baseDict.rank.forEach((baseRank, baseWord) => {
+        if (Math.abs(baseWord.length - wordLower.length) <= threshold) {
+          const distance = this.levenshteinDistance(wordLower, baseWord, threshold);
+          const rank = m.wordRank.get(baseWord) ?? baseRank; // Use personalized rank if available
+
+          // Prefer corrections with better rank if distances are equal
+          if (distance < bestDistance || (distance === bestDistance && rank > bestRank)) {
+            bestDistance = distance;
+            bestMatch = baseWord;
+            bestRank = rank;
+          }
+        }
+      });
+    }
 
     // Only return correction if it's a common word (rank > 5)
     if (bestMatch && bestDistance <= threshold && bestRank > 5) {
@@ -458,6 +519,7 @@ class PredictionModel {
 
   predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): string[] {
     const m = this.ensure(lang);
+    const baseDict = this.getBaseDict(lang);
     const list: RankedWord[] = [];
     const now = Date.now();
     const prefixLower = prefix ? prefix.toLowerCase() : null;
@@ -471,29 +533,33 @@ class PredictionModel {
       return s.startsWith(prefixLower);
     };
 
-    // Enhanced scoring: heavily prioritize context over general frequency
-    const calculateScore = (word: string, contextCount: number, isContextBased: boolean): number => {
-      const rank = m.wordRank.get(word) ?? 0;
-      const lastUse = m.lastUsed.get(word) ?? 0;
-      const recency = now - lastUse;
-      const recencyHours = recency / (1000 * 60 * 60);
+    // Enhanced scoring: user words with recency, base words without
+    const calculateScore = (word: string, contextCount: number, isContextBased: boolean, isUserWord: boolean): number => {
+      // Get user rank (personalization) or 0 if not personalized
+      const userRank = m.wordRank.get(word) ?? 0;
 
-      // Recency bonus decreases over time (max 50 points)
-      const recencyBonus = Math.max(0, 50 - (recencyHours * 0.5));
+      // Recency bonus only for user words
+      let recencyBonus = 0;
+      if (isUserWord) {
+        const lastUse = m.lastUsed.get(word) ?? 0;
+        if (lastUse > 0) {
+          const recency = now - lastUse;
+          const recencyHours = recency / (1000 * 60 * 60);
+          recencyBonus = Math.max(0, 50 - (recencyHours * 0.5));
+        }
+      }
 
       if (isContextBased) {
         // For context-based predictions (bigram/trigram):
         // Context count is MUCH more important than general rank
-        // contextCount gets 100x weight, rank gets 1x weight
-        return (contextCount * 100) + (rank * 1) + recencyBonus;
+        return (contextCount * 100) + (userRank * 1) + recencyBonus;
       } else {
-        // For general predictions (unigram):
-        // Only rank and recency matter
-        return (rank * 2) + recencyBonus;
+        // For general predictions (unigram/base):
+        return (userRank * 2) + recencyBonus;
       }
     };
 
-    // Priority 1: Try trigram predictions (highest priority)
+    // Priority 1: User trigram predictions (highest priority)
     if (prev2Lower && prevLower) {
       const triKeyStr = this.triKey(prev2Lower, prevLower);
       const triMap = m.tri.get(triKeyStr);
@@ -501,34 +567,47 @@ class PredictionModel {
         triMap.forEach((c, w) => {
           // Only suggest truly learned words
           if (filter(w) && this.isWordLearned(m, w)) {
-            const score = calculateScore(w, c, true); // Context-based
+            const score = calculateScore(w, c, true, true); // Context-based, user word
             list.push({ w: w, c: c, score: score });
           }
         });
       }
     }
 
-    // Priority 2: Try bigram predictions
+    // Priority 2: User bigram predictions
     if (list.length < k && prevLower) {
       const nextMap = m.bi.get(prevLower);
       if (nextMap) {
         nextMap.forEach((c, w) => {
           // Only suggest truly learned words
           if (filter(w) && this.isWordLearned(m, w) && !list.find(item => item.w === w)) {
-            const score = calculateScore(w, c, true); // Context-based
+            const score = calculateScore(w, c, true, true); // Context-based, user word
             list.push({ w: w, c: c, score: score });
           }
         });
       }
     }
 
-    // Priority 3: Fall back to unigram (most frequently used words)
+    // Priority 3: User unigram (learned words)
     if (list.length < k) {
       m.uni.forEach((c, w) => {
         // Only suggest truly learned words (count >= LEARN_THRESHOLD)
         if (c >= this.LEARN_THRESHOLD && filter(w) && !list.find(item => item.w === w)) {
-          const score = calculateScore(w, c, false); // NOT context-based
+          const score = calculateScore(w, c, false, true); // NOT context-based, user word
           list.push({ w: w, c: c, score: score });
+        }
+      });
+    }
+
+    // Priority 4: Fill from base dictionary if still not enough candidates
+    if (list.length < k && baseDict) {
+      baseDict.rank.forEach((baseRank, w) => {
+        // Only suggest words not already in list
+        if (filter(w) && !list.find(item => item.w === w)) {
+          // Base words: use baseRank as count, check if personalized
+          const isPersonalized = m.wordRank.has(w) || m.lastUsed.has(w);
+          const score = calculateScore(w, baseRank, false, isPersonalized); // Use baseRank, may have user personalization
+          list.push({ w: w, c: baseRank, score: score });
         }
       });
     }
@@ -774,7 +853,7 @@ class PredictionModel {
     }
   }
 
-  // Pre-populate model with dictionary words
+  // Load base dictionaries from rawfile (read-only, no learning)
   async loadDictionaries(): Promise<void> {
     interface DictionaryConfig {
       lang: string;
@@ -787,36 +866,37 @@ class PredictionModel {
     ];
 
     for (const dict of dictionaries) {
-      const words = await this.loadDictionaryFromFile(dict.file);
-      if (words.length > 0) {
-        const m = this.ensure(dict.lang);
+      const rawWords = await this.loadDictionaryFromFile(dict.file);
+      if (rawWords.length === 0) continue;
 
-        // Add words to model with initial count
-        // Higher initial count for common words (they appear first in the file)
-        words.forEach((word, index) => {
-          const w = word.toLowerCase();
+      // Filter and normalize words
+      const words = rawWords
+        .map(w => w.trim().toLowerCase())
+        .filter(w => w.length >= 2); // Skip too short words
 
-          // Skip if already in model
-          if (m.uni.has(w)) return;
+      const baseDict = this.ensureBaseDict(dict.lang);
 
-          // Weight: earlier words (more common) get higher count
-          // First 100 words: count 50-150
-          // Next 400 words: count 20-50
-          // Rest: count 10-20
-          let initialCount = 10;
-          if (index < 100) {
-            initialCount = 150 - index;
-          } else if (index < 500) {
-            initialCount = 50 - Math.floor((index - 100) / 10);
-          }
+      // Add words to base dictionary with rank based on position
+      // Higher rank for common words (they appear first in the file)
+      words.forEach((word, index) => {
+        // Skip if already in base dictionary
+        if (baseDict.rank.has(word)) return;
 
-          m.uni.set(w, initialCount);
-          m.wordRank.set(w, initialCount);
-          m.lastUsed.set(w, Date.now());
-        });
+        // Weight: earlier words (more common) get higher rank
+        // First 100 words: rank 50-150
+        // Next 400 words: rank 20-50
+        // Rest: rank 10-20
+        let baseRank = 10;
+        if (index < 100) {
+          baseRank = 150 - index;
+        } else if (index < 500) {
+          baseRank = 50 - Math.floor((index - 100) / 10);
+        }
 
-        console.info(`OpenBoard: Pre-loaded ${words.length} words for language '${dict.lang}'`);
-      }
+        baseDict.rank.set(word, baseRank);
+      });
+
+      console.info(`OpenBoard: Loaded ${words.length} base words for language '${dict.lang}' (read-only dictionary)`);
     }
   }
 }
