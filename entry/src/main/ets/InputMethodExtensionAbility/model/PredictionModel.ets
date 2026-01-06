@@ -911,7 +911,7 @@ class PredictionModel {
       const resMgr = this.context.resourceManager;
       const fileData = await resMgr.getRawFileContent(filename);
       const decoder = new util.TextDecoder('utf-8');
-      const text = decoder.decode(new Uint8Array(fileData.buffer));
+      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
 
       // Split by newlines and filter empty lines
       const words = text.split('\n')

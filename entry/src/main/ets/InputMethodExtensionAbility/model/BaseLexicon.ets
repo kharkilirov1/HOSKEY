@@ -14,6 +14,13 @@ interface PrefixResult {
   candidates: LexEntry[];
 }
 
+// Statistics result for BaseLexicon
+interface StatsResult {
+  words: number;
+  cached: number;
+  blocked: number;
+}
+
 /**
  * BaseLexicon - Read-only frequency-based lexicon for 50k common words
  *
@@ -119,7 +126,7 @@ export class BaseLexicon {
       const resMgr = this.context.resourceManager;
       const fileData = await resMgr.getRawFileContent(filename);
       const decoder = new util.TextDecoder('utf-8');
-      const text = decoder.decode(new Uint8Array(fileData.buffer));
+      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
 
       return text.split('\n')
         .map(line => line.trim())
@@ -144,7 +151,7 @@ export class BaseLexicon {
       const resMgr = this.context.resourceManager;
       const fileData = await resMgr.getRawFileContent(filename);
       const decoder = new util.TextDecoder('utf-8');
-      const text = decoder.decode(new Uint8Array(fileData.buffer));
+      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
 
       const lines = text.split('\n');
       for (const line of lines) {
@@ -314,7 +321,7 @@ export class BaseLexicon {
   /**
    * Get statistics
    */
-  getStats(): { words: number; cached: number; blocked: number } {
+  getStats(): StatsResult {
     return {
       words: this.words.length,
       cached: this.prefixCache.getSize(),
