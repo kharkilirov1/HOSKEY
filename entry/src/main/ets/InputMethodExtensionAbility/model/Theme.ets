@@ -28,10 +28,10 @@ export class OpenBoardTheme {
   static readonly regularKey = $r('sys.color.ohos_id_color_tertiary');
   static readonly divider = $r('sys.color.ohos_id_color_palette_aux1');
 
-  // Border radius - HarmonyOS design guidelines
-  static readonly radiusSmall = 8; // Small buttons (toolbar icons)
-  static readonly radiusMedium = 12; // Medium elements (keys, cards)
-  static readonly radiusLarge = 16; // Large panels and containers
+  // Border radius - Slightly rounded, almost angular
+  static readonly radiusSmall = 4; // Small buttons (toolbar icons)
+  static readonly radiusMedium = 6; // Medium elements (keys, cards)
+  static readonly radiusLarge = 8; // Large panels and containers
 
   // Shadows - HarmonyOS elevation system
   static readonly shadowKey: ShadowStyle = { radius: 4, color: '#30000000', offsetX: 0, offsetY: 2 }; // Keys
