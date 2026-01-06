@@ -16,6 +16,7 @@ import {
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
+import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
@@ -115,14 +116,15 @@ struct KeyPopup {
           .width(this.keyWidth)
           .height(50)
           .textAlign(TextAlign.Center)
-          .backgroundColor(char === this.hoveredChar ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-          .borderRadius(8)
+          .backgroundColor(char === this.hoveredChar ? OpenBoardTheme.accent : OpenBoardTheme.regularKey)
+          .borderRadius(OpenBoardTheme.radiusSmall)
+          .shadow(OpenBoardTheme.shadowKey)
           .animation({ duration: 50 })
       })
     }
     .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-    .backgroundColor(OpenBoardTheme.surface)
-    .borderRadius(12)
+    .backgroundColor(OpenBoardTheme.specialKey)
+    .borderRadius(OpenBoardTheme.radiusMedium)
     .shadow({ radius: 10, color: '#60000000', offsetY: 4 })
   }
 }
@@ -140,8 +142,9 @@ struct SingleKeyPopup {
     .width(50)
     .height(60)
     .justifyContent(FlexAlign.Center)
-    .backgroundColor(OpenBoardTheme.surface)
-    .borderRadius(12)
+    .backgroundColor(OpenBoardTheme.specialKey)
+    .borderRadius(OpenBoardTheme.radiusMedium)
+    .shadow(OpenBoardTheme.shadowPressed)
   }
 }
 
@@ -811,6 +814,7 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
     }
     this.rapidDeleteTimer = setInterval(() => {
+      feedbackController.provideFeedback(FeedbackType.Heavy);
       keyboardController.deleteForward(1);
       this.onBackspaceTyped();
     }, 100);
@@ -839,6 +843,7 @@ struct Index {
       // Swiping left - delete character
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
+        feedbackController.provideFeedback(FeedbackType.Heavy);
         keyboardController.deleteForward(1);
         this.onBackspaceTyped();
       }
@@ -916,6 +921,7 @@ struct Index {
 
   private handleLongPressEnd(): void {
     if (this.longPressInfo && this.hoveredChar) {
+      feedbackController.provideFeedback(FeedbackType.Light);
       keyboardController.insertText(this.hoveredChar);
       this.onTextTyped(this.hoveredChar);
     }
@@ -953,6 +959,8 @@ struct Index {
 
     switch (key.action) {
       case KeyAction.Char:
+        // Light haptic for regular character keys
+        feedbackController.provideFeedback(FeedbackType.Light);
         // Remember if shift was on BEFORE typing this character
         const wasShiftOnBeforeTyping = (this.shiftState === ShiftState.On);
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
@@ -968,6 +976,7 @@ struct Index {
         }
         break;
       case KeyAction.Space:
+        feedbackController.provideFeedback(FeedbackType.Light);
         keyboardController.insertText(' ');
         this.onBoundaryTyped(' ');
         // Auto-return to alphabet layout after typing space in symbols layout
@@ -976,14 +985,17 @@ struct Index {
         }
         break;
       case KeyAction.Enter:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         keyboardController.sendEnterKey();
         this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
+        feedbackController.provideFeedback(FeedbackType.Heavy);
         keyboardController.deleteForward(1);
         this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         const now = Date.now();
         if (this.shiftState === ShiftState.CapsLock) {
           this.shiftState = ShiftState.Off;
@@ -1001,10 +1013,12 @@ struct Index {
         break;
       case KeyAction.SwitchAlphabet:
       case KeyAction.SwitchSymbols:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         this.keyboardLayout = (this.keyboardLayout === KeyboardLayout.Alphabet) ?
           KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
         break;
       case KeyAction.SwitchSymbolsAlt:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         this.keyboardLayout = KeyboardLayout.Symbols2;
         break;
     }
