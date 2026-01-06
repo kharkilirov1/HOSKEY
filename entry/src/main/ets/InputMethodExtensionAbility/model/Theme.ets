@@ -1,6 +1,14 @@
 // File location: entry/src/main/ets/InputMethodExtensionAbility/model/Theme.ets
 // OpenBoard Theme using HarmonyOS system color tokens
 // These colors automatically adapt to system light/dark mode
+
+interface ShadowStyle {
+  radius: number;
+  color: string;
+  offsetX: number;
+  offsetY: number;
+}
+
 export class OpenBoardTheme {
   // Main backgrounds - using Celia's exact background color
   static readonly background = '#242424'; // Celia keyboard background
@@ -26,7 +34,7 @@ export class OpenBoardTheme {
   static readonly radiusLarge = 16; // Large panels and containers
 
   // Shadows - HarmonyOS elevation system
-  static readonly shadowKey = { radius: 4, color: '#30000000', offsetX: 0, offsetY: 2 }; // Keys
-  static readonly shadowPressed = { radius: 8, color: '#50000000', offsetX: 0, offsetY: 4 }; // Pressed state
-  static readonly shadowPanel = { radius: 12, color: '#40000000', offsetX: 0, offsetY: 4 }; // Panels/toolbars
+  static readonly shadowKey: ShadowStyle = { radius: 4, color: '#30000000', offsetX: 0, offsetY: 2 }; // Keys
+  static readonly shadowPressed: ShadowStyle = { radius: 8, color: '#50000000', offsetX: 0, offsetY: 4 }; // Pressed state
+  static readonly shadowPanel: ShadowStyle = { radius: 12, color: '#40000000', offsetX: 0, offsetY: 4 }; // Panels/toolbars
 }

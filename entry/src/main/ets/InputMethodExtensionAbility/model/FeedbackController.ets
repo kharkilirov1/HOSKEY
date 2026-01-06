@@ -46,6 +46,8 @@ class FeedbackController {
       await vibrator.startVibration({
         type: 'time',
         duration: duration
+      }, {
+        usage: 'touch'
       });
     } catch (err) {
       const error = err as BusinessError;
@@ -76,7 +78,7 @@ class FeedbackController {
   // Stop all feedback
   async stopFeedback(): Promise<void> {
     try {
-      await vibrator.stopVibration();
+      await vibrator.stopVibration('time');
     } catch (err) {
       const error = err as BusinessError;
       console.warn(`FeedbackController: Stop vibration failed. Code: ${error.code}, Msg: ${error.message}`);

@@ -17,6 +17,10 @@
       "value": "Allow keyboard to read clipboard for pasting text"
     },
     {
+      "name": "vibrate_permission_reason",
+      "value": "Allow keyboard to provide haptic feedback when typing"
+    },
+    {
       "name": "InputMethodExtensionAbility_desc",
       "value": "OpenBoard Keyboard Input Method"
     },
