@@ -125,8 +125,8 @@ export class BaseLexicon {
     try {
       const resMgr = this.context.resourceManager;
       const fileData = await resMgr.getRawFileContent(filename);
-      const decoder = new util.TextDecoder('utf-8');
-      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
+      const decoder = util.TextDecoder.create('utf-8');
+      const text = decoder.decodeToString(new Uint8Array(fileData.buffer));
 
       return text.split('\n')
         .map(line => line.trim())
@@ -150,8 +150,8 @@ export class BaseLexicon {
     try {
       const resMgr = this.context.resourceManager;
       const fileData = await resMgr.getRawFileContent(filename);
-      const decoder = new util.TextDecoder('utf-8');
-      const text = decoder.decodeWithStream(new Uint8Array(fileData.buffer));
+      const decoder = util.TextDecoder.create('utf-8');
+      const text = decoder.decodeToString(new Uint8Array(fileData.buffer));
 
       const lines = text.split('\n');
       for (const line of lines) {

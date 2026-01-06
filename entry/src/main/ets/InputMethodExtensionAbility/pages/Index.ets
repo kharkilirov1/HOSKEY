@@ -943,7 +943,7 @@ struct Index {
     this.singleCharPopupInfo = null;
   }
 
-  handleKeyPress(key: KeyData): void {
+  async handleKeyPress(key: KeyData): Promise<void> {
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -968,7 +968,7 @@ struct Index {
           : key.mainValue;
         console.info('[AutoCap] Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
         keyboardController.insertText(text);
-        this.onTextTyped(text);
+        await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
           console.info('[AutoCap] Disabling shift after typing character');
@@ -978,7 +978,7 @@ struct Index {
       case KeyAction.Space:
         feedbackController.provideFeedback(FeedbackType.Light);
         keyboardController.insertText(' ');
-        this.onBoundaryTyped(' ');
+        await this.onBoundaryTyped(' ');
         // Auto-return to alphabet layout after typing space in symbols layout
         if (this.keyboardLayout === KeyboardLayout.Symbols1 || this.keyboardLayout === KeyboardLayout.Symbols2) {
           this.keyboardLayout = KeyboardLayout.Alphabet;
@@ -987,12 +987,12 @@ struct Index {
       case KeyAction.Enter:
         feedbackController.provideFeedback(FeedbackType.Medium);
         keyboardController.sendEnterKey();
-        this.onBoundaryTyped('\n');
+        await this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
         keyboardController.deleteForward(1);
-        this.onBackspaceTyped();
+        await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
         feedbackController.provideFeedback(FeedbackType.Medium);
@@ -1072,20 +1072,20 @@ struct Index {
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
   }
 
-  private updateSuggestions(): void {
+  private async updateSuggestions(): Promise<void> {
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
-        ? predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+        ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
-        const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2);
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2);
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
       } else {
         // Normal predictions
-        const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
       }
     } catch (e) {
@@ -1124,22 +1124,22 @@ struct Index {
     }
   }
 
-  private onTextTyped(text: string): void {
+  private async onTextTyped(text: string): Promise<void> {
     if (!text) return;
     if (this.isBoundaryChar(text)) {
-      this.onBoundaryTyped(text);
+      await this.onBoundaryTyped(text);
       return;
     }
     this.currentWord = this.currentWord + text;
-    this.updateSuggestions();
+    await this.updateSuggestions();
     this.resetInactivityTimer();
   }
 
-  private onBoundaryTyped(ch: string): void {
+  private async onBoundaryTyped(ch: string): Promise<void> {
     if (this.currentWord) {
       // Check for autocorrection on space
       if (ch === ' ') {
-        const correction = predictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
+        const correction = await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
         if (correction && correction !== this.currentWord) {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
@@ -1171,7 +1171,7 @@ struct Index {
 
       this.currentWord = '';
     }
-    this.updateSuggestions();
+    await this.updateSuggestions();
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
@@ -1181,17 +1181,17 @@ struct Index {
     }
   }
 
-  private onBackspaceTyped(): void {
+  private async onBackspaceTyped(): Promise<void> {
     if (this.currentWord && this.currentWord.length > 0) {
       this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      this.updateSuggestions();
+      await this.updateSuggestions();
       this.resetInactivityTimer();
     }
 
     if (keyboardController.isBufferEmpty()) {
       this.previousWord = '';
       this.currentWord = '';
-      this.updateSuggestions();
+      await this.updateSuggestions();
       this.showPreTypingToolbar = true;
       // Auto-capitalize at the start of text
       this.enableAutoCapitalization();
@@ -1200,16 +1200,16 @@ struct Index {
     }
   }
 
-  private pickSuggestion(word: string): void {
+  private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
     keyboardController.deleteForward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
-    this.onBoundaryTyped(' ');
+    await this.onBoundaryTyped(' ');
     this.previousWord = word;
     this.currentWord = '';
-    this.updateSuggestions();
+    await this.updateSuggestions();
   }
 
   private getScreenWidthVp(): number {
@@ -1256,8 +1256,8 @@ struct Index {
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
             .layoutWeight(1)
-            .onClick(() => {
-              if (suggestion) this.pickSuggestion(suggestion);
+            .onClick(async () => {
+              if (suggestion) await this.pickSuggestion(suggestion);
             })
 
             if (index < 2) {
@@ -1853,10 +1853,10 @@ struct Index {
                     .textAlign(TextAlign.Center)
                     .width('11%')
                     .height(46)
-                    .onClick(() => {
+                    .onClick(async () => {
                       keyboardController.insertText(emoji);
                       // Emoji is a boundary - don't add to currentWord
-                      this.onBoundaryTyped('');
+                      await this.onBoundaryTyped('');
                       this.resetInactivityTimer();
                     })
                 })
