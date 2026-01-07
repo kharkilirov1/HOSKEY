@@ -13,7 +13,12 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     predictionModel.load().then(() => {
       console.info('OpenBoard: Prediction model loaded successfully');
 
-      // Load dictionaries after loading saved data
+      // Warmup BaseLexicon for default language (ru) to ensure predictions work on empty model
+      return predictionModel.warmup('ru');
+    }).then(() => {
+      console.info('OpenBoard: BaseLexicon warmed up for default language');
+
+      // Load dictionaries after loading saved data (now a no-op, BaseLexicon loaded via warmup)
       return predictionModel.loadDictionaries();
     }).then(() => {
       console.info('OpenBoard: Dictionaries loaded successfully');

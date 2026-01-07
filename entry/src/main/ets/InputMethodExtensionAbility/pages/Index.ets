@@ -31,6 +31,7 @@ type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
+const DEBUG_PREDICT = false; // Set to true for prediction debugging
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -1071,6 +1072,11 @@ struct Index {
 
     this.currentLanguage = this.availableLanguages[currentIndex];
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
+
+    // Warmup BaseLexicon for new language
+    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.error('OpenBoard: Failed to warmup language:', err);
+    });
   }
 
   private async updateSuggestions(): Promise<void> {
@@ -1084,10 +1090,18 @@ struct Index {
         // Show autocorrection as first suggestion, then predictions
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
+
+        if (DEBUG_PREDICT) {
+          console.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
+        }
       } else {
         // Normal predictions
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+
+        if (DEBUG_PREDICT) {
+          console.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
+        }
       }
     } catch (e) {
       console.warn('Prediction model error:', e);
