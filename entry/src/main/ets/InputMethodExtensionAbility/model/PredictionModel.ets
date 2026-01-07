@@ -5,6 +5,15 @@ import { resourceManager } from '@kit.LocalizationKit';
 import { util } from '@kit.ArkTS';
 import { BaseLexicon } from './BaseLexicon';
 
+// Debug mode flag - set to false for production
+const DEBUG_MODE = false;
+
+function debugLog(...args: any[]): void {
+  if (DEBUG_MODE) {
+    console.info('[PredictionModel]', ...args);
+  }
+}
+
 // User language model (learned, mutable)
 interface LangModel {
   uni: Map<string, number>; // Unigram: word -> count
@@ -67,7 +76,8 @@ class PredictionModel {
     this.context = ctx;
 
     // Initialize base lexicons for supported languages (but don't load yet - lazy loading)
-    const supportedLangs = ['ru', 'en'];
+    // Only 'ru' has full 50k lexicon files, 'en' can be added later if needed
+    const supportedLangs = ['ru'];
     supportedLangs.forEach(lang => {
       const lexicon = new BaseLexicon();
       lexicon.setContext(ctx);
@@ -81,14 +91,21 @@ class PredictionModel {
   private async ensureBaseLexiconLoaded(lang: string): Promise<void> {
     const lexicon = this.baseLexicons.get(lang);
     if (!lexicon) {
-      console.warn(`PredictionModel: No BaseLexicon configured for language '${lang}'`);
+      debugLog(`No BaseLexicon configured for language '${lang}'`);
       return;
     }
 
     if (!lexicon.isLoaded()) {
-      console.info(`PredictionModel: Lazy-loading BaseLexicon for '${lang}'...`);
-      await lexicon.load(lang);
-      console.info(`PredictionModel: BaseLexicon for '${lang}' loaded, stats:`, lexicon.getStats());
+      try {
+        debugLog(`Lazy-loading BaseLexicon for '${lang}'...`);
+        await lexicon.load(lang);
+        debugLog(`BaseLexicon for '${lang}' loaded, stats:`, lexicon.getStats());
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`PredictionModel: Failed to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
+        console.warn(`PredictionModel: Continuing without BaseLexicon for '${lang}'. Predictions will use user model only.`);
+        // Don't throw - graceful fallback to user model only
+      }
     }
   }
 
@@ -412,7 +429,7 @@ class PredictionModel {
 
     // Step 0: Check if word is blocked
     if (m.blockedWords.has(w)) {
-      console.info(`OpenBoard: Word "${w}" is blocked and will not be learned`);
+      debugLog(`Word "${w}" is blocked and will not be learned`);
       return;
     }
 
@@ -448,14 +465,14 @@ class PredictionModel {
       // Update bigram/trigram context for better predictions
       this.updateBigramTrigram(m, w, prev, prev2, now);
 
-      console.info(`OpenBoard: Base word "${w}" personalized (rank: ${rank + 1})`);
+      debugLog(`Base word "${w}" personalized (rank: ${rank + 1})`);
 
     } else {
       // Case 3: Word is NOT in base and NOT in user model - pending logic
       const pendingCount = m.pendingWords.get(w) ?? 0;
       const newPendingCount = pendingCount + 1;
 
-      console.info(`OpenBoard: Word "${w}" typed ${newPendingCount}/${this.LEARN_THRESHOLD} times`);
+      debugLog(`Word "${w}" typed ${newPendingCount}/${this.LEARN_THRESHOLD} times`);
 
       if (newPendingCount >= this.LEARN_THRESHOLD) {
         // Word has been typed 3 times! Time to learn it
@@ -465,7 +482,7 @@ class PredictionModel {
 
         if (similarWord) {
           // This might be a typo of an already learned word
-          console.info(`OpenBoard: Word "${w}" is similar to learned word "${similarWord}". Removing "${w}" from pending.`);
+          debugLog(`Word "${w}" is similar to learned word "${similarWord}". Removing "${w}" from pending.`);
 
           // Remove from pending (it's likely a typo)
           m.pendingWords.delete(w);
@@ -480,7 +497,7 @@ class PredictionModel {
           m.lastUsed.set(similarWord, now);
         } else {
           // No similar word found, learn this word!
-          console.info(`OpenBoard: Learning new word "${w}" after ${this.LEARN_THRESHOLD} occurrences`);
+          debugLog(`Learning new word "${w}" after ${this.LEARN_THRESHOLD} occurrences`);
 
           // Remove from pending
           m.pendingWords.delete(w);
@@ -496,7 +513,7 @@ class PredictionModel {
       } else {
         // Still pending, increment count
         m.pendingWords.set(w, newPendingCount);
-        console.info(`OpenBoard: Word "${w}" saved to pending (not yet learned)`);
+        debugLog(`Word "${w}" saved to pending (not yet learned)`);
       }
     }
 

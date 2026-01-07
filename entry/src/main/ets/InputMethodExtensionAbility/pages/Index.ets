@@ -466,6 +466,7 @@ struct Index {
   private clipboardMonitorTimer: number = -1;
 
   @State private previousWord: string = '';
+  @State private prevPrevWord: string = ''; // For trigram predictions
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
   @State private lastAutocorrection: { original: string; corrected: string } | null = null;
@@ -1081,11 +1082,11 @@ struct Index {
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2);
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
       } else {
         // Normal predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
       }
     } catch (e) {
@@ -1156,16 +1157,26 @@ struct Index {
             corrected: correction
           };
 
-          // Update previous word to the corrected version
+          // Record corrected word with trigram context
+          predictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
+
+          // Shift word history for trigram
+          this.prevPrevWord = this.previousWord;
           this.previousWord = correction;
         } else {
-          // No correction, record the word as typed
-          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
+          // No correction, record the word as typed with trigram context
+          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+
+          // Shift word history for trigram
+          this.prevPrevWord = this.previousWord;
           this.previousWord = this.currentWord;
         }
       } else {
-        // Non-space boundary, just record the word
-        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
+        // Non-space boundary, just record the word with trigram context
+        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+
+        // Shift word history for trigram
+        this.prevPrevWord = this.previousWord;
         this.previousWord = this.currentWord;
       }
 
@@ -1189,6 +1200,8 @@ struct Index {
     }
 
     if (keyboardController.isBufferEmpty()) {
+      // Reset all word history when buffer is empty
+      this.prevPrevWord = '';
       this.previousWord = '';
       this.currentWord = '';
       await this.updateSuggestions();
@@ -1206,7 +1219,12 @@ struct Index {
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
-    await this.onBoundaryTyped(' ');
+    // Record the picked suggestion word with trigram context
+    // Don't call onBoundaryTyped to avoid double recording
+    predictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
+
+    // Shift word history for trigram
+    this.prevPrevWord = this.previousWord;
     this.previousWord = word;
     this.currentWord = '';
     await this.updateSuggestions();
@@ -1911,8 +1929,8 @@ struct Index {
   }
 
   getCurrentLayout(): KeyData[][] {
-    // Create cache key based on current layout and language
-    const cacheKey = `${this.keyboardLayout}-${this.currentLanguage}`;
+    // Create cache key based on current layout, language, and shift state
+    const cacheKey = `${this.keyboardLayout}-${this.currentLanguage}-${this.shiftState}`;
 
     // Return cached layout if available
     if (cacheKey === this.cachedLayoutKey && this.cachedLayout.length > 0) {
