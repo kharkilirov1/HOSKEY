@@ -5,11 +5,6 @@ import { resourceManager } from '@kit.LocalizationKit';
 import { util } from '@kit.ArkTS';
 import { BaseLexicon } from './BaseLexicon';
 
-// Base dictionary (read-only, loaded from rawfile) - DEPRECATED, use BaseLexicon instead
-interface BaseDict {
-  rank: Map<string, number>; // Word -> base rank (frequency in dictionary)
-}
-
 // User language model (learned, mutable)
 interface LangModel {
   uni: Map<string, number>; // Unigram: word -> count
@@ -39,7 +34,6 @@ interface SerializedModel {
 
 class PredictionModel {
   private models: Map<string, LangModel>; // User-learned models (mutable)
-  private baseDicts: Map<string, BaseDict>; // Base dictionaries (read-only, from rawfile) - DEPRECATED
   private baseLexicons: Map<string, BaseLexicon>; // Base lexicons (50k words with binary search)
   private context: common.Context | null = null;
   private saveCounter: number = 0;
@@ -66,7 +60,6 @@ class PredictionModel {
 
   constructor() {
     this.models = new Map();
-    this.baseDicts = new Map();
     this.baseLexicons = new Map();
   }
 
@@ -127,9 +120,13 @@ class PredictionModel {
     }
   }
 
-  // Get base dictionary for language (read-only) - DEPRECATED
-  private getBaseDict(lang: string): BaseDict | null {
-    return this.baseDicts.get(lang) ?? null;
+  /**
+   * Preload/warmup BaseLexicon for active language
+   * Call this when keyboard starts or language switches to avoid delays during typing
+   */
+  async warmup(lang: string): Promise<void> {
+    await this.ensureBaseLexiconLoaded(lang);
+    console.info(`PredictionModel: Warmup complete for language '${lang}'`);
   }
 
   // Get base lexicon for language
@@ -137,27 +134,18 @@ class PredictionModel {
     return this.baseLexicons.get(lang) ?? null;
   }
 
-  // Check if word exists in base dictionary (checks both old baseDict and new baseLexicon)
+  /**
+   * Check if word exists in base lexicon
+   * Returns false if BaseLexicon is not loaded yet (safe for sync calls from recordWord)
+   */
   private isBaseWord(lang: string, word: string): boolean {
-    // Check new BaseLexicon first
     const lexicon = this.getBaseLexicon(lang);
-    if (lexicon && lexicon.isLoaded()) {
-      return lexicon.contains(word);
+    if (!lexicon || !lexicon.isLoaded()) {
+      // BaseLexicon not loaded yet - treat word as unknown
+      // This is safe: warmup() should be called before user starts typing
+      return false;
     }
-
-    // Fallback to old baseDict for compatibility
-    const baseDict = this.getBaseDict(lang);
-    return baseDict !== null && baseDict.rank.has(word);
-  }
-
-  // Ensure base dictionary exists for language
-  private ensureBaseDict(lang: string): BaseDict {
-    let base = this.baseDicts.get(lang);
-    if (!base) {
-      base = { rank: new Map<string, number>() };
-      this.baseDicts.set(lang, base);
-    }
-    return base;
+    return lexicon.contains(word);
   }
 
   private ensure(lang: string): LangModel {
@@ -969,83 +957,14 @@ class PredictionModel {
     this.models.clear();
   }
 
-  // Load dictionary from rawfile
-  private async loadDictionaryFromFile(filename: string): Promise<string[]> {
-    if (!this.context) {
-      console.warn('OpenBoard: Cannot load dictionary - context not set');
-      return [];
-    }
-
-    try {
-      const resMgr = this.context.resourceManager;
-      const fileData = await resMgr.getRawFileContent(filename);
-      const decoder = util.TextDecoder.create('utf-8');
-      const text = decoder.decodeToString(new Uint8Array(fileData.buffer));
-
-      // Split by newlines and filter empty lines
-      const words = text.split('\n')
-        .map(w => w.trim())
-        .filter(w => w.length > 0);
-
-      console.info(`OpenBoard: Loaded ${words.length} words from ${filename}`);
-      return words;
-    } catch (err) {
-      const error = err as BusinessError;
-      console.error(`OpenBoard: Failed to load dictionary ${filename}. Code: ${error.code}, Msg: ${error.message}`);
-      return [];
-    }
-  }
-
-  // Load base dictionaries and lexicons from rawfile (read-only, no learning)
+  /**
+   * Load base dictionaries - now deprecated, BaseLexicon loads on-demand
+   * This method is kept for API compatibility but does nothing
+   * BaseLexicon will be loaded lazily via warmup() or first predict()/autocorrect() call
+   */
   async loadDictionaries(): Promise<void> {
-    interface DictionaryConfig {
-      lang: string;
-      file: string;
-    }
-
-    // BaseLexicon (50k words) will be loaded lazily when first needed
-    // This improves startup time and memory usage
-    console.info('OpenBoard: BaseLexicon will be loaded on-demand (lazy loading)');
-
-    // Keep loading old small dictionaries for backward compatibility
-    const dictionaries: DictionaryConfig[] = [
-      { lang: 'en', file: 'dictionary_en.txt' },
-      { lang: 'ru', file: 'dictionary_ru.txt' }
-    ];
-
-    for (const dict of dictionaries) {
-      const rawWords = await this.loadDictionaryFromFile(dict.file);
-      if (rawWords.length === 0) continue;
-
-      // Filter and normalize words
-      const words = rawWords
-        .map(w => w.trim().toLowerCase())
-        .filter(w => w.length >= 2); // Skip too short words
-
-      const baseDict = this.ensureBaseDict(dict.lang);
-
-      // Add words to base dictionary with rank based on position
-      // Higher rank for common words (they appear first in the file)
-      words.forEach((word, index) => {
-        // Skip if already in base dictionary
-        if (baseDict.rank.has(word)) return;
-
-        // Weight: earlier words (more common) get higher rank
-        // First 100 words: rank 50-150
-        // Next 400 words: rank 20-50
-        // Rest: rank 10-20
-        let baseRank = 10;
-        if (index < 100) {
-          baseRank = 150 - index;
-        } else if (index < 500) {
-          baseRank = 50 - Math.floor((index - 100) / 10);
-        }
-
-        baseDict.rank.set(word, baseRank);
-      });
-
-      console.info(`OpenBoard: Loaded ${words.length} fallback base words for language '${dict.lang}' (read-only dictionary)`);
-    }
+    console.info('OpenBoard: BaseLexicon will be loaded on-demand via warmup() or first use');
+    console.info('OpenBoard: Call warmup(lang) after keyboard initialization to preload lexicon');
   }
 }
 
