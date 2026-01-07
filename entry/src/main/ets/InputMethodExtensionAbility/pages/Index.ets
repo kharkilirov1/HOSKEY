@@ -1797,7 +1797,7 @@ struct Index {
                       currentLanguage: this.currentLanguage,
                       availableLanguages: this.availableLanguages,
                       enterKeyLabel: this.enterKeyLabel,
-                      onKeyPress: (k: KeyData): void => this.handleKeyPress(k),
+                      onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
                       onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
                       onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
                       onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
