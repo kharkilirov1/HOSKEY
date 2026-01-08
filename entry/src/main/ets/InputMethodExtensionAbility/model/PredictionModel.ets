@@ -4,6 +4,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { util } from '@kit.ArkTS';
 import { BaseLexicon } from './BaseLexicon';
+import { Logger } from '../utils/logger';
 
 // Debug mode flag - set to false for production
 const DEBUG_MODE = false;
@@ -856,6 +857,73 @@ class PredictionModel {
     };
   }
 
+  /**
+   * Validate SerializedModel structure to prevent crashes from corrupted data
+   */
+  private isValidSerializedModel(model: unknown): model is SerializedModel {
+    if (!model || typeof model !== 'object') {
+      return false;
+    }
+
+    const m = model as Record<string, unknown>;
+
+    // Check required fields are arrays
+    if (!Array.isArray(m.uni) || !Array.isArray(m.bi) || !Array.isArray(m.tri) ||
+        !Array.isArray(m.wordRank) || !Array.isArray(m.lastUsed)) {
+      return false;
+    }
+
+    // Validate uni entries: [string, number]
+    for (const entry of m.uni) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
+        return false;
+      }
+    }
+
+    // Validate bi entries: [string, [string, number][]]
+    for (const entry of m.bi) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || !Array.isArray(entry[1])) {
+        return false;
+      }
+    }
+
+    // Validate tri entries: [string, [string, number][]]
+    for (const entry of m.tri) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || !Array.isArray(entry[1])) {
+        return false;
+      }
+    }
+
+    // Validate wordRank and lastUsed
+    for (const entry of m.wordRank) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
+        return false;
+      }
+    }
+
+    for (const entry of m.lastUsed) {
+      if (!Array.isArray(entry) || entry.length !== 2 ||
+          typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
+        return false;
+      }
+    }
+
+    // Optional fields
+    if (m.pendingWords !== undefined && !Array.isArray(m.pendingWords)) {
+      return false;
+    }
+
+    if (m.blockedWords !== undefined && !Array.isArray(m.blockedWords)) {
+      return false;
+    }
+
+    return true;
+  }
+
   // Import model from JSON format
   private importModel(lang: string, data: SerializedModel): void {
     const m: LangModel = {
@@ -950,13 +1018,33 @@ class PredictionModel {
         return;
       }
 
-      const allModels: Record<string, SerializedModel> = JSON.parse(data as string);
+      // Parse JSON with validation
+      let allModels: Record<string, unknown>;
+      try {
+        allModels = JSON.parse(data as string);
+      } catch (parseErr) {
+        console.error('OpenBoard: Failed to parse prediction data JSON:', parseErr);
+        console.warn('OpenBoard: Starting with empty model');
+        return;
+      }
+
+      // Validate and import each language model
+      let loadedCount = 0;
+      let skippedCount = 0;
 
       Object.keys(allModels).forEach(lang => {
-        this.importModel(lang, allModels[lang]);
+        const model = allModels[lang];
+
+        if (this.isValidSerializedModel(model)) {
+          this.importModel(lang, model);
+          loadedCount++;
+        } else {
+          console.warn(`OpenBoard: Skipping invalid model data for language '${lang}'`);
+          skippedCount++;
+        }
       });
 
-      console.info(`OpenBoard: Loaded prediction data for ${Object.keys(allModels).length} language(s)`);
+      console.info(`OpenBoard: Loaded ${loadedCount} language(s), skipped ${skippedCount} invalid`);
     } catch (err) {
       const error = err as BusinessError;
       console.error(`OpenBoard: Failed to load prediction data. Code: ${error.code}, Msg: ${error.message}`);

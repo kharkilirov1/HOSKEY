@@ -20,6 +20,7 @@ import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
+import { Logger } from '../utils/logger';
 
 const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
 
@@ -471,6 +472,7 @@ struct Index {
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
   @State private lastAutocorrection: { original: string; corrected: string } | null = null;
+  private suggestionsReqId: number = 0; // Race condition protection for async suggestions
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -968,12 +970,12 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        console.info('[AutoCap] Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
+        Logger.autocap('Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
         keyboardController.insertText(text);
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
-          console.info('[AutoCap] Disabling shift after typing character');
+          Logger.autocap('Disabling shift after typing character');
           this.shiftState = ShiftState.Off;
         }
         break;
@@ -1080,31 +1082,55 @@ struct Index {
   }
 
   private async updateSuggestions(): Promise<void> {
+    // Increment request ID to handle race conditions
+    this.suggestionsReqId++;
+    const currentReqId = this.suggestionsReqId;
+
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
         ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
 
+      // Check if request is stale (user typed more keys while we were waiting)
+      if (currentReqId !== this.suggestionsReqId) {
+        Logger.prediction('Stale suggestion request, ignoring result');
+        return;
+      }
+
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+
+        // Check again after async call
+        if (currentReqId !== this.suggestionsReqId) {
+          Logger.prediction('Stale suggestion request after predict, ignoring result');
+          return;
+        }
+
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
 
         if (DEBUG_PREDICT) {
-          console.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
+          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+
+        // Check again after async call
+        if (currentReqId !== this.suggestionsReqId) {
+          Logger.prediction('Stale suggestion request after predict, ignoring result');
+          return;
+        }
+
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
 
         if (DEBUG_PREDICT) {
-          console.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
+          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
         }
       }
     } catch (e) {
-      console.warn('Prediction model error:', e);
+      Logger.warn('Prediction model error:', e);
       this.suggestions = ['', '', ''];
     }
   }
@@ -1127,15 +1153,15 @@ struct Index {
   private enableAutoCapitalization(): void {
     // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
     if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      console.info('[AutoCap] Skipping auto-cap for RTL language:', this.currentLanguage);
+      Logger.autocap('Skipping auto-cap for RTL language:', this.currentLanguage);
       return;
     }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
-      console.info('[AutoCap] Enabling auto-capitalization, shift state:', this.shiftState);
+      Logger.autocap('Enabling auto-capitalization, shift state:', this.shiftState);
       this.shiftState = ShiftState.On;
     } else {
-      console.info('[AutoCap] Already in CapsLock, not changing');
+      Logger.autocap('Already in CapsLock, not changing');
     }
   }
 
@@ -1146,7 +1172,7 @@ struct Index {
       return;
     }
     this.currentWord = this.currentWord + text;
-    await this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
   }
 
@@ -1196,11 +1222,11 @@ struct Index {
 
       this.currentWord = '';
     }
-    await this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
-    console.info('[AutoCap] Boundary typed:', ch, 'should auto-cap:', this.shouldAutoCapitalize(ch));
+    Logger.autocap('Boundary typed:', ch, 'should auto-cap:', this.shouldAutoCapitalize(ch));
     if (this.shouldAutoCapitalize(ch)) {
       this.enableAutoCapitalization();
     }
@@ -1209,7 +1235,7 @@ struct Index {
   private async onBackspaceTyped(): Promise<void> {
     if (this.currentWord && this.currentWord.length > 0) {
       this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      await this.updateSuggestions();
+      void this.updateSuggestions(); // Non-blocking async call
       this.resetInactivityTimer();
     }
 
@@ -1218,7 +1244,7 @@ struct Index {
       this.prevPrevWord = '';
       this.previousWord = '';
       this.currentWord = '';
-      await this.updateSuggestions();
+      void this.updateSuggestions(); // Non-blocking async call
       this.showPreTypingToolbar = true;
       // Auto-capitalize at the start of text
       this.enableAutoCapitalization();
@@ -1241,7 +1267,7 @@ struct Index {
     this.prevPrevWord = this.previousWord;
     this.previousWord = word;
     this.currentWord = '';
-    await this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
   }
 
   private getScreenWidthVp(): number {
