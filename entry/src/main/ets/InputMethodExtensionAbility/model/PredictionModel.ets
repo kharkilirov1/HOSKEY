@@ -24,6 +24,8 @@ interface LangModel {
   lastUsed: Map<string, number>; // Word -> timestamp of last use
   pendingWords: Map<string, number>; // Word -> occurrence count (needs 3 to learn)
   blockedWords: Set<string>; // Words that should never be learned
+  lemmaMap: Map<string, string>; // Morphology: word form -> lemma ("делаю" -> "делать")
+  formsByLemma: Map<string, Set<string>>; // Morphology: lemma -> all seen forms
 }
 
 interface RankedWord {
@@ -40,6 +42,8 @@ interface SerializedModel {
   lastUsed: [string, number][];
   pendingWords: [string, number][]; // Include pending words in serialization
   blockedWords: string[]; // Include blocked words in serialization
+  lemmaMap: [string, string][]; // Morphology: word form -> lemma
+  formsByLemma: [string, string[]][]; // Morphology: lemma -> forms array
 }
 
 class PredictionModel {
@@ -177,7 +181,9 @@ class PredictionModel {
         wordRank: new Map<string, number>(),
         lastUsed: new Map<string, number>(),
         pendingWords: new Map<string, number>(),
-        blockedWords: new Set<string>()
+        blockedWords: new Set<string>(),
+        lemmaMap: new Map<string, string>(),
+        formsByLemma: new Map<string, Set<string>>()
       };
       this.models.set(lang, lm);
       m = lm;
@@ -231,6 +237,75 @@ class PredictionModel {
         }
       }
     }
+  }
+
+  /**
+   * Guess lemma (base form) for a word using suffix rules
+   * Currently supports Russian language only
+   */
+  private guessLemma(word: string, lang: string): string {
+    if (lang !== 'ru' || word.length < 4) {
+      return word;
+    }
+
+    // Verb patterns for Russian (ordered from longest to shortest endings)
+    const verbPatterns = [
+      // 1st conjugation
+      { endings: ['аешь', 'аете', 'ают'], lemma: 'ать' },
+      { endings: ['уешь', 'уете', 'уют'], lemma: 'овать' },
+      { endings: ['яешь', 'яете', 'яют'], lemma: 'ять' },
+      { endings: ['аю', 'ает', 'аем'], lemma: 'ать' },
+      { endings: ['ую', 'ует', 'уем'], lemma: 'овать' },
+      { endings: ['яю', 'яет', 'яем'], lemma: 'ять' },
+
+      // 2nd conjugation
+      { endings: ['ишь', 'ите'], lemma: 'ить' },
+      { endings: ['ю', 'ит', 'им', 'ят'], lemma: 'ить' },
+      { endings: ['у', 'ат'], lemma: 'ать' }, // держать, слышать
+
+      // Past tense
+      { endings: ['ала', 'ало', 'али'], lemma: 'ать' },
+      { endings: ['ила', 'ило', 'или'], lemma: 'ить' },
+      { endings: ['ела', 'ело', 'ели'], lemma: 'еть' },
+      { endings: ['ал', 'ил', 'ел'], lemma: 'ть' }
+    ];
+
+    // Try each pattern
+    for (const pattern of verbPatterns) {
+      for (const ending of pattern.endings) {
+        if (word.endsWith(ending)) {
+          const stem = word.substring(0, word.length - ending.length);
+          if (stem.length >= 2) { // Ensure stem is reasonable
+            return stem + pattern.lemma;
+          }
+        }
+      }
+    }
+
+    return word;
+  }
+
+  /**
+   * Link a word form to its lemma in the morphology maps
+   */
+  private linkFormToLemma(m: LangModel, form: string, lemma: string): void {
+    m.lemmaMap.set(form, lemma);
+
+    let forms = m.formsByLemma.get(lemma);
+    if (!forms) {
+      forms = new Set<string>();
+      m.formsByLemma.set(lemma, forms);
+    }
+    forms.add(form);
+  }
+
+  /**
+   * Get all related word forms for a given word (including the word itself)
+   */
+  private getRelatedForms(m: LangModel, word: string): string[] {
+    const lemma = m.lemmaMap.get(word) ?? word;
+    const forms = m.formsByLemma.get(lemma);
+    return forms ? Array.from(forms) : [word];
   }
 
   // Calculate Levenshtein distance for similarity comparison (optimized)
@@ -444,6 +519,14 @@ class PredictionModel {
       const u = m.uni.get(w) ?? 0;
       m.uni.set(w, u + 1);
 
+      // Morphology: link form to lemma (Russian only)
+      if (lang === 'ru') {
+        const lemma = this.guessLemma(w, lang);
+        if (lemma !== w) {
+          this.linkFormToLemma(m, w, lemma);
+        }
+      }
+
       // Apply decay to competing unigrams
       this.applyDecayAndCleanup(m.uni, w);
 
@@ -508,6 +591,14 @@ class PredictionModel {
           m.uni.set(w, this.LEARN_THRESHOLD);
           m.wordRank.set(w, this.LEARN_THRESHOLD);
           m.lastUsed.set(w, now);
+
+          // Morphology: link form to lemma (Russian only)
+          if (lang === 'ru') {
+            const lemma = this.guessLemma(w, lang);
+            if (lemma !== w) {
+              this.linkFormToLemma(m, w, lemma);
+            }
+          }
 
           // Also add to bigram/trigram if context exists
           this.updateBigramTrigram(m, w, prev, prev2, now);
@@ -740,6 +831,34 @@ class PredictionModel {
       }
     }
 
+    // Morphological expansion: add related word forms for Russian
+    if (lang === 'ru') {
+      const seenLemmas = new Set<string>();
+      const expandedList: RankedWord[] = [...list];
+
+      for (const item of list) {
+        const lemma = m.lemmaMap.get(item.w) ?? item.w;
+        if (!seenLemmas.has(lemma)) {
+          seenLemmas.add(lemma);
+          const forms = m.formsByLemma.get(lemma);
+          if (forms) {
+            for (const form of forms) {
+              if (filter(form) && !expandedList.find(x => x.w === form)) {
+                const formCount = m.uni.get(form) ?? 0;
+                if (formCount >= this.LEARN_THRESHOLD) { // Only include learned forms
+                  const baseFreq = baseLexicon?.getFrequency(form) ?? 0;
+                  const score = calculateScore(form, formCount, false, baseFreq) * 0.8; // 0.8 = secondary priority
+                  expandedList.push({ w: form, c: formCount, score: score });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      list = expandedList;
+    }
+
     // Sort by score (highest first)
     list.sort((a, b) => b.score - a.score);
 
@@ -854,7 +973,9 @@ class PredictionModel {
       wordRank: Array.from(m.wordRank.entries()),
       lastUsed: Array.from(m.lastUsed.entries()),
       pendingWords: Array.from(m.pendingWords.entries()),
-      blockedWords: Array.from(m.blockedWords)
+      blockedWords: Array.from(m.blockedWords),
+      lemmaMap: Array.from(m.lemmaMap.entries()),
+      formsByLemma: Array.from(m.formsByLemma.entries()).map(([k, v]) => [k, Array.from(v)])
     };
   }
 
@@ -928,6 +1049,15 @@ class PredictionModel {
       return false;
     }
 
+    // Optional morphology fields
+    if (m['lemmaMap'] !== undefined && !Array.isArray(m['lemmaMap'])) {
+      return false;
+    }
+
+    if (m['formsByLemma'] !== undefined && !Array.isArray(m['formsByLemma'])) {
+      return false;
+    }
+
     return true;
   }
 
@@ -948,7 +1078,9 @@ class PredictionModel {
       wordRank: new Map(data.wordRank),
       lastUsed: new Map(data.lastUsed),
       pendingWords: new Map(data.pendingWords || []),
-      blockedWords: new Set(data.blockedWords || [])
+      blockedWords: new Set(data.blockedWords || []),
+      lemmaMap: new Map(data.lemmaMap || []),
+      formsByLemma: new Map((data.formsByLemma || []).map(([k, v]) => [k, new Set(v)]))
     };
     this.models.set(lang, m);
   }
