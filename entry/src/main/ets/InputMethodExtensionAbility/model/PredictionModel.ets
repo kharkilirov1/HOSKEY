@@ -9,7 +9,7 @@ import { Logger } from '../utils/logger';
 // Debug mode flag - set to false for production
 const DEBUG_MODE = false;
 
-function debugLog(...args: any[]): void {
+function debugLog(...args: string[]): void {
   if (DEBUG_MODE) {
     console.info('[PredictionModel]', ...args);
   }
@@ -100,7 +100,8 @@ class PredictionModel {
       try {
         debugLog(`Lazy-loading BaseLexicon for '${lang}'...`);
         await lexicon.load(lang);
-        debugLog(`BaseLexicon for '${lang}' loaded, stats:`, lexicon.getStats());
+        const stats = lexicon.getStats();
+        debugLog(`BaseLexicon for '${lang}' loaded, words: ${stats.words}, cached: ${stats.cached}`);
       } catch (err) {
         const error = err as BusinessError;
         console.error(`PredictionModel: Failed to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
@@ -860,21 +861,27 @@ class PredictionModel {
   /**
    * Validate SerializedModel structure to prevent crashes from corrupted data
    */
-  private isValidSerializedModel(model: unknown): model is SerializedModel {
+  private isValidSerializedModel(model: Object | null): boolean {
     if (!model || typeof model !== 'object') {
       return false;
     }
 
-    const m = model as Record<string, unknown>;
+    const m = model as ESObject;
 
     // Check required fields are arrays
-    if (!Array.isArray(m.uni) || !Array.isArray(m.bi) || !Array.isArray(m.tri) ||
-        !Array.isArray(m.wordRank) || !Array.isArray(m.lastUsed)) {
+    if (!Array.isArray(m['uni']) || !Array.isArray(m['bi']) || !Array.isArray(m['tri']) ||
+        !Array.isArray(m['wordRank']) || !Array.isArray(m['lastUsed'])) {
       return false;
     }
 
+    const uniArray = m['uni'] as Object[];
+    const biArray = m['bi'] as Object[];
+    const triArray = m['tri'] as Object[];
+    const wordRankArray = m['wordRank'] as Object[];
+    const lastUsedArray = m['lastUsed'] as Object[];
+
     // Validate uni entries: [string, number]
-    for (const entry of m.uni) {
+    for (const entry of uniArray) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
         return false;
@@ -882,7 +889,7 @@ class PredictionModel {
     }
 
     // Validate bi entries: [string, [string, number][]]
-    for (const entry of m.bi) {
+    for (const entry of biArray) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || !Array.isArray(entry[1])) {
         return false;
@@ -890,7 +897,7 @@ class PredictionModel {
     }
 
     // Validate tri entries: [string, [string, number][]]
-    for (const entry of m.tri) {
+    for (const entry of triArray) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || !Array.isArray(entry[1])) {
         return false;
@@ -898,14 +905,14 @@ class PredictionModel {
     }
 
     // Validate wordRank and lastUsed
-    for (const entry of m.wordRank) {
+    for (const entry of wordRankArray) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
         return false;
       }
     }
 
-    for (const entry of m.lastUsed) {
+    for (const entry of lastUsedArray) {
       if (!Array.isArray(entry) || entry.length !== 2 ||
           typeof entry[0] !== 'string' || typeof entry[1] !== 'number') {
         return false;
@@ -913,11 +920,11 @@ class PredictionModel {
     }
 
     // Optional fields
-    if (m.pendingWords !== undefined && !Array.isArray(m.pendingWords)) {
+    if (m['pendingWords'] !== undefined && !Array.isArray(m['pendingWords'])) {
       return false;
     }
 
-    if (m.blockedWords !== undefined && !Array.isArray(m.blockedWords)) {
+    if (m['blockedWords'] !== undefined && !Array.isArray(m['blockedWords'])) {
       return false;
     }
 
@@ -1019,11 +1026,12 @@ class PredictionModel {
       }
 
       // Parse JSON with validation
-      let allModels: Record<string, unknown>;
+      let allModels: ESObject;
       try {
-        allModels = JSON.parse(data as string);
+        allModels = JSON.parse(data as string) as ESObject;
       } catch (parseErr) {
-        console.error('OpenBoard: Failed to parse prediction data JSON:', parseErr);
+        const err = parseErr as Error;
+        console.error('OpenBoard: Failed to parse prediction data JSON:', err.message);
         console.warn('OpenBoard: Starting with empty model');
         return;
       }
@@ -1032,11 +1040,11 @@ class PredictionModel {
       let loadedCount = 0;
       let skippedCount = 0;
 
-      Object.keys(allModels).forEach(lang => {
-        const model = allModels[lang];
+      Object.keys(allModels).forEach((lang: string) => {
+        const model = allModels[lang] as Object | null;
 
         if (this.isValidSerializedModel(model)) {
-          this.importModel(lang, model);
+          this.importModel(lang, model as SerializedModel);
           loadedCount++;
         } else {
           console.warn(`OpenBoard: Skipping invalid model data for language '${lang}'`);

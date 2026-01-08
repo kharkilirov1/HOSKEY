@@ -6,43 +6,57 @@
 // Set to true for verbose debug logging, false for production
 const DEBUG = false;
 
-export const Logger = {
+/**
+ * Logger class for conditional logging
+ */
+class LoggerImpl {
   /**
    * Auto-capitalization debug logs (only when DEBUG=true)
    */
-  autocap(...args: any[]): void {
+  autocap(message: string, ...args: string[]): void {
     if (DEBUG) {
-      console.info('[AutoCap]', ...args);
+      console.info('[AutoCap]', message, ...args);
     }
-  },
+  }
 
   /**
    * Prediction model debug logs (only when DEBUG=true)
    */
-  prediction(...args: any[]): void {
+  prediction(message: string): void {
     if (DEBUG) {
-      console.info('[Prediction]', ...args);
+      console.info('[Prediction]', message);
     }
-  },
+  }
 
   /**
    * General info logs - use sparingly, only for important events
    */
-  info(...args: any[]): void {
-    console.info(...args);
-  },
+  info(message: string): void {
+    console.info(message);
+  }
 
   /**
    * Warning logs - always shown
    */
-  warn(...args: any[]): void {
-    console.warn(...args);
-  },
+  warn(message: string, error?: Error | Object): void {
+    if (error) {
+      console.warn(message, error);
+    } else {
+      console.warn(message);
+    }
+  }
 
   /**
    * Error logs - always shown
    */
-  error(...args: any[]): void {
-    console.error(...args);
+  error(message: string, error?: Error | Object): void {
+    if (error) {
+      console.error(message, error);
+    } else {
+      console.error(message);
+    }
   }
-};
+}
+
+export const Logger = new LoggerImpl();
+

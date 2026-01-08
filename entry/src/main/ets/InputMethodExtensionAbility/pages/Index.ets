@@ -970,7 +970,7 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        Logger.autocap('Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
+        Logger.autocap(`Typing char, shift state: ${this.shiftState}, text: ${text}, mainValue: ${key.mainValue}, shiftValue: ${key.shiftValue ?? 'none'}`);
         keyboardController.insertText(text);
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
@@ -1130,7 +1130,7 @@ struct Index {
         }
       }
     } catch (e) {
-      Logger.warn('Prediction model error:', e);
+      Logger.warn('Prediction model error', e as Error);
       this.suggestions = ['', '', ''];
     }
   }
@@ -1153,12 +1153,12 @@ struct Index {
   private enableAutoCapitalization(): void {
     // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
     if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      Logger.autocap('Skipping auto-cap for RTL language:', this.currentLanguage);
+      Logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
       return;
     }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
-      Logger.autocap('Enabling auto-capitalization, shift state:', this.shiftState);
+      Logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
       this.shiftState = ShiftState.On;
     } else {
       Logger.autocap('Already in CapsLock, not changing');
@@ -1226,7 +1226,7 @@ struct Index {
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
-    Logger.autocap('Boundary typed:', ch, 'should auto-cap:', this.shouldAutoCapitalize(ch));
+    Logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
     if (this.shouldAutoCapitalize(ch)) {
       this.enableAutoCapitalization();
     }
