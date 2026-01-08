@@ -866,7 +866,7 @@ class PredictionModel {
       return false;
     }
 
-    const m = model as ESObject;
+    const m = model as Record<string, Object>;
 
     // Check required fields are arrays
     if (!Array.isArray(m['uni']) || !Array.isArray(m['bi']) || !Array.isArray(m['tri']) ||
@@ -1026,9 +1026,9 @@ class PredictionModel {
       }
 
       // Parse JSON with validation
-      let allModels: ESObject;
+      let allModels: Record<string, Object>;
       try {
-        allModels = JSON.parse(data as string) as ESObject;
+        allModels = JSON.parse(data as string) as Record<string, Object>;
       } catch (parseErr) {
         const err = parseErr as Error;
         console.error('OpenBoard: Failed to parse prediction data JSON:', err.message);
