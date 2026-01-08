@@ -21,6 +21,7 @@ import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
 import { Logger } from '../utils/logger';
+import { swipeEngine, SwipePoint, KeyBounds, SwipeResult } from '../model/SwipeEngine';
 
 const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
 
@@ -209,6 +210,8 @@ struct KeyView {
   onCursorModeStart: (x: number) => void = () => {};
   onCursorModeMove: (x: number) => void = () => {};
   onCursorModeEnd: () => void = () => {};
+  onSwipeMove?: (position: Position) => void;
+  onKeyBoundsUpdate?: (key: string, bounds: KeyBounds) => void;
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
@@ -384,6 +387,11 @@ struct KeyView {
               }
             }
           }
+
+          // Swipe typing tracking
+          if (this.keyData.action === KeyAction.Char && this.onSwipeMove) {
+            this.onSwipeMove(currentPosition);
+          }
         }
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
@@ -419,6 +427,18 @@ struct KeyView {
           this.longPressTriggered = false;
           this.touchStartX = 0;
           this.swipeHandled = false;
+        }
+      })
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
+          const bounds: KeyBounds = {
+            key: this.keyData.mainValue.toLowerCase(),
+            centerX: (newValue.position.x as number) + (newValue.width as number) / 2,
+            centerY: (newValue.position.y as number) + (newValue.height as number) / 2,
+            width: newValue.width as number,
+            height: newValue.height as number
+          };
+          this.onKeyBoundsUpdate(this.keyData.mainValue.toLowerCase(), bounds);
         }
       })
     }
@@ -473,6 +493,14 @@ struct Index {
   @State private suggestions: string[] = ['', '', ''];
   @State private lastAutocorrection: { original: string; corrected: string } | null = null;
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
+
+  // Swipe typing states
+  @State private isSwipeTyping: boolean = false;
+  @State private swipePath: SwipePoint[] = [];
+  @State private swipePreviewWord: string = '';
+  @State private swipeAlternatives: string[] = [];
+  private swipeStartTime: number = 0;
+  private keyBoundsMap: Map<string, KeyBounds> = new Map();
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -736,7 +764,118 @@ struct Index {
     this.startClipboardMonitoring();
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
+
+    // Warmup BaseLexicon for current language (background loading for instant predictions)
+    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.error('OpenBoard: Failed to warmup language on start:', err);
+    }).then(() => {
+      // Set BaseLexicon for SwipeEngine after warmup
+      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      swipeEngine.setBaseLexicon(baseLexicon);
+    });
   }
+
+  // === SWIPE TYPING METHODS ===
+
+  private handleKeyBoundsUpdate(key: string, bounds: KeyBounds): void {
+    this.keyBoundsMap.set(key, bounds);
+  }
+
+  private updateSwipeEngineLayout(): void {
+    const keyBounds = Array.from(this.keyBoundsMap.values());
+    swipeEngine.setKeyboardLayout(keyBounds);
+  }
+
+  private handleSwipeStart(key: KeyData, position: Position): void {
+    if (key.action !== KeyAction.Char) return;
+
+    this.isSwipeTyping = true;
+    this.swipeStartTime = Date.now();
+    this.swipePath = [{
+      x: position.x,
+      y: position.y,
+      timestamp: Date.now()
+    }];
+
+    const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
+      ? (key.shiftValue ?? key.mainValue)
+      : key.mainValue;
+    this.swipePreviewWord = char.toLowerCase();
+  }
+
+  private handleSwipeMove(position: Position): void {
+    if (!this.isSwipeTyping) return;
+
+    this.swipePath.push({
+      x: position.x,
+      y: position.y,
+      timestamp: Date.now()
+    });
+
+    if (this.swipePath.length % 5 === 0) {
+      this.updateSwipePreview();
+    }
+  }
+
+  private handleSwipeEnd(): void {
+    if (!this.isSwipeTyping) {
+      return;
+    }
+
+    const duration = Date.now() - this.swipeStartTime;
+
+    if (duration < 200 || this.swipePath.length < 5) {
+      this.resetSwipeState();
+      return;
+    }
+
+    this.updateSwipeEngineLayout();
+
+    const result = swipeEngine.processSwipe(this.swipePath);
+
+    if (result && result.bestWord) {
+      let word = result.bestWord;
+      if (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock) {
+        word = word.charAt(0).toUpperCase() + word.slice(1);
+      }
+
+      keyboardController.insertText(word);
+      keyboardController.insertText(' ');
+      this.onTextTyped(word);
+      void this.onBoundaryTyped(' ');
+
+      this.suggestions = [
+        word,
+        result.alternatives[0] || '',
+        result.alternatives[1] || ''
+      ];
+
+      if (this.shiftState === ShiftState.On) {
+        this.shiftState = ShiftState.Off;
+      }
+    }
+
+    this.resetSwipeState();
+  }
+
+  private updateSwipePreview(): void {
+    this.updateSwipeEngineLayout();
+    const result = swipeEngine.processSwipe(this.swipePath);
+    if (result) {
+      this.swipePreviewWord = result.bestWord;
+      this.swipeAlternatives = result.alternatives;
+    }
+  }
+
+  private resetSwipeState(): void {
+    this.isSwipeTyping = false;
+    this.swipePath = [];
+    this.swipePreviewWord = '';
+    this.swipeAlternatives = [];
+    this.swipeStartTime = 0;
+  }
+
+  // === END SWIPE TYPING METHODS ===
 
   aboutToAppear(): void {
     console.info('OpenBoard Keyboard: UI aboutToAppear called');
@@ -819,7 +958,7 @@ struct Index {
     }
     this.rapidDeleteTimer = setInterval(() => {
       feedbackController.provideFeedback(FeedbackType.Heavy);
-      keyboardController.deleteForward(1);
+      keyboardController.deleteBackward(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -848,7 +987,7 @@ struct Index {
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBackward(1);
         this.onBackspaceTyped();
       }
       this.backspaceCurrentX = x;
@@ -940,11 +1079,17 @@ struct Index {
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
     this.singleCharPopupInfo = { char: char, position: position };
+
+    // Start swipe tracking
+    this.handleSwipeStart(key, position);
   }
 
   private handleKeyTouchUp(): void {
     // Hide the popup
     this.singleCharPopupInfo = null;
+
+    // End swipe tracking
+    this.handleSwipeEnd();
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
@@ -995,7 +1140,7 @@ struct Index {
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBackward(1);
         await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
@@ -1078,6 +1223,10 @@ struct Index {
     // Warmup BaseLexicon for new language
     predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language:', err);
+    }).then(() => {
+      // Update SwipeEngine with new language lexicon
+      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      swipeEngine.setBaseLexicon(baseLexicon);
     });
   }
 
@@ -1185,8 +1334,8 @@ struct Index {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
 
-          // Delete the typed word
-          keyboardController.deleteForward(this.currentWord.length);
+          // Delete the typed word (BUG-001 FIX: deleteBackward instead of deleteForward)
+          keyboardController.deleteBackward(this.currentWord.length);
 
           // Insert the corrected word
           keyboardController.insertText(correction);
@@ -1255,7 +1404,8 @@ struct Index {
 
   private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
-    keyboardController.deleteForward(this.currentWord.length);
+    // BUG-002 FIX: deleteBackward instead of deleteForward
+    keyboardController.deleteBackward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
@@ -1869,7 +2019,11 @@ struct Index {
                       onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
                       onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
                       onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
-                      onCursorModeEnd: (): void => this.handleCursorModeEnd()
+                      onCursorModeEnd: (): void => this.handleCursorModeEnd(),
+                      onSwipeMove: key.action === KeyAction.Char
+                        ? (p: Position): void => this.handleSwipeMove(p)
+                        : undefined,
+                      onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b)
                     })
                       .layoutWeight(key.flex)
                   }
@@ -1962,6 +2116,25 @@ struct Index {
           popupPosition: this.interruptionPopupPosition
         })
           .zIndex(300)
+      }
+
+      // Swipe typing preview
+      if (this.isSwipeTyping && this.swipePreviewWord.length > 1 && this.swipePath.length > 0) {
+        Column() {
+          Text(this.swipePreviewWord)
+            .fontSize(22)
+            .fontWeight(500)
+            .fontColor(OpenBoardTheme.primaryText)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(OpenBoardTheme.surface)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(OpenBoardTheme.shadowPopup)
+        }
+        .position({
+          x: this.swipePath[this.swipePath.length - 1].x - 40,
+          y: this.swipePath[this.swipePath.length - 1].y - 70
+        })
+        .zIndex(350)
       }
     }
     .width('100%')

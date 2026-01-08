@@ -152,8 +152,15 @@ class PredictionModel {
     console.info(`PredictionModel: Warmup complete for language '${lang}'`);
   }
 
-  // Get base lexicon for language
+  // Get base lexicon for language (private)
   private getBaseLexicon(lang: string): BaseLexicon | null {
+    return this.baseLexicons.get(lang) ?? null;
+  }
+
+  /**
+   * Get base lexicon for language (public for SwipeEngine integration)
+   */
+  getBaseLexiconPublic(lang: string): BaseLexicon | null {
     return this.baseLexicons.get(lang) ?? null;
   }
 
