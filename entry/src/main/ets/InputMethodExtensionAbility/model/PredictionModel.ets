@@ -46,6 +46,11 @@ interface SerializedModel {
   formsByLemma: [string, string[]][]; // Morphology: lemma -> forms array
 }
 
+interface VerbPattern {
+  endings: string[];
+  lemma: string;
+}
+
 class PredictionModel {
   private models: Map<string, LangModel>; // User-learned models (mutable)
   private baseLexicons: Map<string, BaseLexicon>; // Base lexicons (50k words with binary search)
@@ -256,7 +261,7 @@ class PredictionModel {
     }
 
     // Verb patterns for Russian (ordered from longest to shortest endings)
-    const verbPatterns = [
+    const verbPatterns: VerbPattern[] = [
       // 1st conjugation
       { endings: ['аешь', 'аете', 'ают'], lemma: 'ать' },
       { endings: ['уешь', 'уете', 'уют'], lemma: 'овать' },
@@ -982,7 +987,7 @@ class PredictionModel {
       pendingWords: Array.from(m.pendingWords.entries()),
       blockedWords: Array.from(m.blockedWords),
       lemmaMap: Array.from(m.lemmaMap.entries()),
-      formsByLemma: Array.from(m.formsByLemma.entries()).map(([k, v]) => [k, Array.from(v)])
+      formsByLemma: Array.from(m.formsByLemma.entries()).map((entry) => [entry[0], Array.from(entry[1])])
     };
   }
 
@@ -1087,7 +1092,7 @@ class PredictionModel {
       pendingWords: new Map(data.pendingWords || []),
       blockedWords: new Set(data.blockedWords || []),
       lemmaMap: new Map(data.lemmaMap || []),
-      formsByLemma: new Map((data.formsByLemma || []).map(([k, v]) => [k, new Set(v)]))
+      formsByLemma: new Map((data.formsByLemma || []).map((entry) => [entry[0], new Set(entry[1])]))
     };
     this.models.set(lang, m);
   }

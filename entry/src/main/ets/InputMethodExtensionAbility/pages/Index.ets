@@ -2128,7 +2128,7 @@ struct Index {
             .padding({ left: 12, right: 12, top: 6, bottom: 6 })
             .backgroundColor(OpenBoardTheme.surface)
             .borderRadius(OpenBoardTheme.radiusMedium)
-            .shadow(OpenBoardTheme.shadowPopup)
+            .shadow(OpenBoardTheme.shadowPanel)
         }
         .position({
           x: this.swipePath[this.swipePath.length - 1].x - 40,
