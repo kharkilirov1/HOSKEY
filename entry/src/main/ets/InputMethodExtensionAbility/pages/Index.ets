@@ -15,9 +15,13 @@ import {
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
+import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
+import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
+import { Logger } from '../utils/logger';
+import { swipeEngine, SwipePoint, KeyBounds, SwipeResult } from '../model/SwipeEngine';
 
 const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
 
@@ -29,6 +33,7 @@ type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
+const DEBUG_PREDICT = false; // Set to true for prediction debugging
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -114,14 +119,15 @@ struct KeyPopup {
           .width(this.keyWidth)
           .height(50)
           .textAlign(TextAlign.Center)
-          .backgroundColor(char === this.hoveredChar ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-          .borderRadius(8)
+          .backgroundColor(char === this.hoveredChar ? OpenBoardTheme.accent : OpenBoardTheme.regularKey)
+          .borderRadius(OpenBoardTheme.radiusSmall)
+          .shadow(OpenBoardTheme.shadowKey)
           .animation({ duration: 50 })
       })
     }
     .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-    .backgroundColor(OpenBoardTheme.surface)
-    .borderRadius(12)
+    .backgroundColor(OpenBoardTheme.specialKey)
+    .borderRadius(OpenBoardTheme.radiusMedium)
     .shadow({ radius: 10, color: '#60000000', offsetY: 4 })
   }
 }
@@ -139,8 +145,9 @@ struct SingleKeyPopup {
     .width(50)
     .height(60)
     .justifyContent(FlexAlign.Center)
-    .backgroundColor(OpenBoardTheme.surface)
-    .borderRadius(12)
+    .backgroundColor(OpenBoardTheme.specialKey)
+    .borderRadius(OpenBoardTheme.radiusMedium)
+    .shadow(OpenBoardTheme.shadowPressed)
   }
 }
 
@@ -197,6 +204,14 @@ struct KeyView {
   onKeyTouchDown: (key: KeyData, position: Position) => void = () => {};
   onKeyTouchUp: () => void = () => {};
   onSwipe?: (direction: LayoutSwipeDirection) => void;
+  onBackspaceSwipeStart: (x: number) => void = () => {};
+  onBackspaceSwipeMove: (x: number) => void = () => {};
+  onBackspaceSwipeEnd: () => void = () => {};
+  onCursorModeStart: (x: number) => void = () => {};
+  onCursorModeMove: (x: number) => void = () => {};
+  onCursorModeEnd: () => void = () => {};
+  onSwipeMove?: (position: Position) => void;
+  onKeyBoundsUpdate?: (key: string, bounds: KeyBounds) => void;
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
@@ -259,7 +274,7 @@ struct KeyView {
             }
           } else {
             Text(this.getDisplayValue())
-              .fontSize(20)
+              .fontSize(18)
               .fontWeight(this.keyData.action === KeyAction.Char ? 400 : 500)
               .fontColor(OpenBoardTheme.primaryText)
           }
@@ -280,8 +295,8 @@ struct KeyView {
       .height('100%')
       .backgroundColor(this.isPressed ?
         OpenBoardTheme.surface : (this.keyData.action === KeyAction.Char ? OpenBoardTheme.regularKey : OpenBoardTheme.specialKey))
-      .borderRadius(8)
-      .shadow(this.isPressed ? { radius: 10, color: '#80000000', offsetX: 0, offsetY: 2 } : { radius: 0 })
+      .borderRadius(OpenBoardTheme.radiusMedium)
+      .shadow(this.isPressed ? OpenBoardTheme.shadowPressed : OpenBoardTheme.shadowKey)
       .zIndex(this.isPressed ? 100 : 0)
       .animation({ duration: 100 })
       .onTouch((event) => {
@@ -300,12 +315,19 @@ struct KeyView {
             this.onKeyTouchDown(this.keyData, currentPosition);
           }
 
+          // Start backspace swipe tracking
+          if (this.keyData.action === KeyAction.Backspace) {
+            this.onBackspaceSwipeStart(currentPosition.x);
+          }
+
           this.longPressTimer = setTimeout(() => {
             this.longPressTriggered = true;
             this.isPressed = false;
 
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressStart(this.keyData);
+            } else if (this.keyData.action === KeyAction.Space) {
+              this.onCursorModeStart(currentPosition.x);
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPress(this.keyData, currentPosition);
             } else if (this.keyData.action === KeyAction.Shift) {
@@ -319,36 +341,82 @@ struct KeyView {
             this.onKeyLongPressDrag(currentPosition);
           }
 
-          if (this.keyData.action === KeyAction.Space) {
+          // Handle backspace swipe
+          if (this.keyData.action === KeyAction.Backspace) {
             const swipeDistance = Math.abs(currentPosition.x - this.touchStartX);
-            const SWIPE_THRESHOLD = 30;
+            const SWIPE_THRESHOLD = 20;
 
             if (!this.swipeHandled && swipeDistance > SWIPE_THRESHOLD) {
+              // Disable long press timer when swipe is detected
               clearTimeout(this.longPressTimer);
-              this.longPressTriggered = true;
               this.swipeHandled = true;
 
-              if (this.onSwipe) {
-                const direction = (currentPosition.x - this.touchStartX) > 0
-                  ? LayoutSwipeDirection.Right
-                  : LayoutSwipeDirection.Left;
-                this.onSwipe(direction);
+              // If long press was already triggered (rapid delete active), stop it
+              if (this.longPressTriggered) {
+                this.onKeyContinuousPressEnd(this.keyData);
+                this.longPressTriggered = false;
               }
-
-              this.isPressed = false;
             }
+
+            // Always track movement for swipe-based deletion
+            this.onBackspaceSwipeMove(currentPosition.x);
+          }
+
+          if (this.keyData.action === KeyAction.Space) {
+            // If long press triggered, activate cursor mode
+            if (this.longPressTriggered) {
+              this.onCursorModeMove(currentPosition.x);
+            } else {
+              // Before long press, handle language switch swipe
+              const swipeDistance = Math.abs(currentPosition.x - this.touchStartX);
+              const SWIPE_THRESHOLD = 30;
+
+              if (!this.swipeHandled && swipeDistance > SWIPE_THRESHOLD) {
+                clearTimeout(this.longPressTimer);
+                this.longPressTriggered = true;
+                this.swipeHandled = true;
+
+                if (this.onSwipe) {
+                  const direction = (currentPosition.x - this.touchStartX) > 0
+                    ? LayoutSwipeDirection.Right
+                    : LayoutSwipeDirection.Left;
+                  this.onSwipe(direction);
+                }
+
+                this.isPressed = false;
+              }
+            }
+          }
+
+          // Swipe typing tracking
+          if (this.keyData.action === KeyAction.Char && this.onSwipeMove) {
+            this.onSwipeMove(currentPosition);
           }
         }
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
           clearTimeout(this.longPressTimer);
+
+          // End backspace swipe tracking
+          if (this.keyData.action === KeyAction.Backspace) {
+            this.onBackspaceSwipeEnd();
+          }
+
+          // End cursor mode tracking
+          if (this.keyData.action === KeyAction.Space) {
+            this.onCursorModeEnd();
+          }
+
           if (this.longPressTriggered) {
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressEnd(this.keyData);
+            } else if (this.keyData.action === KeyAction.Space) {
+              // Cursor mode was active, don't insert space
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
-          } else if (event.type === TouchType.Up && !this.longPressTriggered) {
+          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled) {
+            // Only trigger keyPress if no swipe was handled
             this.onKeyPress(this.keyData);
           }
 
@@ -359,6 +427,18 @@ struct KeyView {
           this.longPressTriggered = false;
           this.touchStartX = 0;
           this.swipeHandled = false;
+        }
+      })
+      .onAreaChange((_oldValue: Area, newValue: Area) => {
+        if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
+          const bounds: KeyBounds = {
+            key: this.keyData.mainValue.toLowerCase(),
+            centerX: (newValue.position.x as number) + (newValue.width as number) / 2,
+            centerY: (newValue.position.y as number) + (newValue.height as number) / 2,
+            width: newValue.width as number,
+            height: newValue.height as number
+          };
+          this.onKeyBoundsUpdate(this.keyData.mainValue.toLowerCase(), bounds);
         }
       })
     }
@@ -382,6 +462,16 @@ struct Index {
   @State enterKeyLabel: string = 'Enter';
   @State availableLanguages: LanguageCode[] = ['en'];
 
+  // Swipe-based backspace state
+  @State backspaceSwipeActive: boolean = false;
+  @State backspaceInitialX: number = 0;
+  @State backspaceCurrentX: number = 0;
+
+  // Cursor control mode state
+  @State cursorModeActive: boolean = false;
+  @State cursorInitialX: number = 0;
+  @State cursorCurrentX: number = 0;
+
   // Layout cache for performance optimization
   private cachedLayout: KeyData[][] = [];
   private cachedLayoutKey: string = '';
@@ -390,9 +480,27 @@ struct Index {
   @State emojiCategory: string = 'Smileys & Emotion';
   private emojiScroller: Scroller = new Scroller();
 
+  @State showClipboardPanel: boolean = false;
+  @State clipboardFilter: ClipboardItemType | 'all' = 'all';
+  @State clipboardSearchQuery: string = '';
+  private clipboardScroller: Scroller = new Scroller();
+  private lastClipboardText: string = '';
+  private clipboardMonitorTimer: number = -1;
+
   @State private previousWord: string = '';
+  @State private prevPrevWord: string = ''; // For trigram predictions
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
+  @State private lastAutocorrection: { original: string; corrected: string } | null = null;
+  private suggestionsReqId: number = 0; // Race condition protection for async suggestions
+
+  // Swipe typing states
+  @State private isSwipeTyping: boolean = false;
+  @State private swipePath: SwipePoint[] = [];
+  @State private swipePreviewWord: string = '';
+  @State private swipeAlternatives: string[] = [];
+  private swipeStartTime: number = 0;
+  private keyBoundsMap: Map<string, KeyBounds> = new Map();
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -568,6 +676,48 @@ struct Index {
     }
   }
 
+  // Clipboard monitoring
+  private async monitorClipboard(): Promise<void> {
+    try {
+      const systemPasteboard = pasteboard.getSystemPasteboard();
+      const data = await systemPasteboard.getData();
+      const text = data.getPrimaryText();
+
+      if (text && text.length > 0 && text !== this.lastClipboardText) {
+        // New clipboard content detected
+        console.info('OpenBoard: New clipboard content detected');
+        clipboardHistory.addItem(text);
+        this.lastClipboardText = text;
+      }
+    } catch (e) {
+      console.error('OpenBoard: Clipboard monitoring failed', e);
+    }
+  }
+
+  private startClipboardMonitoring(): void {
+    if (this.clipboardMonitorTimer !== -1) {
+      return; // Already monitoring
+    }
+
+    // Initial check
+    this.monitorClipboard();
+
+    // Check every 2 seconds
+    this.clipboardMonitorTimer = setInterval(() => {
+      this.monitorClipboard();
+    }, 2000);
+
+    console.info('OpenBoard: Clipboard monitoring started');
+  }
+
+  private stopClipboardMonitoring(): void {
+    if (this.clipboardMonitorTimer !== -1) {
+      clearInterval(this.clipboardMonitorTimer);
+      this.clipboardMonitorTimer = -1;
+      console.info('OpenBoard: Clipboard monitoring stopped');
+    }
+  }
+
   // Handle voice interruption with popup
   private handleVoiceInterruption(interruptionType: 'manual' | 'clipboard' | 'error'): void {
     if (this.isRecording) {
@@ -611,9 +761,121 @@ struct Index {
       this.currentLanguage = this.availableLanguages[0];
     }
     this.startInactivityTimer();
+    this.startClipboardMonitoring();
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
+
+    // Warmup BaseLexicon for current language (background loading for instant predictions)
+    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.error('OpenBoard: Failed to warmup language on start:', err);
+    }).then(() => {
+      // Set BaseLexicon for SwipeEngine after warmup
+      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      swipeEngine.setBaseLexicon(baseLexicon);
+    });
   }
+
+  // === SWIPE TYPING METHODS ===
+
+  private handleKeyBoundsUpdate(key: string, bounds: KeyBounds): void {
+    this.keyBoundsMap.set(key, bounds);
+  }
+
+  private updateSwipeEngineLayout(): void {
+    const keyBounds = Array.from(this.keyBoundsMap.values());
+    swipeEngine.setKeyboardLayout(keyBounds);
+  }
+
+  private handleSwipeStart(key: KeyData, position: Position): void {
+    if (key.action !== KeyAction.Char) return;
+
+    this.isSwipeTyping = true;
+    this.swipeStartTime = Date.now();
+    this.swipePath = [{
+      x: position.x,
+      y: position.y,
+      timestamp: Date.now()
+    }];
+
+    const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
+      ? (key.shiftValue ?? key.mainValue)
+      : key.mainValue;
+    this.swipePreviewWord = char.toLowerCase();
+  }
+
+  private handleSwipeMove(position: Position): void {
+    if (!this.isSwipeTyping) return;
+
+    this.swipePath.push({
+      x: position.x,
+      y: position.y,
+      timestamp: Date.now()
+    });
+
+    if (this.swipePath.length % 5 === 0) {
+      this.updateSwipePreview();
+    }
+  }
+
+  private handleSwipeEnd(): void {
+    if (!this.isSwipeTyping) {
+      return;
+    }
+
+    const duration = Date.now() - this.swipeStartTime;
+
+    if (duration < 200 || this.swipePath.length < 5) {
+      this.resetSwipeState();
+      return;
+    }
+
+    this.updateSwipeEngineLayout();
+
+    const result = swipeEngine.processSwipe(this.swipePath);
+
+    if (result && result.bestWord) {
+      let word = result.bestWord;
+      if (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock) {
+        word = word.charAt(0).toUpperCase() + word.slice(1);
+      }
+
+      keyboardController.insertText(word);
+      keyboardController.insertText(' ');
+      this.onTextTyped(word);
+      void this.onBoundaryTyped(' ');
+
+      this.suggestions = [
+        word,
+        result.alternatives[0] || '',
+        result.alternatives[1] || ''
+      ];
+
+      if (this.shiftState === ShiftState.On) {
+        this.shiftState = ShiftState.Off;
+      }
+    }
+
+    this.resetSwipeState();
+  }
+
+  private updateSwipePreview(): void {
+    this.updateSwipeEngineLayout();
+    const result = swipeEngine.processSwipe(this.swipePath);
+    if (result) {
+      this.swipePreviewWord = result.bestWord;
+      this.swipeAlternatives = result.alternatives;
+    }
+  }
+
+  private resetSwipeState(): void {
+    this.isSwipeTyping = false;
+    this.swipePath = [];
+    this.swipePreviewWord = '';
+    this.swipeAlternatives = [];
+    this.swipeStartTime = 0;
+  }
+
+  // === END SWIPE TYPING METHODS ===
 
   aboutToAppear(): void {
     console.info('OpenBoard Keyboard: UI aboutToAppear called');
@@ -629,6 +891,7 @@ struct Index {
       this.rapidDeleteTimer = -1;
     }
     this.stopInactivityTimer();
+    this.stopClipboardMonitoring();
     if (this.speechRecognitionTimer !== -1) {
       clearTimeout(this.speechRecognitionTimer);
       this.speechRecognitionTimer = -1;
@@ -694,6 +957,7 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
     }
     this.rapidDeleteTimer = setInterval(() => {
+      feedbackController.provideFeedback(FeedbackType.Heavy);
       keyboardController.deleteBackward(1);
       this.onBackspaceTyped();
     }, 100);
@@ -704,6 +968,61 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
       this.rapidDeleteTimer = -1;
     }
+  }
+
+  private handleBackspaceSwipeStart(x: number): void {
+    this.backspaceSwipeActive = true;
+    this.backspaceInitialX = x;
+    this.backspaceCurrentX = x;
+  }
+
+  private handleBackspaceSwipeMove(x: number): void {
+    if (!this.backspaceSwipeActive) return;
+
+    const swipeDistance = x - this.backspaceCurrentX;
+    const SWIPE_THRESHOLD = 15; // pixels needed to trigger action
+
+    if (swipeDistance < -SWIPE_THRESHOLD) {
+      // Swiping left - delete character
+      const textBefore = keyboardController.getTextBeforeCursor(1);
+      if (textBefore.length > 0) {
+        feedbackController.provideFeedback(FeedbackType.Heavy);
+        keyboardController.deleteBackward(1);
+        this.onBackspaceTyped();
+      }
+      this.backspaceCurrentX = x;
+    }
+  }
+
+  private handleBackspaceSwipeEnd(): void {
+    this.backspaceSwipeActive = false;
+    this.backspaceInitialX = 0;
+    this.backspaceCurrentX = 0;
+  }
+
+  private handleCursorModeStart(x: number): void {
+    this.cursorModeActive = true;
+    this.cursorInitialX = x;
+    this.cursorCurrentX = x;
+  }
+
+  private handleCursorModeMove(x: number): void {
+    if (!this.cursorModeActive) return;
+
+    const swipeDistance = x - this.cursorCurrentX;
+    const CURSOR_THRESHOLD = 20; // pixels needed to move cursor
+
+    if (Math.abs(swipeDistance) > CURSOR_THRESHOLD) {
+      const direction = swipeDistance > 0 ? 1 : -1; // 1 = right, -1 = left
+      keyboardController.moveCursor(direction);
+      this.cursorCurrentX = x;
+    }
+  }
+
+  private handleCursorModeEnd(): void {
+    this.cursorModeActive = false;
+    this.cursorInitialX = 0;
+    this.cursorCurrentX = 0;
   }
 
   private updatePopupMetrics(touchPosition: Position): void {
@@ -745,6 +1064,7 @@ struct Index {
 
   private handleLongPressEnd(): void {
     if (this.longPressInfo && this.hoveredChar) {
+      feedbackController.provideFeedback(FeedbackType.Light);
       keyboardController.insertText(this.hoveredChar);
       this.onTextTyped(this.hoveredChar);
     }
@@ -759,14 +1079,20 @@ struct Index {
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
     this.singleCharPopupInfo = { char: char, position: position };
+
+    // Start swipe tracking
+    this.handleSwipeStart(key, position);
   }
 
   private handleKeyTouchUp(): void {
     // Hide the popup
     this.singleCharPopupInfo = null;
+
+    // End swipe tracking
+    this.handleSwipeEnd();
   }
 
-  handleKeyPress(key: KeyData): void {
+  async handleKeyPress(key: KeyData): Promise<void> {
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -782,37 +1108,43 @@ struct Index {
 
     switch (key.action) {
       case KeyAction.Char:
+        // Light haptic for regular character keys
+        feedbackController.provideFeedback(FeedbackType.Light);
         // Remember if shift was on BEFORE typing this character
         const wasShiftOnBeforeTyping = (this.shiftState === ShiftState.On);
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        console.info('[AutoCap] Typing char, shift state:', this.shiftState, 'text:', text, 'mainValue:', key.mainValue, 'shiftValue:', key.shiftValue);
+        Logger.autocap(`Typing char, shift state: ${this.shiftState}, text: ${text}, mainValue: ${key.mainValue}, shiftValue: ${key.shiftValue ?? 'none'}`);
         keyboardController.insertText(text);
-        this.onTextTyped(text);
+        await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
-          console.info('[AutoCap] Disabling shift after typing character');
+          Logger.autocap('Disabling shift after typing character');
           this.shiftState = ShiftState.Off;
         }
         break;
       case KeyAction.Space:
+        feedbackController.provideFeedback(FeedbackType.Light);
         keyboardController.insertText(' ');
-        this.onBoundaryTyped(' ');
+        await this.onBoundaryTyped(' ');
         // Auto-return to alphabet layout after typing space in symbols layout
         if (this.keyboardLayout === KeyboardLayout.Symbols1 || this.keyboardLayout === KeyboardLayout.Symbols2) {
           this.keyboardLayout = KeyboardLayout.Alphabet;
         }
         break;
       case KeyAction.Enter:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         keyboardController.sendEnterKey();
-        this.onBoundaryTyped('\n');
+        await this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
+        feedbackController.provideFeedback(FeedbackType.Heavy);
         keyboardController.deleteBackward(1);
-        this.onBackspaceTyped();
+        await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         const now = Date.now();
         if (this.shiftState === ShiftState.CapsLock) {
           this.shiftState = ShiftState.Off;
@@ -830,37 +1162,44 @@ struct Index {
         break;
       case KeyAction.SwitchAlphabet:
       case KeyAction.SwitchSymbols:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         this.keyboardLayout = (this.keyboardLayout === KeyboardLayout.Alphabet) ?
           KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
         break;
       case KeyAction.SwitchSymbolsAlt:
+        feedbackController.provideFeedback(FeedbackType.Medium);
         this.keyboardLayout = KeyboardLayout.Symbols2;
         break;
     }
   }
 
-  // PASTE CURRENT CLIPBOARD ITEM ONLY
-  private async handleClipboardClick(): Promise<void> {
+  // TOGGLE CLIPBOARD PANEL
+  private handleClipboardClick(): void {
     this.resetInactivityTimer();
 
     if (this.isRecording) {
       this.handleVoiceInterruption('clipboard');
     }
 
-    try {
-      const systemPasteboard = pasteboard.getSystemPasteboard();
-      const data = await systemPasteboard.getData();
-      const text = data.getPrimaryText();
+    this.showClipboardPanel = !this.showClipboardPanel;
+    if (this.showClipboardPanel) {
+      this.showEmojiPanel = false;
+      this.clipboardSearchQuery = '';
+      this.clipboardFilter = 'all';
+    }
+  }
 
-      if (text && text.length > 0) {
-        keyboardController.insertText(text);
-        this.onTextTyped(text);
-        console.info('OpenBoard: Pasted clipboard text');
-      } else {
-        console.info('OpenBoard: Clipboard is empty');
-      }
-    } catch (e) {
-      console.error('OpenBoard: Clipboard paste failed', e);
+  // PASTE CLIPBOARD ITEM BY ID
+  private async pasteClipboardItem(item: ClipboardItem): Promise<void> {
+    this.resetInactivityTimer();
+
+    if (item.text && item.text.length > 0) {
+      keyboardController.insertText(item.text);
+      this.onTextTyped(item.text);
+      console.info('OpenBoard: Pasted clipboard item:', item.id);
+
+      // Close clipboard panel after pasting
+      this.showClipboardPanel = false;
     }
   }
 
@@ -880,14 +1219,67 @@ struct Index {
 
     this.currentLanguage = this.availableLanguages[currentIndex];
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
+
+    // Warmup BaseLexicon for new language
+    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.error('OpenBoard: Failed to warmup language:', err);
+    }).then(() => {
+      // Update SwipeEngine with new language lexicon
+      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      swipeEngine.setBaseLexicon(baseLexicon);
+    });
   }
 
-  private updateSuggestions(): void {
+  private async updateSuggestions(): Promise<void> {
+    // Increment request ID to handle race conditions
+    this.suggestionsReqId++;
+    const currentReqId = this.suggestionsReqId;
+
     try {
-      const list = predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3);
-      this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+      // Check for autocorrection first
+      const autocorrection = this.currentWord.length >= 2
+        ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+        : null;
+
+      // Check if request is stale (user typed more keys while we were waiting)
+      if (currentReqId !== this.suggestionsReqId) {
+        Logger.prediction('Stale suggestion request, ignoring result');
+        return;
+      }
+
+      if (autocorrection && autocorrection !== this.currentWord) {
+        // Show autocorrection as first suggestion, then predictions
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+
+        // Check again after async call
+        if (currentReqId !== this.suggestionsReqId) {
+          Logger.prediction('Stale suggestion request after predict, ignoring result');
+          return;
+        }
+
+        this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
+
+        if (DEBUG_PREDICT) {
+          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
+        }
+      } else {
+        // Normal predictions
+        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+
+        // Check again after async call
+        if (currentReqId !== this.suggestionsReqId) {
+          Logger.prediction('Stale suggestion request after predict, ignoring result');
+          return;
+        }
+
+        this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+
+        if (DEBUG_PREDICT) {
+          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
+        }
+      }
     } catch (e) {
-      console.warn('Prediction model error:', e);
+      Logger.warn('Prediction model error', e as Error);
       this.suggestions = ['', '', ''];
     }
   }
@@ -910,56 +1302,98 @@ struct Index {
   private enableAutoCapitalization(): void {
     // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
     if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      console.info('[AutoCap] Skipping auto-cap for RTL language:', this.currentLanguage);
+      Logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
       return;
     }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
-      console.info('[AutoCap] Enabling auto-capitalization, shift state:', this.shiftState);
+      Logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
       this.shiftState = ShiftState.On;
     } else {
-      console.info('[AutoCap] Already in CapsLock, not changing');
+      Logger.autocap('Already in CapsLock, not changing');
     }
   }
 
-  private onTextTyped(text: string): void {
+  private async onTextTyped(text: string): Promise<void> {
     if (!text) return;
     if (this.isBoundaryChar(text)) {
-      this.onBoundaryTyped(text);
+      await this.onBoundaryTyped(text);
       return;
     }
     this.currentWord = this.currentWord + text;
-    this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
   }
 
-  private onBoundaryTyped(ch: string): void {
+  private async onBoundaryTyped(ch: string): Promise<void> {
     if (this.currentWord) {
-      predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
-      this.previousWord = this.currentWord;
+      // Check for autocorrection on space
+      if (ch === ' ') {
+        const correction = await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
+        if (correction && correction !== this.currentWord) {
+          // Autocorrection found! Replace the typed word
+          console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
+
+          // Delete the typed word (BUG-001 FIX: deleteBackward instead of deleteForward)
+          keyboardController.deleteBackward(this.currentWord.length);
+
+          // Insert the corrected word
+          keyboardController.insertText(correction);
+
+          // Track the autocorrection for potential undo
+          this.lastAutocorrection = {
+            original: this.currentWord,
+            corrected: correction
+          };
+
+          // Record corrected word with trigram context
+          predictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
+
+          // Shift word history for trigram
+          this.prevPrevWord = this.previousWord;
+          this.previousWord = correction;
+        } else {
+          // No correction, record the word as typed with trigram context
+          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+
+          // Shift word history for trigram
+          this.prevPrevWord = this.previousWord;
+          this.previousWord = this.currentWord;
+        }
+      } else {
+        // Non-space boundary, just record the word with trigram context
+        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+
+        // Shift word history for trigram
+        this.prevPrevWord = this.previousWord;
+        this.previousWord = this.currentWord;
+      }
+
       this.currentWord = '';
     }
-    this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
-    console.info('[AutoCap] Boundary typed:', ch, 'should auto-cap:', this.shouldAutoCapitalize(ch));
+    Logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
     if (this.shouldAutoCapitalize(ch)) {
       this.enableAutoCapitalization();
     }
   }
 
-  private onBackspaceTyped(): void {
+  private async onBackspaceTyped(): Promise<void> {
     if (this.currentWord && this.currentWord.length > 0) {
       this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      this.updateSuggestions();
+      void this.updateSuggestions(); // Non-blocking async call
       this.resetInactivityTimer();
     }
 
     if (keyboardController.isBufferEmpty()) {
+      // Reset all word history when buffer is empty
+      this.prevPrevWord = '';
       this.previousWord = '';
       this.currentWord = '';
-      this.updateSuggestions();
+      void this.updateSuggestions(); // Non-blocking async call
       this.showPreTypingToolbar = true;
       // Auto-capitalize at the start of text
       this.enableAutoCapitalization();
@@ -968,16 +1402,22 @@ struct Index {
     }
   }
 
-  private pickSuggestion(word: string): void {
+  private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
+    // BUG-002 FIX: deleteBackward instead of deleteForward
     keyboardController.deleteBackward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
-    this.onBoundaryTyped(' ');
+    // Record the picked suggestion word with trigram context
+    // Don't call onBoundaryTyped to avoid double recording
+    predictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
+
+    // Shift word history for trigram
+    this.prevPrevWord = this.previousWord;
     this.previousWord = word;
     this.currentWord = '';
-    this.updateSuggestions();
+    void this.updateSuggestions(); // Non-blocking async call
   }
 
   private getScreenWidthVp(): number {
@@ -1004,8 +1444,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
       // SUGGESTIONS
@@ -1023,8 +1464,8 @@ struct Index {
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
             .layoutWeight(1)
-            .onClick(() => {
-              if (suggestion) this.pickSuggestion(suggestion);
+            .onClick(async () => {
+              if (suggestion) await this.pickSuggestion(suggestion);
             })
 
             if (index < 2) {
@@ -1041,6 +1482,22 @@ struct Index {
       }
       .layoutWeight(1)
 
+      // CLIPBOARD
+      Column() {
+        Image($r('app.media.clipboard_icon'))
+          .width(18)
+          .height(18)
+          .fillColor(OpenBoardTheme.primaryText)
+      }
+      .width(34)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(OpenBoardTheme.radiusSmall)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
+      .onClick(() => { this.handleClipboardClick(); })
+
       // MICROPHONE
       Column() {
         Image($r('app.media.mic_icon'))
@@ -1052,8 +1509,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
@@ -1071,8 +1529,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
       // LEFT SPACER for centering
@@ -1089,8 +1548,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleClipboardClick(); })
 
       // RIGHT SPACER for centering
@@ -1107,8 +1567,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
@@ -1127,8 +1588,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         this.showEmojiPanel = false;
       })
@@ -1154,8 +1616,9 @@ struct Index {
       .height(34)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
-      .borderRadius(17)
+      .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         keyboardController.hideKeyboard();
         if (this.isRecording) {
@@ -1193,6 +1656,299 @@ struct Index {
     }
   }
 
+  private getClipboardTypeIcon(type: ClipboardItemType): string {
+    switch (type) {
+      case ClipboardItemType.URL:
+        return '🔗';
+      case ClipboardItemType.Email:
+        return '📧';
+      case ClipboardItemType.Phone:
+        return '📞';
+      case ClipboardItemType.Text:
+      default:
+        return '📝';
+    }
+  }
+
+  private getFilteredClipboardItems(): ClipboardItem[] {
+    let items: ClipboardItem[] = [];
+
+    if (this.clipboardFilter === 'all') {
+      items = clipboardHistory.getItems();
+    } else {
+      items = clipboardHistory.getItemsByType(this.clipboardFilter as ClipboardItemType);
+    }
+
+    if (this.clipboardSearchQuery && this.clipboardSearchQuery.trim().length > 0) {
+      items = clipboardHistory.searchItems(this.clipboardSearchQuery);
+    }
+
+    return items;
+  }
+
+  @Builder
+  buildClipboardPanel() {
+    Column({ space: 10 }) {
+      // Category filters
+      Scroll() {
+        Row({ space: 8 }) {
+          // All
+          Text('All')
+            .fontSize(14)
+            .fontWeight(500)
+            .fontColor(this.clipboardFilter === 'all' ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .backgroundColor(this.clipboardFilter === 'all' ? OpenBoardTheme.surface : OpenBoardTheme.background)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(this.clipboardFilter === 'all' ? OpenBoardTheme.shadowKey : { radius: 0 })
+            .onClick(() => { this.clipboardFilter = 'all'; })
+
+          // Text
+          Row({ space: 4 }) {
+            Text('📝')
+              .fontSize(14)
+            Text('Text')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Text; })
+
+          // URL
+          Row({ space: 4 }) {
+            Text('🔗')
+              .fontSize(14)
+            Text('Links')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.URL ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.URL; })
+
+          // Email
+          Row({ space: 4 }) {
+            Text('📧')
+              .fontSize(14)
+            Text('Email')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Email ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Email; })
+
+          // Phone
+          Row({ space: 4 }) {
+            Text('📞')
+              .fontSize(14)
+            Text('Phone')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Phone ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Phone; })
+        }
+        .padding({ left: 8, right: 8 })
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+
+      // Clipboard items list
+      Scroll(this.clipboardScroller) {
+        Column({ space: 8 }) {
+          ForEach(this.getFilteredClipboardItems(), (item: ClipboardItem) => {
+            Row({ space: 12 }) {
+              // Type icon
+              Text(this.getClipboardTypeIcon(item.type))
+                .fontSize(20)
+                .width(30)
+                .textAlign(TextAlign.Center)
+
+              // Item content
+              Column({ space: 4 }) {
+                Text(item.text)
+                  .fontSize(14)
+                  .fontWeight(400)
+                  .fontColor(OpenBoardTheme.primaryText)
+                  .maxLines(2)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+                // Timestamp
+                Text(this.formatTimestamp(item.timestamp))
+                  .fontSize(11)
+                  .fontColor(OpenBoardTheme.secondaryText)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              .onClick(() => {
+                this.pasteClipboardItem(item);
+              })
+
+              // Pin button
+              Column() {
+                Text(item.isPinned ? '📌' : '📍')
+                  .fontSize(16)
+              }
+              .width(40)
+              .height(40)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(OpenBoardTheme.radiusSmall)
+              .backgroundColor(item.isPinned ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
+              .shadow(OpenBoardTheme.shadowKey)
+              .onClick(() => {
+                clipboardHistory.togglePin(item.id);
+              })
+
+              // Delete button
+              Column() {
+                Text('🗑️')
+                  .fontSize(16)
+              }
+              .width(40)
+              .height(40)
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .borderRadius(OpenBoardTheme.radiusSmall)
+              .backgroundColor(OpenBoardTheme.specialKey)
+              .shadow(OpenBoardTheme.shadowKey)
+              .onClick(() => {
+                clipboardHistory.deleteItem(item.id);
+              })
+            }
+            .width('100%')
+            .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+            .backgroundColor(OpenBoardTheme.surface)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(OpenBoardTheme.shadowKey)
+          }, (item: ClipboardItem) => item.id)
+
+          // Empty state
+          if (this.getFilteredClipboardItems().length === 0) {
+            Column({ space: 8 }) {
+              Text('📋')
+                .fontSize(48)
+                .opacity(0.3)
+
+              Text('No clipboard items')
+                .fontSize(16)
+                .fontColor(OpenBoardTheme.secondaryText)
+                .fontWeight(500)
+
+              Text('Copy text to see it here')
+                .fontSize(14)
+                .fontColor(OpenBoardTheme.secondaryText)
+            }
+            .width('100%')
+            .height('100%')
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+            .padding({ top: 60 })
+          }
+        }
+        .width('100%')
+        .padding({ left: 8, right: 8 })
+      }
+      .scrollable(ScrollDirection.Vertical)
+      .scrollBar(BarState.On)
+      .layoutWeight(1)
+    }
+    .layoutWeight(1)
+    .padding({ left: 2, right: 2, bottom: 2, top: 8 })
+  }
+
+  private formatTimestamp(timestamp: number): string {
+    const now = Date.now();
+    const diff = now - timestamp;
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (seconds < 60) {
+      return 'Just now';
+    } else if (minutes < 60) {
+      return `${minutes}m ago`;
+    } else if (hours < 24) {
+      return `${hours}h ago`;
+    } else if (days < 7) {
+      return `${days}d ago`;
+    } else {
+      const date = new Date(timestamp);
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    }
+  }
+
+  @Builder
+  buildClipboardToolbar() {
+    Row({ space: 3 }) {
+      // RETURN TO KEYBOARD BUTTON
+      Column() {
+        Image($r('app.media.return_icon'))
+          .width(20)
+          .height(20)
+          .fillColor(OpenBoardTheme.primaryText)
+      }
+      .width(34)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(OpenBoardTheme.radiusSmall)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
+      .onClick(() => {
+        this.showClipboardPanel = false;
+      })
+
+      // SEARCH INPUT
+      Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
+        TextInput({ placeholder: 'Search clipboard...', text: this.clipboardSearchQuery })
+          .fontSize(14)
+          .fontColor(OpenBoardTheme.primaryText)
+          .placeholderColor(OpenBoardTheme.secondaryText)
+          .backgroundColor('transparent')
+          .border({ width: 0 })
+          .onChange((value: string) => {
+            this.clipboardSearchQuery = value;
+          })
+      }
+      .layoutWeight(1)
+
+      // CLEAR ALL BUTTON
+      Column() {
+        Text('Clear')
+          .fontSize(12)
+          .fontWeight(500)
+          .fontColor(OpenBoardTheme.primaryText)
+      }
+      .width(50)
+      .height(34)
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
+      .borderRadius(OpenBoardTheme.radiusSmall)
+      .backgroundColor(OpenBoardTheme.specialKey)
+      .shadow(OpenBoardTheme.shadowKey)
+      .onClick(() => {
+        clipboardHistory.clearAll();
+      })
+    }
+  }
+
   build() {
     Stack() {
       Column() {}
@@ -1208,6 +1964,9 @@ struct Index {
           if (this.isRecording) {
             // Toolbar when typing with voice
             this.buildVoiceToolbar()
+          } else if (this.showClipboardPanel) {
+            // Toolbar when in clipboard panel
+            this.buildClipboardToolbar()
           } else if (this.showEmojiPanel) {
             // Toolbar when in emoji tab
             this.buildEmojiToolbar()
@@ -1223,16 +1982,19 @@ struct Index {
         .height(46)
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
         .backgroundColor(OpenBoardTheme.surface)
-        .borderRadius(12)
+        .borderRadius(OpenBoardTheme.radiusMedium)
         .border({ width: 1, color: OpenBoardTheme.divider })
-        .shadow({ radius: 8, color: '#40000000', offsetY: 2 })
+        .shadow(OpenBoardTheme.shadowPanel)
 
         // MAIN CONTENT
-        if (!this.showEmojiPanel) {
+        if (this.showClipboardPanel) {
+          // Clipboard Panel
+          this.buildClipboardPanel()
+        } else if (!this.showEmojiPanel) {
           // Main keyboard
-          Column({ space: 4 }) {
+          Column({ space: 5 }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row() {
+              Row({ space: 3 }) {
                 ForEach(row, (key: KeyData) => {
                   if (key.action === KeyAction.Spacer) {
                     Flex().layoutWeight(key.flex)
@@ -1243,7 +2005,7 @@ struct Index {
                       currentLanguage: this.currentLanguage,
                       availableLanguages: this.availableLanguages,
                       enterKeyLabel: this.enterKeyLabel,
-                      onKeyPress: (k: KeyData): void => this.handleKeyPress(k),
+                      onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
                       onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
                       onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
                       onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
@@ -1251,7 +2013,17 @@ struct Index {
                       onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
                       onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
                       onKeyTouchUp: (): void => this.handleKeyTouchUp(),
-                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
+                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
+                      onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
+                      onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
+                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
+                      onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
+                      onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
+                      onCursorModeEnd: (): void => this.handleCursorModeEnd(),
+                      onSwipeMove: key.action === KeyAction.Char
+                        ? (p: Position): void => this.handleSwipeMove(p)
+                        : undefined,
+                      onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b)
                     })
                       .layoutWeight(key.flex)
                   }
@@ -1276,7 +2048,8 @@ struct Index {
                     .fontColor(this.emojiCategory === cat ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
                     .padding({ left: 16, right: 16, top: 8, bottom: 8 })
                     .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
-                    .borderRadius(20)
+                    .borderRadius(OpenBoardTheme.radiusMedium)
+                    .shadow(this.emojiCategory === cat ? OpenBoardTheme.shadowKey : { radius: 0 })
                     .onClick(() => { this.emojiCategory = cat; })
                 })
               }
@@ -1292,10 +2065,10 @@ struct Index {
                     .textAlign(TextAlign.Center)
                     .width('11%')
                     .height(46)
-                    .onClick(() => {
+                    .onClick(async () => {
                       keyboardController.insertText(emoji);
                       // Emoji is a boundary - don't add to currentWord
-                      this.onBoundaryTyped('');
+                      await this.onBoundaryTyped('');
                       this.resetInactivityTimer();
                     })
                 })
@@ -1344,14 +2117,33 @@ struct Index {
         })
           .zIndex(300)
       }
+
+      // Swipe typing preview
+      if (this.isSwipeTyping && this.swipePreviewWord.length > 1 && this.swipePath.length > 0) {
+        Column() {
+          Text(this.swipePreviewWord)
+            .fontSize(22)
+            .fontWeight(500)
+            .fontColor(OpenBoardTheme.primaryText)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .backgroundColor(OpenBoardTheme.surface)
+            .borderRadius(OpenBoardTheme.radiusMedium)
+            .shadow(OpenBoardTheme.shadowPopup)
+        }
+        .position({
+          x: this.swipePath[this.swipePath.length - 1].x - 40,
+          y: this.swipePath[this.swipePath.length - 1].y - 70
+        })
+        .zIndex(350)
+      }
     }
     .width('100%')
     .height('100%')
   }
 
   getCurrentLayout(): KeyData[][] {
-    // Create cache key based on current layout and language
-    const cacheKey = `${this.keyboardLayout}-${this.currentLanguage}`;
+    // Create cache key based on current layout, language, and shift state
+    const cacheKey = `${this.keyboardLayout}-${this.currentLanguage}-${this.shiftState}`;
 
     // Return cached layout if available
     if (cacheKey === this.cachedLayoutKey && this.cachedLayout.length > 0) {
@@ -1372,10 +2164,10 @@ struct Index {
     const insertEmojiKey = (layout: KeyData[][] | undefined): KeyData[][] => {
       if (!layout || layout.length < 4) return layout || [];
       const lastRow = layout[layout.length - 1].slice();
-      const commaIndex = lastRow.findIndex(k => k.mainValue === ',' || k.mainValue === '،');
-      if (commaIndex !== -1 && lastRow[commaIndex + 1]?.action === KeyAction.Space) {
-        lastRow.splice(commaIndex + 1, 0, EMOJI_KEY_DATA);
-        const originalSpaceKey = lastRow[commaIndex + 2];
+      const symbolsIndex = lastRow.findIndex(k => k.action === KeyAction.SwitchSymbols);
+      if (symbolsIndex !== -1 && lastRow[symbolsIndex + 1]?.action === KeyAction.Space) {
+        lastRow.splice(symbolsIndex + 1, 0, EMOJI_KEY_DATA);
+        const originalSpaceKey = lastRow[symbolsIndex + 2];
         if (originalSpaceKey) {
           const newSpaceKey: KeyData = {
             mainValue: originalSpaceKey.mainValue,
@@ -1384,7 +2176,7 @@ struct Index {
             action: originalSpaceKey.action,
             flex: Math.max(originalSpaceKey.flex - EMOJI_KEY_DATA.flex + 0.5, 3.5)
           };
-          lastRow[commaIndex + 2] = newSpaceKey;
+          lastRow[symbolsIndex + 2] = newSpaceKey;
         }
         const newLayout = layout.slice(0, layout.length - 1);
         newLayout.push(lastRow);

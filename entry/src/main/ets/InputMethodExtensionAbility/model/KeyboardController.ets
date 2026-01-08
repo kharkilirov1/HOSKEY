@@ -109,6 +109,18 @@ export class KeyboardController {
     }
   }
 
+  public moveCursor(direction: number): void {
+    if (this.textInputClient) {
+      try {
+        this.textInputClient.moveCursor(direction);
+        this.updateCacheOnCursorMove(direction);
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`OpenBoard Keyboard: Failed to move cursor. Code: ${error.code}, Msg: ${error.message}`);
+      }
+    }
+  }
+
   public sendEnterKey(): void {
     if (this.textInputClient) {
       try {
@@ -166,6 +178,11 @@ export class KeyboardController {
     this.cursorPosition = Math.max(0, this.cursorPosition - length);
   }
 
+  private updateCacheOnCursorMove(direction: number): void {
+    // direction: positive = right/forward, negative = left/backward
+    this.cursorPosition = Math.max(0, Math.min(this.textBufferCache.length, this.cursorPosition + direction));
+  }
+
   private async syncInitialBuffer(): Promise<void> {
     if (!this.textInputClient) return;
 
@@ -208,7 +225,7 @@ export class KeyboardController {
       const error = err as BusinessError;
       console.error(`OpenBoard Keyboard: Failed to get display. Code: ${error.code}, Msg: ${error.message}`);
     }
-    let keyHeightRate = 0.35; // 35% of screen height for all devices
+    let keyHeightRate = 0.30; // 30% of screen height for all devices
     let keyHeight = dHeight * keyHeightRate;
     let nonBarPosition = dHeight - keyHeight;
 
