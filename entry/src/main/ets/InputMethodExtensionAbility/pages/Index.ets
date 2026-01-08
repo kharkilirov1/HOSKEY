@@ -958,7 +958,7 @@ struct Index {
     }
     this.rapidDeleteTimer = setInterval(() => {
       feedbackController.provideFeedback(FeedbackType.Heavy);
-      keyboardController.deleteBackward(1);
+      keyboardController.deleteForward(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -987,7 +987,7 @@ struct Index {
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteBackward(1);
+        keyboardController.deleteForward(1);
         this.onBackspaceTyped();
       }
       this.backspaceCurrentX = x;
@@ -1140,7 +1140,7 @@ struct Index {
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteBackward(1);
+        keyboardController.deleteForward(1);
         await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
@@ -1334,8 +1334,8 @@ struct Index {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
 
-          // Delete the typed word (BUG-001 FIX: deleteBackward instead of deleteForward)
-          keyboardController.deleteBackward(this.currentWord.length);
+          // Delete the typed word before cursor (HarmonyOS: deleteForward removes text before cursor)
+          keyboardController.deleteForward(this.currentWord.length);
 
           // Insert the corrected word
           keyboardController.insertText(correction);
@@ -1404,8 +1404,8 @@ struct Index {
 
   private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
-    // BUG-002 FIX: deleteBackward instead of deleteForward
-    keyboardController.deleteBackward(this.currentWord.length);
+    // HarmonyOS: deleteForward removes text before cursor
+    keyboardController.deleteForward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
