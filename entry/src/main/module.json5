@@ -21,6 +21,16 @@
           ],
           "when": "inuse"
         }
+      },
+      {
+        "name": "ohos.permission.VIBRATE",
+        "reason": "$string:vibrate_permission_reason",
+        "usedScene": {
+          "abilities": [
+            "InputMethodExtensionAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
 

@@ -52,15 +52,25 @@ export class KeyboardController {
   public hideKeyboard(): void {
     if (this.panel) {
       try {
-        inputMethodAbility.destroyPanel(this.panel);
+        this.panel.hide();
+        console.info('OpenBoard Keyboard: Panel hidden');
       } catch (err) {
         const error = err as BusinessError;
         console.error(`OpenBoard Keyboard: Failed to hide panel. Code: ${error.code}, Msg: ${error.message}`);
       }
-      this.panel = undefined;
     }
-    this.textInputClient = undefined;
-    this.currentEnterKeyType = inputMethodEngine.ENTER_KEY_TYPE_UNSPECIFIED;
+  }
+
+  private showKeyboard(): void {
+    if (this.panel) {
+      try {
+        this.panel.show();
+        console.info('OpenBoard Keyboard: Panel shown');
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`OpenBoard Keyboard: Failed to show panel. Code: ${error.code}, Msg: ${error.message}`);
+      }
+    }
   }
 
   public insertText(text: string): void {
@@ -95,6 +105,18 @@ export class KeyboardController {
       } catch (err) {
         const error = err as BusinessError;
         console.error(`OpenBoard Keyboard: Failed to delete backward. Code: ${error.code}, Msg: ${error.message}`);
+      }
+    }
+  }
+
+  public moveCursor(direction: number): void {
+    if (this.textInputClient) {
+      try {
+        this.textInputClient.moveCursor(direction);
+        this.updateCacheOnCursorMove(direction);
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`OpenBoard Keyboard: Failed to move cursor. Code: ${error.code}, Msg: ${error.message}`);
       }
     }
   }
@@ -156,6 +178,11 @@ export class KeyboardController {
     this.cursorPosition = Math.max(0, this.cursorPosition - length);
   }
 
+  private updateCacheOnCursorMove(direction: number): void {
+    // direction: positive = right/forward, negative = left/backward
+    this.cursorPosition = Math.max(0, Math.min(this.textBufferCache.length, this.cursorPosition + direction));
+  }
+
   private async syncInitialBuffer(): Promise<void> {
     if (!this.textInputClient) return;
 
@@ -198,7 +225,7 @@ export class KeyboardController {
       const error = err as BusinessError;
       console.error(`OpenBoard Keyboard: Failed to get display. Code: ${error.code}, Msg: ${error.message}`);
     }
-    let keyHeightRate = dHeight >= 1200 ? 0.35 : 0.40;
+    let keyHeightRate = 0.30; // 30% of screen height for all devices
     let keyHeight = dHeight * keyHeightRate;
     let nonBarPosition = dHeight - keyHeight;
 
@@ -233,6 +260,14 @@ export class KeyboardController {
   private registerListener(): void {
     this.registerInputListener();
   }
+
+  private inputStartCallback = async (_: inputMethodEngine.KeyboardController, textInputClient: inputMethodEngine.InputClient): Promise<void> => {
+    this.textInputClient = textInputClient;
+    this.updateEnterKeyType();
+    await this.syncInitialBuffer();
+    this.hideIfDestroyedAndRecreate();
+    this.showKeyboard();
+  };
 
   private registerInputListener(): void {
     inputMethodAbility.on('inputStart', this.inputStartCallback);
