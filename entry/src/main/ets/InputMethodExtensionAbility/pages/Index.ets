@@ -449,7 +449,7 @@ struct KeyView {
 @Entry
 @Component
 struct Index {
-  @State currentLanguage: LanguageCode = 'en';
+  @State currentLanguage: LanguageCode = 'ru';
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
   @State keyboardLayout: KeyboardLayout = KeyboardLayout.Alphabet;
