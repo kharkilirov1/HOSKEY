@@ -54,6 +54,7 @@ export class BaseLexicon {
   }
 
   isLoaded(): boolean {
+    console.info(`[BaseLexicon] isLoaded() = ${this.loaded}, words.length=${this.words.length}`);
     return this.loaded;
   }
 
@@ -62,29 +63,45 @@ export class BaseLexicon {
    * Call this on app initialization
    */
   async load(lang: string): Promise<void> {
+    console.info(`[BaseLexicon] load("${lang}") called`);
+
     if (!this.context) {
-      console.warn('BaseLexicon: Context not set, cannot load');
+      console.warn('[BaseLexicon] Context not set, cannot load');
       return;
     }
+
+    console.info(`[BaseLexicon] Context OK, loading files for lang="${lang}"`);
 
     try {
       // Load word list (50k words, sorted alphabetically)
       const wordsFile = `${lang}_base_words_50k.txt`;
+      console.info(`[BaseLexicon] Loading ${wordsFile}...`);
       const wordsList = await this.loadTextFile(wordsFile);
+      console.info(`[BaseLexicon] Loaded ${wordsList.length} raw words from ${wordsFile}`);
 
       // Load frequency weights (word<TAB>weight)
       const freqFile = `${lang}_base_freq_50k.tsv`;
+      console.info(`[BaseLexicon] Loading ${freqFile}...`);
       const freqData = await this.loadFrequencyData(freqFile);
+      console.info(`[BaseLexicon] Loaded ${freqData.size} frequencies from ${freqFile}`);
 
       // Load blocked words list
       const blockedFile = `${lang}_blocked_words.txt`;
+      console.info(`[BaseLexicon] Loading ${blockedFile}...`);
       const blockedList = await this.loadTextFile(blockedFile);
+      console.info(`[BaseLexicon] Loaded ${blockedList.length} blocked words from ${blockedFile}`);
 
       // Process and validate
       this.words = wordsList
         .map(w => w.trim().toLowerCase())
         .filter(w => w.length >= 2)
         .sort(); // Ensure alphabetical order for binary search
+
+      console.info(`[BaseLexicon] After filtering: ${this.words.length} words`);
+      if (this.words.length > 0) {
+        console.info(`[BaseLexicon] First 5 words: [${this.words.slice(0, 5).join(', ')}]`);
+        console.info(`[BaseLexicon] Last 5 words: [${this.words.slice(-5).join(', ')}]`);
+      }
 
       this.freqMap = freqData;
 
@@ -107,7 +124,9 @@ export class BaseLexicon {
         .map(e => e.word);
 
       this.loaded = true;
-      console.info(`BaseLexicon: Loaded ${this.words.length} words, ${this.freqMap.size} frequencies, ${this.blockedWords.size} blocked words for '${lang}'`);
+      console.info(`[BaseLexicon] === LOADED SUCCESSFULLY ===`);
+      console.info(`[BaseLexicon] Total: ${this.words.length} words, ${this.freqMap.size} frequencies, ${this.blockedWords.size} blocked words for '${lang}'`);
+      console.info(`[BaseLexicon] Top 5 frequent words: [${this.topFrequentWords.slice(0, 5).join(', ')}]`);
 
     } catch (err) {
       const error = err as BusinessError;
@@ -202,21 +221,34 @@ export class BaseLexicon {
    * Returns top N candidates sorted by frequency
    */
   findByPrefix(prefix: string, maxResults: number = 20): LexEntry[] {
+    console.info(`[BaseLexicon] findByPrefix("${prefix}", ${maxResults})`);
+    console.info(`[BaseLexicon]   loaded=${this.loaded}, words.length=${this.words.length}, freqMap.size=${this.freqMap.size}`);
+
     if (!this.loaded || !prefix || prefix.length === 0) {
+      console.info(`[BaseLexicon]   Early return: loaded=${this.loaded}, prefix.length=${prefix?.length ?? 0}`);
       return [];
     }
 
     const prefixLower = prefix.toLowerCase();
+    console.info(`[BaseLexicon]   prefixLower="${prefixLower}"`);
+
     const cacheKey = `${prefixLower}:${maxResults}`;
 
     // Check cache
     const cached = this.prefixCache.get(cacheKey);
     if (cached) {
+      console.info(`[BaseLexicon]   Cache HIT: ${cached.candidates.length} results`);
       return cached.candidates;
     }
 
     // Binary search for starting position
     const startIdx = this.lowerBound(prefixLower);
+    console.info(`[BaseLexicon]   Binary search startIdx=${startIdx}`);
+
+    if (startIdx < this.words.length) {
+      console.info(`[BaseLexicon]   words[${startIdx}]="${this.words[startIdx]}"`);
+      console.info(`[BaseLexicon]   First 5 words from startIdx: [${this.words.slice(startIdx, startIdx + 5).join(', ')}]`);
+    }
 
     // Collect matching words
     const matches: LexEntry[] = [];
@@ -237,6 +269,11 @@ export class BaseLexicon {
       matches.push({ word, freq });
     }
 
+    console.info(`[BaseLexicon]   Found ${matches.length} matches`);
+    if (matches.length > 0) {
+      console.info(`[BaseLexicon]   Top 3 matches: [${matches.slice(0, 3).map(m => `"${m.word}"(${m.freq})`).join(', ')}]`);
+    }
+
     // Sort by frequency descending
     matches.sort((a, b) => b.freq - a.freq);
 
@@ -246,6 +283,7 @@ export class BaseLexicon {
     // Cache result
     this.prefixCache.set(cacheKey, { candidates: topMatches });
 
+    console.info(`[BaseLexicon]   Returning ${topMatches.length} results`);
     return topMatches;
   }
 
