@@ -770,7 +770,7 @@ struct Index {
       console.error('OpenBoard: Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
   }
@@ -1225,7 +1225,7 @@ struct Index {
       console.error('OpenBoard: Failed to warmup language:', err);
     }).then(() => {
       // Update SwipeEngine with new language lexicon
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
   }
