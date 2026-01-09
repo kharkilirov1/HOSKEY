@@ -921,6 +921,8 @@ class PredictionModel {
    * - Anti-garbage filtering
    */
   async predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): Promise<string[]> {
+    console.info('[PredictionModel] === PREDICT START ===');
+    console.info(`[PredictionModel] Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
     debugLog(`=== PREDICT START ===`);
     debugLog(`Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
 
@@ -1186,6 +1188,8 @@ class PredictionModel {
       out.push('');
     }
 
+    console.info(`[PredictionModel] === PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
+    console.info(`[PredictionModel] candidates.size=${candidates.size}, list.length=${list.length}, out.length=${out.length}`);
     debugLog(`=== PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
     return out;
   }
