@@ -54,6 +54,12 @@ export class BaseLexicon {
   }
 
   isLoaded(): boolean {
+    // Check for corrupted state: loaded=true but words array is empty
+    // This can happen if load() was interrupted or files failed to load
+    if (this.loaded && this.words.length === 0) {
+      console.warn('[BaseLexicon] CORRUPTED STATE DETECTED: loaded=true but words.length=0! Forcing reload...');
+      this.loaded = false; // Reset to force reload
+    }
     console.info(`[BaseLexicon] isLoaded() = ${this.loaded}, words.length=${this.words.length}`);
     return this.loaded;
   }
