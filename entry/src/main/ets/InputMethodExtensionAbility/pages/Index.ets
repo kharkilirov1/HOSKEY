@@ -33,7 +33,7 @@ type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
-const DEBUG_PREDICT = false; // Set to true for prediction debugging
+const DEBUG_PREDICT = true; // ENABLED for prediction debugging
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -1235,11 +1235,17 @@ struct Index {
     this.suggestionsReqId++;
     const currentReqId = this.suggestionsReqId;
 
+    console.info(`[Index] === updateSuggestions START === reqId=${currentReqId}`);
+    console.info(`[Index] currentWord="${this.currentWord}", previousWord="${this.previousWord}", prevPrevWord="${this.prevPrevWord}"`);
+    console.info(`[Index] currentLanguage="${this.currentLanguage}"`);
+
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
         ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
+
+      console.info(`[Index] autocorrection="${autocorrection}"`);
 
       // Check if request is stale (user typed more keys while we were waiting)
       if (currentReqId !== this.suggestionsReqId) {
@@ -1249,7 +1255,9 @@ struct Index {
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
+        console.info(`[Index] Calling predict() WITH autocorrection, k=2`);
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+        console.info(`[Index] predict() returned: [${list.map(x => `"${x}"`).join(', ')}]`);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
@@ -1258,13 +1266,16 @@ struct Index {
         }
 
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
+        console.info(`[Index] Final suggestions SET: [${this.suggestions.map(x => `"${x}"`).join(', ')}]`);
 
         if (DEBUG_PREDICT) {
           Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
+        console.info(`[Index] Calling predict() WITHOUT autocorrection, k=3`);
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+        console.info(`[Index] predict() returned: [${list.map(x => `"${x}"`).join(', ')}]`);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
@@ -1273,12 +1284,15 @@ struct Index {
         }
 
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+        console.info(`[Index] Final suggestions SET: [${this.suggestions.map(x => `"${x}"`).join(', ')}]`);
 
         if (DEBUG_PREDICT) {
           Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
         }
       }
+      console.info(`[Index] === updateSuggestions END ===`);
     } catch (e) {
+      console.error(`[Index] EXCEPTION in updateSuggestions:`, e);
       Logger.warn('Prediction model error', e as Error);
       this.suggestions = ['', '', ''];
     }
