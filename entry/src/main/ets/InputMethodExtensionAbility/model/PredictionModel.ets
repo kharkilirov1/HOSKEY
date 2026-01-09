@@ -799,7 +799,9 @@ class PredictionModel {
     }
 
     // 5. Too many symbols/punctuation
-    const symbolCount = (word.match(/[^\w\s]/g) || []).length;
+    // Match actual punctuation/symbols, not Cyrillic letters
+    // \p{L} = any letter (Cyrillic, Latin, etc.), \p{N} = any digit
+    const symbolCount = (word.match(/[^\p{L}\p{N}]/gu) || []).length;
     if (symbolCount / word.length > PredictionConfig.MAX_SYMBOL_RATIO) {
       debugLog(`  [isGarbage] "${word}" -> TRUE (too many symbols: ${symbolCount}/${word.length})`);
       return true;
