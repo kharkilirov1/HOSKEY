@@ -1188,6 +1188,8 @@ class PredictionModel {
       out.push('');
     }
 
+    console.info(`[PredictionModel] === PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
+    console.info(`[PredictionModel] candidates.size=${candidates.size}, list.length=${list.length}, out.length=${out.length}`);
     debugLog(`=== PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
     return out;
   }
