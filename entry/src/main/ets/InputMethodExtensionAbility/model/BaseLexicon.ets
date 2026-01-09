@@ -37,6 +37,7 @@ export class BaseLexicon {
   private prefixCache: LRUCache<string, PrefixResult>;
   private blockedWords: Set<string> = new Set(); // Base blocked words list
   private loaded: boolean = false;
+  private isLoading: boolean = false; // Prevents multiple simultaneous load() calls
 
   // Cache configuration
   private readonly CACHE_SIZE = 500; // LRU cache capacity
@@ -71,12 +72,20 @@ export class BaseLexicon {
   async load(lang: string): Promise<void> {
     console.info(`[BaseLexicon] load("${lang}") called`);
 
+    // Guard against multiple simultaneous loads
+    if (this.isLoading) {
+      console.warn('[BaseLexicon] Already loading, skipping duplicate call');
+      return;
+    }
+
     if (!this.context) {
       console.warn('[BaseLexicon] Context not set, cannot load');
       return;
     }
 
     console.info(`[BaseLexicon] Context OK, loading files for lang="${lang}"`);
+
+    this.isLoading = true;
 
     try {
       // Load word list (50k words, sorted alphabetically)
@@ -129,15 +138,25 @@ export class BaseLexicon {
         .slice(0, this.AUTOCORRECT_POOL_SIZE)
         .map(e => e.word);
 
-      this.loaded = true;
-      console.info(`[BaseLexicon] === LOADED SUCCESSFULLY ===`);
-      console.info(`[BaseLexicon] Total: ${this.words.length} words, ${this.freqMap.size} frequencies, ${this.blockedWords.size} blocked words for '${lang}'`);
-      console.info(`[BaseLexicon] Top 5 frequent words: [${this.topFrequentWords.slice(0, 5).join(', ')}]`);
+      // Only set loaded=true if we actually loaded words
+      if (this.words.length > 0) {
+        this.loaded = true;
+        console.info(`[BaseLexicon] === LOADED SUCCESSFULLY ===`);
+        console.info(`[BaseLexicon] Total: ${this.words.length} words, ${this.freqMap.size} frequencies, ${this.blockedWords.size} blocked words for '${lang}'`);
+        console.info(`[BaseLexicon] Top 5 frequent words: [${this.topFrequentWords.slice(0, 5).join(', ')}]`);
+      } else {
+        this.loaded = false;
+        console.error(`[BaseLexicon] === LOAD FAILED: 0 words loaded ===`);
+        console.error(`[BaseLexicon] freqData.size=${freqData.size}, blockedList.length=${blockedList.length}`);
+      }
 
     } catch (err) {
       const error = err as BusinessError;
       console.error(`BaseLexicon: Failed to load for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
       this.loaded = false;
+    } finally {
+      this.isLoading = false;
+      console.info(`[BaseLexicon] load() complete, isLoading reset to false`);
     }
   }
 
@@ -145,21 +164,38 @@ export class BaseLexicon {
    * Load text file from rawfile (one word per line)
    */
   private async loadTextFile(filename: string): Promise<string[]> {
-    if (!this.context) return [];
+    console.info(`[BaseLexicon] loadTextFile("${filename}") called`);
+    console.info(`[BaseLexicon]   filename type: ${typeof filename}, length: ${filename?.length ?? 0}`);
+    console.info(`[BaseLexicon]   filename charCodes: [${Array.from(filename).map(c => c.charCodeAt(0)).join(', ')}]`);
+
+    if (!this.context) {
+      console.warn('[BaseLexicon] loadTextFile: context is null');
+      return [];
+    }
 
     try {
       const resMgr = this.context.resourceManager;
+      console.info(`[BaseLexicon]   resourceManager: ${resMgr ? 'OK' : 'NULL'}`);
+      console.info(`[BaseLexicon]   Calling getRawFileContent("${filename}")...`);
       const fileData = await resMgr.getRawFileContent(filename);
+      console.info(`[BaseLexicon]   getRawFileContent returned, fileData.buffer.byteLength: ${fileData.buffer.byteLength}`);
+
       const decoder = util.TextDecoder.create('utf-8');
       const text = decoder.decodeToString(new Uint8Array(fileData.buffer));
+      console.info(`[BaseLexicon]   Decoded text length: ${text.length} chars`);
 
-      return text.split('\n')
+      const lines = text.split('\n')
         .map(line => line.trim())
         .filter(line => line.length > 0);
 
+      console.info(`[BaseLexicon]   Parsed ${lines.length} non-empty lines`);
+      return lines;
+
     } catch (err) {
-      // File might not exist (e.g., blocked_words.txt is optional)
-      console.warn(`BaseLexicon: Could not load ${filename}, using empty list`);
+      const error = err as BusinessError;
+      console.error(`[BaseLexicon] loadTextFile("${filename}") FAILED`);
+      console.error(`[BaseLexicon]   Error code: ${error.code}, message: ${error.message}`);
+      console.error(`[BaseLexicon]   Error name: ${error.name}, stack: ${error.stack ?? 'no stack'}`);
       return [];
     }
   }
