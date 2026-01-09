@@ -94,7 +94,7 @@ class PredictionConfig {
    */
   static calculatePrefixBoost(word: string, prefix: string): number {
     if (!prefix || prefix.length === 0) return 0;
-    const matchLength = this.getCommonPrefixLength(word.toLowerCase(), prefix.toLowerCase());
+    const matchLength = PredictionConfig.getCommonPrefixLength(word.toLowerCase(), prefix.toLowerCase());
     return matchLength * 3; // 3 points per matched character
   }
 
