@@ -94,7 +94,7 @@ class PredictionConfig {
    */
   static calculatePrefixBoost(word: string, prefix: string): number {
     if (!prefix || prefix.length === 0) return 0;
-    const matchLength = this.getCommonPrefixLength(word.toLowerCase(), prefix.toLowerCase());
+    const matchLength = PredictionConfig.getCommonPrefixLength(word.toLowerCase(), prefix.toLowerCase());
     return matchLength * 3; // 3 points per matched character
   }
 
@@ -752,7 +752,8 @@ class PredictionModel {
   }
 
   /**
-   * Advanced anti-garbage filter based on expert recommendations
+   * Advanced anti-garbage filter (FIXED: removed false positives)
+   * BUG FIX: Removed /^(.).?\1.?\1/i pattern that blocked normal words like "обо", "мама", "папа"
    */
   private isGarbage(word: string, lang: string): boolean {
     if (!word || word.length === 0) return true;
@@ -789,21 +790,30 @@ class PredictionModel {
 
     // 6. Too many repeating characters (keyboard mashing detection)
     const uniqueChars = new Set(word.toLowerCase()).size;
-    if (uniqueChars < PredictionConfig.MIN_UNIQUE_CHARS) {
-      return true; // "aaaaaa" or "11111"
+
+    // Allow short words (length <= 3) to have only 1 unique char (interdictions: "ааа", "ммм")
+    // For longer words, require at least 2 unique chars
+    const minUniqueForLength = word.length <= 3 ? 1 : PredictionConfig.MIN_UNIQUE_CHARS;
+    if (uniqueChars < minUniqueForLength) {
+      return true; // "aaaaaa" (length > 3, uniqueChars = 1)
     }
 
-    // Check ratio of unique chars to total length
+    // Check ratio of unique chars to total length (more lenient: 0.75 instead of 0.6)
+    // This allows interdictions like "ааа" (repeatRatio = 0.67) to pass
     const repeatRatio = 1 - (uniqueChars / word.length);
-    if (repeatRatio > PredictionConfig.MAX_REPEAT_RATIO) {
-      return true; // "aaabbbccc" (too repetitive)
+    if (word.length > 3 && repeatRatio > 0.75) {
+      return true; // "aaaabbbb" (too repetitive, but only for longer words)
     }
 
-    // 7. Keyboard mashing patterns (common sequences)
+    // 7. Keyboard mashing patterns (FIXED: removed false positive pattern)
     const mashingPatterns = [
-      /^qwerty/i, /^asdfgh/i, /^zxcvbn/i, // QWERTY rows
-      /^йцукен/i, /^фывапр/i, /^ячсмит/i, // Russian keyboard rows
-      /^(.).?\1.?\1/i, // Triple repeated with gaps: "aba", "a1a"
+      // QWERTY keyboard rows (full sequences only)
+      /^qwerty/i, /^asdfgh/i, /^zxcvbn/i,
+      // Russian keyboard rows (full sequences only)
+      /^йцукен/i, /^фывапр/i, /^ячсмит/i,
+      // REMOVED: /^(.).?\1.?\1/i - this blocked normal words like "обо", "око", "мама", "папа"
+      // Real keyboard mashing: same char repeated 5+ times
+      /^(.)\1{4,}/, // "aaaaa", "11111"
     ];
 
     for (const pattern of mashingPatterns) {
