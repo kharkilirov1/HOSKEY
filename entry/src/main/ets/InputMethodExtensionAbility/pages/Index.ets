@@ -1108,6 +1108,7 @@ struct Index {
 
     switch (key.action) {
       case KeyAction.Char:
+        console.info(`[Index] KeyAction.Char triggered`);
         // Light haptic for regular character keys
         feedbackController.provideFeedback(FeedbackType.Light);
         // Remember if shift was on BEFORE typing this character
@@ -1115,8 +1116,10 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
+        console.info(`[Index] Char: text="${text}", mainValue="${key.mainValue}", shiftValue="${key.shiftValue ?? 'none'}"`);
         Logger.autocap(`Typing char, shift state: ${this.shiftState}, text: ${text}, mainValue: ${key.mainValue}, shiftValue: ${key.shiftValue ?? 'none'}`);
         keyboardController.insertText(text);
+        console.info(`[Index] Calling onTextTyped("${text}")`);
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
@@ -1329,12 +1332,18 @@ struct Index {
   }
 
   private async onTextTyped(text: string): Promise<void> {
-    if (!text) return;
+    console.info(`[Index] onTextTyped: text="${text}"`);
+    if (!text) {
+      console.info(`[Index] onTextTyped: empty text, returning`);
+      return;
+    }
     if (this.isBoundaryChar(text)) {
+      console.info(`[Index] onTextTyped: boundary char detected, calling onBoundaryTyped`);
       await this.onBoundaryTyped(text);
       return;
     }
     this.currentWord = this.currentWord + text;
+    console.info(`[Index] onTextTyped: currentWord="${this.currentWord}", calling updateSuggestions()`);
     void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
   }
