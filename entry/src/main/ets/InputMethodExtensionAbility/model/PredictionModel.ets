@@ -51,30 +51,46 @@ interface VerbPattern {
   lemma: string;
 }
 
+/**
+ * Centralized configuration for prediction system
+ */
+class PredictionConfig {
+  // Learning thresholds
+  static readonly LEARN_THRESHOLD = 3; // Word must be typed 3 times to be "learned"
+  static readonly PENDING_SUGGEST_THRESHOLD = 1; // Show pending words after 1 occurrence
+
+  // Scoring weights (for unified candidate ranking)
+  static readonly SCORE_BASE_WEIGHT = 2; // BaseLexicon frequency (if available)
+  static readonly SCORE_LEARNED_WEIGHT = 5; // User learned words
+  static readonly SCORE_PENDING_WEIGHT = 1; // Pending words (not yet learned)
+  static readonly SCORE_CONTEXT_WEIGHT = 100; // Bigram/trigram context (highest)
+  static readonly SCORE_RECENCY_WEIGHT = 1; // Recent usage bonus
+  static readonly SCORE_PREFIX_BOOST = 10; // Boost for prefix match
+
+  // Model limits
+  static readonly MAX_WORDS_PER_LANGUAGE = 10000;
+  static readonly MAX_BIGRAMS_PER_WORD = 100;
+  static readonly MAX_TRIGRAMS_PER_KEY = 50;
+  static readonly MAX_SUGGESTIONS = 3;
+
+  // Save settings
+  static readonly SAVE_THRESHOLD = 10; // Save after every 10 words
+  static readonly SAVE_DEBOUNCE_MS = 3000; // 3 seconds
+  static readonly DECAY_FACTOR = 0.95;
+  static readonly MIN_COUNT_THRESHOLD = 0.5;
+
+  // Anti-garbage filters
+  static readonly MIN_WORD_LENGTH = 1; // Minimum word length to suggest
+  static readonly MAX_DIGIT_RATIO = 0.5; // Max ratio of digits in word
+  static readonly MAX_SYMBOL_RATIO = 0.3; // Max ratio of symbols in word
+}
+
 class PredictionModel {
   private models: Map<string, LangModel>; // User-learned models (mutable)
   private baseLexicons: Map<string, BaseLexicon>; // Base lexicons (50k words with binary search)
   private context: common.Context | null = null;
   private saveCounter: number = 0;
-  private readonly SAVE_THRESHOLD = 10; // Save after every 10 words learned
-  private readonly DECAY_FACTOR = 0.95; // Decay competing words by 5%
-  private readonly MIN_COUNT_THRESHOLD = 0.5; // Remove words with count below this
-  private readonly LEARN_THRESHOLD = 3; // Word must be typed 3 times to be learned
-
-  // Model size limits to prevent unbounded memory growth
-  private readonly MAX_WORDS_PER_LANGUAGE = 10000; // Maximum unique words per language
-  private readonly MAX_BIGRAMS_PER_WORD = 100; // Maximum bigram entries per word
-  private readonly MAX_TRIGRAMS_PER_KEY = 50; // Maximum trigram entries per key
-
-  // Hybrid ranking weights - context dominates, user personalization matters, base lexicon is fallback
-  private readonly SCORE_CONTEXT_WEIGHT = 100; // Bigram/trigram context (highest priority)
-  private readonly SCORE_USER_RANK_WEIGHT = 5; // User personalization rank
-  private readonly SCORE_RECENCY_WEIGHT = 1; // Recent usage bonus
-  private readonly SCORE_BASE_FREQ_WEIGHT = 2; // Base lexicon frequency (fallback)
-
-  // Save debounce
   private saveTimer: number | null = null;
-  private readonly SAVE_DEBOUNCE_MS = 3000; // 3 seconds
   private isSaving: boolean = false;
 
   constructor() {
@@ -85,14 +101,33 @@ class PredictionModel {
   setContext(ctx: common.Context): void {
     this.context = ctx;
 
-    // Initialize base lexicons for supported languages (but don't load yet - lazy loading)
-    // Only 'ru' has full 50k lexicon files, 'en' can be added later if needed
-    const supportedLangs = ['ru'];
-    supportedLangs.forEach(lang => {
+    // Initialize base lexicons for languages that have lexicon files
+    // BaseLexicon is OPTIONAL - prediction works without it (fallback to user model)
+    // Currently: 'ru' has full 50k lexicon files
+    // To add new language (e.g. 'en'):
+    // 1. Add rawfile/en_base_words_50k.txt and en_base_freq_50k.tsv
+    // 2. Add 'en' to baseLexiconLanguages array below
+    // 3. That's it! No changes needed in predict()/recordWord()
+    const baseLexiconLanguages = ['ru'];
+    baseLexiconLanguages.forEach(lang => {
       const lexicon = new BaseLexicon();
       lexicon.setContext(ctx);
       this.baseLexicons.set(lang, lexicon);
     });
+  }
+
+  /**
+   * Check if language has BaseLexicon registered
+   */
+  hasBaseLexicon(lang: string): boolean {
+    return this.baseLexicons.has(lang);
+  }
+
+  /**
+   * Get BaseLexicon for language (returns null if not available)
+   */
+  getBaseLexicon(lang: string): BaseLexicon | null {
+    return this.baseLexicons.get(lang) ?? null;
   }
 
   /**
@@ -155,18 +190,6 @@ class PredictionModel {
   async warmup(lang: string): Promise<void> {
     await this.ensureBaseLexiconLoaded(lang);
     console.info(`PredictionModel: Warmup complete for language '${lang}'`);
-  }
-
-  // Get base lexicon for language (private)
-  private getBaseLexicon(lang: string): BaseLexicon | null {
-    return this.baseLexicons.get(lang) ?? null;
-  }
-
-  /**
-   * Get base lexicon for language (public for SwipeEngine integration)
-   */
-  getBaseLexiconPublic(lang: string): BaseLexicon | null {
-    return this.baseLexicons.get(lang) ?? null;
   }
 
   /**
@@ -618,7 +641,18 @@ class PredictionModel {
       } else {
         // Still pending, increment count
         m.pendingWords.set(w, newPendingCount);
-        debugLog(`Word "${w}" saved to pending (not yet learned)`);
+
+        // IMPORTANT: Update n-grams even for pending words!
+        // This allows context-based predictions to work immediately
+        // Pending words will have lower weight in scoring, but context still matters
+        this.updateBigramTrigram(m, w, prev, prev2, now);
+
+        // Track basic stats for pending words
+        const rank = m.wordRank.get(w) ?? 0;
+        m.wordRank.set(w, rank + 1);
+        m.lastUsed.set(w, now);
+
+        debugLog(`Word "${w}" saved to pending (not yet learned) - n-grams updated`);
       }
     }
 
@@ -648,6 +682,43 @@ class PredictionModel {
     return word.toLowerCase();
   }
 
+  /**
+   * Anti-garbage filter: check if word is likely garbage/typo
+   */
+  private isGarbage(word: string, lang: string): boolean {
+    // Too short (except common 1-char words)
+    if (word.length < PredictionConfig.MIN_WORD_LENGTH) {
+      return true;
+    }
+
+    // Allow common 1-char words for Russian
+    if (lang === 'ru' && word.length === 1) {
+      const allowedSingleChars = ['я', 'в', 'и', 'к', 'о', 'с', 'у'];
+      if (!allowedSingleChars.includes(word.toLowerCase())) {
+        return true;
+      }
+    }
+
+    // Too many digits
+    const digitCount = (word.match(/\d/g) || []).length;
+    if (digitCount / word.length > PredictionConfig.MAX_DIGIT_RATIO) {
+      return true;
+    }
+
+    // Too many symbols/punctuation
+    const symbolCount = (word.match(/[^\w\s]/g) || []).length;
+    if (symbolCount / word.length > PredictionConfig.MAX_SYMBOL_RATIO) {
+      return true;
+    }
+
+    // Contains whitespace
+    if (/\s/.test(word)) {
+      return true;
+    }
+
+    return false;
+  }
+
   private shouldCapitalize(prevWord: string | null): boolean {
     if (!prevWord) return true; // Capitalize at start
 
@@ -663,12 +734,12 @@ class PredictionModel {
     const m = this.ensure(lang);
     const wordLower = word.toLowerCase();
 
-    // Don't autocorrect if word is already learned OR in base dictionary
-    if (this.isWordLearned(m, wordLower) || this.isBaseWord(lang, wordLower)) return null;
-
-    // Ensure BaseLexicon is loaded (lazy loading)
+    // IMPORTANT: Load BaseLexicon FIRST before checking isBaseWord
     await this.ensureBaseLexiconLoaded(lang);
     const baseLexicon = this.getBaseLexicon(lang);
+
+    // Don't autocorrect if word is already learned OR in base dictionary
+    if (this.isWordLearned(m, wordLower) || this.isBaseWord(lang, wordLower)) return null;
 
     // Find similar word from user learned words OR base lexicon
     const threshold = Math.min(2, Math.floor(word.length * 0.3));
@@ -724,32 +795,45 @@ class PredictionModel {
     return null;
   }
 
+  /**
+   * UNIFIED PREDICTION ENGINE with fallback support
+   * Works WITHOUT BaseLexicon by using user model + pending words
+   * BaseLexicon is optional enhancement when available
+   */
   async predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): Promise<string[]> {
     const m = this.ensure(lang);
-
-    // Ensure BaseLexicon is loaded (lazy loading)
-    await this.ensureBaseLexiconLoaded(lang);
-    const baseLexicon = this.getBaseLexicon(lang);
-
-    const list: RankedWord[] = [];
     const now = Date.now();
     const prefixLower = prefix ? prefix.toLowerCase() : null;
     const prevLower = prev ? prev.toLowerCase() : null;
     const prev2Lower = prev2 ? prev2.toLowerCase() : null;
 
-    const filter = (s: string): boolean => {
-      if (!prefixLower || prefixLower.length === 0) {
-        return true;
+    // Ensure BaseLexicon is loaded if available (lazy loading, non-blocking)
+    await this.ensureBaseLexiconLoaded(lang);
+    const baseLexicon = this.getBaseLexicon(lang);
+
+    // Unified candidate pool with deduplication
+    const candidates = new Map<string, RankedWord>();
+
+    // Helper: Add candidate to pool (deduplicate, keep highest score)
+    const addCandidate = (word: string, count: number, score: number): void => {
+      if (m.blockedWords.has(word) || this.isGarbage(word, lang)) {
+        return; // Skip blocked or garbage words
       }
-      return s.startsWith(prefixLower);
+      const existing = candidates.get(word);
+      if (!existing || score > existing.score) {
+        candidates.set(word, { w: word, c: count, score: score });
+      }
     };
 
-    // Hybrid scoring: Context >> UserRank/Recency >> BaseFreq
-    const calculateScore = (word: string, contextCount: number, isContextBased: boolean, baseFreq: number = 0): number => {
-      // Get user rank (personalization)
-      const userRank = m.wordRank.get(word) ?? 0;
+    // Helper: Prefix filter
+    const matchesPrefix = (word: string): boolean => {
+      if (!prefixLower || prefixLower.length === 0) return true;
+      return word.startsWith(prefixLower);
+    };
 
-      // Recency bonus calculation
+    // Helper: Unified scoring function
+    const calculateScore = (word: string, contextCount: number, wordCount: number, isPending: boolean, baseFreq: number): number => {
+      const userRank = m.wordRank.get(word) ?? 0;
       const lastUse = m.lastUsed.get(word) ?? 0;
       let recencyBonus = 0;
       if (lastUse > 0) {
@@ -758,151 +842,129 @@ class PredictionModel {
         recencyBonus = Math.max(0, 50 - (recencyHours * 0.5));
       }
 
-      if (isContextBased) {
-        // For context-based predictions (bigram/trigram):
-        // Context dominates, user personalization is secondary
-        return (contextCount * this.SCORE_CONTEXT_WEIGHT) +
-               (userRank * this.SCORE_USER_RANK_WEIGHT) +
-               (recencyBonus * this.SCORE_RECENCY_WEIGHT) +
-               (baseFreq * this.SCORE_BASE_FREQ_WEIGHT);
-      } else {
-        // For general predictions (unigram/base):
-        // User rank and recency matter, base frequency is fallback
-        return (userRank * this.SCORE_USER_RANK_WEIGHT) +
-               (recencyBonus * this.SCORE_RECENCY_WEIGHT) +
-               (baseFreq * this.SCORE_BASE_FREQ_WEIGHT);
+      // Prefix boost for better UX
+      const prefixBoost = matchesPrefix(word) && prefixLower && prefixLower.length > 0
+        ? PredictionConfig.SCORE_PREFIX_BOOST
+        : 0;
+
+      // Scoring with priority: context > learned > pending > base
+      let score = 0;
+      if (contextCount > 0) {
+        // Context-based (bigram/trigram)
+        score += contextCount * PredictionConfig.SCORE_CONTEXT_WEIGHT;
       }
+      if (!isPending && wordCount >= PredictionConfig.LEARN_THRESHOLD) {
+        // Learned word
+        score += userRank * PredictionConfig.SCORE_LEARNED_WEIGHT;
+      } else if (isPending) {
+        // Pending word (lower weight)
+        score += wordCount * PredictionConfig.SCORE_PENDING_WEIGHT;
+      }
+      score += baseFreq * PredictionConfig.SCORE_BASE_WEIGHT;
+      score += recencyBonus * PredictionConfig.SCORE_RECENCY_WEIGHT;
+      score += prefixBoost;
+
+      return score;
     };
 
-    // Priority 1: User trigram predictions (highest priority)
+    // SOURCE 1: Trigrams (highest context)
     if (prev2Lower && prevLower) {
       const triKeyStr = this.triKey(prev2Lower, prevLower);
       const triMap = m.tri.get(triKeyStr);
       if (triMap) {
-        triMap.forEach((c, w) => {
-          // Only suggest truly learned words, not blocked
-          if (filter(w) && this.isWordLearned(m, w) && !m.blockedWords.has(w)) {
-            const baseFreq = baseLexicon?.getFrequency(w) ?? 0;
-            const score = calculateScore(w, c, true, baseFreq);
-            list.push({ w: w, c: c, score: score });
+        triMap.forEach((contextCount, word) => {
+          if (matchesPrefix(word)) {
+            const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
+            const isPending = !m.uni.has(word) && m.pendingWords.has(word);
+            const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+            const score = calculateScore(word, contextCount, wordCount, isPending, baseFreq);
+            addCandidate(word, wordCount, score);
           }
         });
       }
     }
 
-    // Priority 2: User bigram predictions
-    if (list.length < k && prevLower) {
-      const nextMap = m.bi.get(prevLower);
-      if (nextMap) {
-        nextMap.forEach((c, w) => {
-          // Only suggest truly learned words, not blocked
-          if (filter(w) && this.isWordLearned(m, w) && !m.blockedWords.has(w) && !list.find(item => item.w === w)) {
-            const baseFreq = baseLexicon?.getFrequency(w) ?? 0;
-            const score = calculateScore(w, c, true, baseFreq);
-            list.push({ w: w, c: c, score: score });
+    // SOURCE 2: Bigrams
+    if (prevLower) {
+      const biMap = m.bi.get(prevLower);
+      if (biMap) {
+        biMap.forEach((contextCount, word) => {
+          if (matchesPrefix(word)) {
+            const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
+            const isPending = !m.uni.has(word) && m.pendingWords.has(word);
+            const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+            const score = calculateScore(word, contextCount, wordCount, isPending, baseFreq);
+            addCandidate(word, wordCount, score);
           }
         });
       }
     }
 
-    // Priority 3: User unigram (learned words)
-    if (list.length < k) {
-      m.uni.forEach((c, w) => {
-        // Only suggest truly learned words (count >= LEARN_THRESHOLD), not blocked
-        if (c >= this.LEARN_THRESHOLD && filter(w) && !m.blockedWords.has(w) && !list.find(item => item.w === w)) {
-          const baseFreq = baseLexicon?.getFrequency(w) ?? 0;
-          const score = calculateScore(w, c, false, baseFreq);
-          list.push({ w: w, c: c, score: score });
-        }
-      });
-    }
+    // SOURCE 3: User learned words (unigram)
+    m.uni.forEach((count, word) => {
+      if (matchesPrefix(word) && count >= PredictionConfig.LEARN_THRESHOLD) {
+        const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+        const score = calculateScore(word, 0, count, false, baseFreq);
+        addCandidate(word, count, score);
+      }
+    });
 
-    // Priority 4: Fill from BaseLexicon (50k words with binary search)
-    if (list.length < k && baseLexicon && baseLexicon.isLoaded()) {
-      // Use prefix search if prefix is provided (very fast O(log n) + O(m) where m = matches)
+    // SOURCE 4: Pending words (NEW! Allow fast suggestions)
+    m.pendingWords.forEach((count, word) => {
+      if (matchesPrefix(word) && count >= PredictionConfig.PENDING_SUGGEST_THRESHOLD) {
+        const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+        const score = calculateScore(word, 0, count, true, baseFreq);
+        addCandidate(word, count, score);
+      }
+    });
+
+    // SOURCE 5: BaseLexicon (if available and loaded)
+    if (baseLexicon && baseLexicon.isLoaded()) {
       if (prefixLower && prefixLower.length > 0) {
-        const lexEntries = baseLexicon.findByPrefix(prefixLower, k * 2); // Get more candidates for better ranking
+        // Prefix search (fast O(log n))
+        const lexEntries = baseLexicon.findByPrefix(prefixLower, k * 3);
         lexEntries.forEach(entry => {
-          const w = entry.word;
-          // Skip if already in list, blocked, or user blocked
-          if (!list.find(item => item.w === w) && !m.blockedWords.has(w)) {
-            const score = calculateScore(w, 0, false, entry.freq);
-            list.push({ w: w, c: 0, score: score });
-          }
+          const score = calculateScore(entry.word, 0, 0, false, entry.freq);
+          addCandidate(entry.word, 0, score);
         });
       } else {
-        // No prefix - use top frequent words (limited pool, no full scan)
-        const topWords = baseLexicon.getTopFrequentWords(); // Top 2000 frequent words
-        for (const w of topWords) {
-          if (!list.find(item => item.w === w) && !baseLexicon.isBlocked(w) && !m.blockedWords.has(w)) {
-            const freq = baseLexicon.getFrequency(w);
-            const score = calculateScore(w, 0, false, freq);
-            list.push({ w: w, c: 0, score: score });
-          }
+        // Top frequent words (fallback when no prefix)
+        const topWords = baseLexicon.getTopFrequentWords();
+        for (const word of topWords.slice(0, 50)) { // Limit to top 50 for performance
+          const freq = baseLexicon.getFrequency(word);
+          const score = calculateScore(word, 0, 0, false, freq);
+          addCandidate(word, 0, score);
         }
       }
     }
 
-    // Morphological expansion: add related word forms for Russian
-    if (lang === 'ru') {
-      const seenLemmas = new Set<string>();
-      const expandedList: RankedWord[] = [...list];
+    // Convert to array and sort by score
+    const rankedList = Array.from(candidates.values());
+    rankedList.sort((a, b) => b.score - a.score);
 
-      for (const item of list) {
-        const lemma = m.lemmaMap.get(item.w) ?? item.w;
-        if (!seenLemmas.has(lemma)) {
-          seenLemmas.add(lemma);
-          const forms = m.formsByLemma.get(lemma);
-          if (forms) {
-            for (const form of forms) {
-              if (filter(form) && !expandedList.find(x => x.w === form)) {
-                const formCount = m.uni.get(form) ?? 0;
-                if (formCount >= this.LEARN_THRESHOLD) { // Only include learned forms
-                  const baseFreq = baseLexicon?.getFrequency(form) ?? 0;
-                  const score = calculateScore(form, formCount, false, baseFreq) * 0.8; // 0.8 = secondary priority
-                  expandedList.push({ w: form, c: formCount, score: score });
-                }
-              }
-            }
-          }
-        }
-      }
-
-      list = expandedList;
-    }
-
-    // Sort by score (highest first)
-    list.sort((a, b) => b.score - a.score);
-
-    // Extract top k unique words with proper capitalization
-    const seen = new Set<string>();
-    const out: string[] = [];
+    // Extract top k with capitalization
+    const result: string[] = [];
     const shouldCap = this.shouldCapitalize(prev);
 
-    for (let i = 0; i < list.length && out.length < k; i++) {
-      let w = list[i].w;
-      if (!seen.has(w)) {
-        seen.add(w);
+    for (let i = 0; i < rankedList.length && result.length < k; i++) {
+      let word = rankedList[i].w;
 
-        // Apply capitalization based on context
-        if (prefix && prefix.length > 0) {
-          // Match capitalization of user's input
-          w = this.applyCasing(w, prefix);
-        } else if (shouldCap) {
-          // Capitalize at start or after sentence-ending punctuation
-          w = w.charAt(0).toUpperCase() + w.slice(1);
-        }
-
-        out.push(w);
+      // Apply capitalization
+      if (prefix && prefix.length > 0) {
+        word = this.applyCasing(word, prefix);
+      } else if (shouldCap) {
+        word = word.charAt(0).toUpperCase() + word.slice(1);
       }
+
+      result.push(word);
     }
 
     // Fill with empty strings if needed
-    while (out.length < k) {
-      out.push('');
+    while (result.length < k) {
+      result.push('');
     }
 
-    return out;
+    return result;
   }
 
   // Delete a word from the learned model

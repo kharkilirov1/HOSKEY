@@ -449,7 +449,7 @@ struct KeyView {
 @Entry
 @Component
 struct Index {
-  @State currentLanguage: LanguageCode = 'en';
+  @State currentLanguage: LanguageCode = 'ru'; // Default to Russian (has BaseLexicon)
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
   @State keyboardLayout: KeyboardLayout = KeyboardLayout.Alphabet;
@@ -460,7 +460,7 @@ struct Index {
   @State popupKeyWidth: number = 40;
   @State rapidDeleteTimer: number = -1;
   @State enterKeyLabel: string = 'Enter';
-  @State availableLanguages: LanguageCode[] = ['en'];
+  @State availableLanguages: LanguageCode[] = ['ru']; // Default to Russian
 
   // Swipe-based backspace state
   @State backspaceSwipeActive: boolean = false;
@@ -770,7 +770,7 @@ struct Index {
       console.error('OpenBoard: Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
   }
@@ -1225,7 +1225,7 @@ struct Index {
       console.error('OpenBoard: Failed to warmup language:', err);
     }).then(() => {
       // Update SwipeEngine with new language lexicon
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
   }
