@@ -7,7 +7,7 @@ import { BaseLexicon } from './BaseLexicon';
 import { Logger } from '../utils/logger';
 
 // Debug mode flag - set to false for production
-const DEBUG_MODE = false;
+const DEBUG_MODE = true; // ENABLED for debugging predictions
 
 function debugLog(...args: string[]): void {
   if (DEBUG_MODE) {
@@ -756,10 +756,14 @@ class PredictionModel {
    * BUG FIX: Removed /^(.).?\1.?\1/i pattern that blocked normal words like "обо", "мама", "папа"
    */
   private isGarbage(word: string, lang: string): boolean {
-    if (!word || word.length === 0) return true;
+    if (!word || word.length === 0) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (empty)`);
+      return true;
+    }
 
     // 1. Too short (except allowed single chars)
     if (word.length < PredictionConfig.MIN_WORD_LENGTH) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (too short)`);
       return true;
     }
 
@@ -767,24 +771,28 @@ class PredictionModel {
     if (lang === 'ru' && word.length === 1) {
       const allowedSingleChars = ['я', 'в', 'и', 'к', 'о', 'с', 'у', 'а'];
       if (!allowedSingleChars.includes(word.toLowerCase())) {
+        debugLog(`  [isGarbage] "${word}" -> TRUE (single char not in allowed list)`);
         return true;
       }
     }
 
     // 3. Contains whitespace
     if (/\s/.test(word)) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (contains whitespace)`);
       return true;
     }
 
     // 4. Too many digits
     const digitCount = (word.match(/\d/g) || []).length;
     if (digitCount / word.length > PredictionConfig.MAX_DIGIT_RATIO) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (too many digits: ${digitCount}/${word.length})`);
       return true;
     }
 
     // 5. Too many symbols/punctuation
     const symbolCount = (word.match(/[^\w\s]/g) || []).length;
     if (symbolCount / word.length > PredictionConfig.MAX_SYMBOL_RATIO) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (too many symbols: ${symbolCount}/${word.length})`);
       return true;
     }
 
@@ -795,6 +803,7 @@ class PredictionModel {
     // For longer words, require at least 2 unique chars
     const minUniqueForLength = word.length <= 3 ? 1 : PredictionConfig.MIN_UNIQUE_CHARS;
     if (uniqueChars < minUniqueForLength) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (unique chars ${uniqueChars} < ${minUniqueForLength})`);
       return true; // "aaaaaa" (length > 3, uniqueChars = 1)
     }
 
@@ -802,6 +811,7 @@ class PredictionModel {
     // This allows interdictions like "ааа" (repeatRatio = 0.67) to pass
     const repeatRatio = 1 - (uniqueChars / word.length);
     if (word.length > 3 && repeatRatio > 0.75) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (repeat ratio ${repeatRatio.toFixed(2)} > 0.75)`);
       return true; // "aaaabbbb" (too repetitive, but only for longer words)
     }
 
@@ -818,6 +828,7 @@ class PredictionModel {
 
     for (const pattern of mashingPatterns) {
       if (pattern.test(word)) {
+        debugLog(`  [isGarbage] "${word}" -> TRUE (matches mashing pattern: ${pattern})`);
         return true;
       }
     }
@@ -910,6 +921,9 @@ class PredictionModel {
    * - Anti-garbage filtering
    */
   async predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): Promise<string[]> {
+    debugLog(`=== PREDICT START ===`);
+    debugLog(`Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
+
     const m = this.ensure(lang);
     const now = Date.now();
     const prefixLower = prefix ? prefix.toLowerCase() : null;
@@ -917,20 +931,29 @@ class PredictionModel {
     const prev2Lower = prev2 ? prev2.toLowerCase() : null;
     const hasPrefix = prefixLower && prefixLower.length > 0;
 
+    debugLog(`Model stats: uni=${m.uni.size}, pending=${m.pendingWords.size}, bi=${m.bi.size}, tri=${m.tri.size}`);
+
     // Ensure BaseLexicon is loaded if available (non-blocking)
     await this.ensureBaseLexiconLoaded(lang);
     const baseLexicon = this.getBaseLexicon(lang);
+    debugLog(`BaseLexicon: ${baseLexicon ? (baseLexicon.isLoaded() ? 'LOADED' : 'NOT LOADED') : 'NOT AVAILABLE'}`);
 
     // Unified candidate pool (deduplication via Map)
     const candidates = new Map<string, RankedWord>();
 
     // Helper: Add candidate with deduplication
     const addCandidate = (word: string, count: number, score: number): void => {
-      if (m.blockedWords.has(word) || this.isGarbage(word, lang)) {
+      if (m.blockedWords.has(word)) {
+        debugLog(`  ↳ BLOCKED: "${word}"`);
+        return;
+      }
+      if (this.isGarbage(word, lang)) {
+        debugLog(`  ↳ GARBAGE: "${word}"`);
         return;
       }
       const existing = candidates.get(word);
       if (!existing || score > existing.score) {
+        debugLog(`  ↳ ADD: "${word}" (score: ${score.toFixed(1)}, count: ${count})`);
         candidates.set(word, { w: word, c: count, score: score });
       }
     };
@@ -974,10 +997,13 @@ class PredictionModel {
     };
 
     // SOURCE 1: Trigrams (highest context)
+    debugLog(`SOURCE 1: Trigrams (prev2="${prev2Lower}", prev="${prevLower}")`);
+    let source1Count = 0;
     if (prev2Lower && prevLower) {
       const triKeyStr = this.triKey(prev2Lower, prevLower);
       const triMap = m.tri.get(triKeyStr);
       if (triMap) {
+        debugLog(`  Found trigram map with ${triMap.size} entries`);
         triMap.forEach((contextCount, word) => {
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
@@ -988,16 +1014,23 @@ class PredictionModel {
             if (!isPending || (m.pendingWords.get(word) ?? 0) >= PredictionConfig.PENDING_CONTEXT_THRESHOLD) {
               const score = calculateScore(word, contextCount, wordCount, isPending, baseFreq);
               addCandidate(word, wordCount, score);
+              source1Count++;
             }
           }
         });
+      } else {
+        debugLog(`  No trigram map found for key "${triKeyStr}"`);
       }
     }
+    debugLog(`SOURCE 1: Added ${source1Count} candidates. Total: ${candidates.size}`);
 
     // SOURCE 2: Bigrams
+    debugLog(`SOURCE 2: Bigrams (prev="${prevLower}")`);
+    let source2Count = 0;
     if (prevLower) {
       const biMap = m.bi.get(prevLower);
       if (biMap) {
+        debugLog(`  Found bigram map with ${biMap.size} entries`);
         biMap.forEach((contextCount, word) => {
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
@@ -1008,22 +1041,32 @@ class PredictionModel {
             if (!isPending || (m.pendingWords.get(word) ?? 0) >= PredictionConfig.PENDING_CONTEXT_THRESHOLD) {
               const score = calculateScore(word, contextCount, wordCount, isPending, baseFreq);
               addCandidate(word, wordCount, score);
+              source2Count++;
             }
           }
         });
+      } else {
+        debugLog(`  No bigram map found for prev "${prevLower}"`);
       }
     }
+    debugLog(`SOURCE 2: Added ${source2Count} candidates. Total: ${candidates.size}`);
 
     // SOURCE 3: Learned words (unigram)
+    debugLog(`SOURCE 3: Learned words (uni map size: ${m.uni.size})`);
+    let source3Count = 0;
     m.uni.forEach((count, word) => {
       if (matchesPrefix(word) && count >= PredictionConfig.LEARN_THRESHOLD) {
         const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
         const score = calculateScore(word, 0, count, false, baseFreq);
         addCandidate(word, count, score);
+        source3Count++;
       }
     });
+    debugLog(`SOURCE 3: Added ${source3Count} candidates. Total: ${candidates.size}`);
 
     // SOURCE 4: Pending words (with smart thresholds)
+    debugLog(`SOURCE 4: Pending words (pending map size: ${m.pendingWords.size}, threshold: ${hasPrefix ? 1 : 2})`);
+    let source4Count = 0;
     m.pendingWords.forEach((count, word) => {
       if (matchesPrefix(word)) {
         // With prefix: show after 1 occurrence
@@ -1036,37 +1079,52 @@ class PredictionModel {
           const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
           const score = calculateScore(word, 0, count, true, baseFreq);
           addCandidate(word, count, score);
+          source4Count++;
         }
       }
     });
+    debugLog(`SOURCE 4: Added ${source4Count} candidates. Total: ${candidates.size}`);
 
     // SOURCE 5: BaseLexicon (if available)
+    debugLog(`SOURCE 5: BaseLexicon`);
+    let source5Count = 0;
     if (baseLexicon && baseLexicon.isLoaded()) {
       if (hasPrefix) {
         // Prefix search (fast O(log n))
         const lexEntries = baseLexicon.findByPrefix(prefixLower, k * 3);
+        debugLog(`  Found ${lexEntries.length} entries by prefix "${prefixLower}"`);
         lexEntries.forEach(entry => {
           const score = calculateScore(entry.word, 0, 0, false, entry.freq);
           addCandidate(entry.word, 0, score);
+          source5Count++;
         });
       } else {
         // Top frequent words (fallback)
         const topWords = baseLexicon.getTopFrequentWords();
+        debugLog(`  Using top ${Math.min(50, topWords.length)} frequent words`);
         for (const word of topWords.slice(0, 50)) {
           const freq = baseLexicon.getFrequency(word);
           const score = calculateScore(word, 0, 0, false, freq);
           addCandidate(word, 0, score);
+          source5Count++;
         }
       }
+    } else {
+      debugLog(`  BaseLexicon not available or not loaded`);
     }
+    debugLog(`SOURCE 5: Added ${source5Count} candidates. Total: ${candidates.size}`);
+
 
     // Convert to array for sorting
     let list: RankedWord[] = Array.from(candidates.values());
+    debugLog(`Candidates before morphology: ${list.length}`);
 
     // MORPHOLOGICAL EXPANSION for Russian (PRESERVED!)
     if (lang === 'ru') {
+      debugLog(`MORPHOLOGY: Expanding Russian word forms`);
       const seenLemmas = new Set<string>();
       const expandedList: RankedWord[] = [...list];
+      let morphAddedCount = 0;
 
       for (const item of list) {
         const lemma = m.lemmaMap.get(item.w) ?? item.w;
@@ -1074,6 +1132,7 @@ class PredictionModel {
           seenLemmas.add(lemma);
           const forms = m.formsByLemma.get(lemma);
           if (forms) {
+            debugLog(`  Lemma "${lemma}" has ${forms.size} forms`);
             for (const form of forms) {
               if (matchesPrefix(form) && !expandedList.find(x => x.w === form)) {
                 const formCount = m.uni.get(form) ?? 0;
@@ -1081,6 +1140,8 @@ class PredictionModel {
                   const baseFreq = baseLexicon?.getFrequency(form) ?? 0;
                   const morphScore = calculateScore(form, 0, formCount, false, baseFreq) * PredictionConfig.SCORE_MORPHOLOGY_WEIGHT;
                   expandedList.push({ w: form, c: formCount, score: morphScore });
+                  debugLog(`    Added form "${form}" (score: ${morphScore.toFixed(1)})`);
+                  morphAddedCount++;
                 }
               }
             }
@@ -1089,10 +1150,12 @@ class PredictionModel {
       }
 
       list = expandedList;
+      debugLog(`MORPHOLOGY: Added ${morphAddedCount} forms. Total: ${list.length}`);
     }
 
     // Sort by score (highest first)
     list.sort((a, b) => b.score - a.score);
+    debugLog(`Sorted candidates (top 5): ${list.slice(0, 5).map(x => `"${x.w}"(${x.score.toFixed(1)})`).join(', ')}`);
 
     // Extract top k unique words with proper capitalization
     const seen = new Set<string>();
@@ -1114,6 +1177,7 @@ class PredictionModel {
         }
 
         out.push(w);
+        debugLog(`  Final[${out.length}]: "${w}"`);
       }
     }
 
@@ -1122,6 +1186,7 @@ class PredictionModel {
       out.push('');
     }
 
+    debugLog(`=== PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
     return out;
   }
 
