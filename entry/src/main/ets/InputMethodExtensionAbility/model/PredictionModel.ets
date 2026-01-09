@@ -163,24 +163,33 @@ class PredictionModel {
    * Lazy load BaseLexicon for language (only loads once when first needed)
    */
   private async ensureBaseLexiconLoaded(lang: string): Promise<void> {
+    console.info(`[PredictionModel] ensureBaseLexiconLoaded("${lang}") called`);
     const lexicon = this.baseLexicons.get(lang);
     if (!lexicon) {
+      console.info(`[PredictionModel] No BaseLexicon configured for language '${lang}'`);
       debugLog(`No BaseLexicon configured for language '${lang}'`);
       return;
     }
 
-    if (!lexicon.isLoaded()) {
+    const loaded = lexicon.isLoaded();
+    console.info(`[PredictionModel] BaseLexicon exists for '${lang}', isLoaded() = ${loaded}`);
+
+    if (!loaded) {
+      console.info(`[PredictionModel] Loading BaseLexicon for '${lang}'...`);
       try {
         debugLog(`Lazy-loading BaseLexicon for '${lang}'...`);
         await lexicon.load(lang);
         const stats = lexicon.getStats();
+        console.info(`[PredictionModel] BaseLexicon for '${lang}' loaded successfully: ${stats.words} words, ${stats.cached} cached`);
         debugLog(`BaseLexicon for '${lang}' loaded, words: ${stats.words}, cached: ${stats.cached}`);
       } catch (err) {
         const error = err as BusinessError;
-        console.error(`PredictionModel: Failed to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
+        console.error(`[PredictionModel] FAILED to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
         console.warn(`PredictionModel: Continuing without BaseLexicon for '${lang}'. Predictions will use user model only.`);
         // Don't throw - graceful fallback to user model only
       }
+    } else {
+      console.info(`[PredictionModel] BaseLexicon for '${lang}' already loaded, skipping load()`);
     }
   }
 
