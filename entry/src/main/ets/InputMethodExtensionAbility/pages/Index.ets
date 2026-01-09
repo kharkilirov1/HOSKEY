@@ -449,7 +449,7 @@ struct KeyView {
 @Entry
 @Component
 struct Index {
-  @State currentLanguage: LanguageCode = 'ru'; // Default to Russian (has BaseLexicon)
+  @State currentLanguage: LanguageCode = 'ru';
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
   @State keyboardLayout: KeyboardLayout = KeyboardLayout.Alphabet;
@@ -460,7 +460,7 @@ struct Index {
   @State popupKeyWidth: number = 40;
   @State rapidDeleteTimer: number = -1;
   @State enterKeyLabel: string = 'Enter';
-  @State availableLanguages: LanguageCode[] = ['ru']; // Default to Russian
+  @State availableLanguages: LanguageCode[] = ['en'];
 
   // Swipe-based backspace state
   @State backspaceSwipeActive: boolean = false;
