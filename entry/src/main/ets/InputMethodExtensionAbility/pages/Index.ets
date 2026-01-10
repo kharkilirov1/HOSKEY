@@ -33,7 +33,7 @@ type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
-const DEBUG_PREDICT = true; // ENABLED for prediction debugging
+const DEBUG_PREDICT = false; // Disabled for performance
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -1108,7 +1108,6 @@ struct Index {
 
     switch (key.action) {
       case KeyAction.Char:
-        console.info(`[Index] KeyAction.Char triggered`);
         // Light haptic for regular character keys
         feedbackController.provideFeedback(FeedbackType.Light);
         // Remember if shift was on BEFORE typing this character
@@ -1116,10 +1115,7 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        console.info(`[Index] Char: text="${text}", mainValue="${key.mainValue}", shiftValue="${key.shiftValue ?? 'none'}"`);
-        Logger.autocap(`Typing char, shift state: ${this.shiftState}, text: ${text}, mainValue: ${key.mainValue}, shiftValue: ${key.shiftValue ?? 'none'}`);
         keyboardController.insertText(text);
-        console.info(`[Index] Calling onTextTyped("${text}")`);
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
@@ -1238,62 +1234,46 @@ struct Index {
     this.suggestionsReqId++;
     const currentReqId = this.suggestionsReqId;
 
-    console.info(`[Index] === updateSuggestions START === reqId=${currentReqId}`);
-    console.info(`[Index] currentWord="${this.currentWord}", previousWord="${this.previousWord}", prevPrevWord="${this.prevPrevWord}"`);
-    console.info(`[Index] currentLanguage="${this.currentLanguage}"`);
-
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
         ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
 
-      console.info(`[Index] autocorrection="${autocorrection}"`);
-
       // Check if request is stale (user typed more keys while we were waiting)
       if (currentReqId !== this.suggestionsReqId) {
-        Logger.prediction('Stale suggestion request, ignoring result');
         return;
       }
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
-        console.info(`[Index] Calling predict() WITH autocorrection, k=2`);
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
-        console.info(`[Index] predict() returned: [${list.map(x => `"${x}"`).join(', ')}]`);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
-          Logger.prediction('Stale suggestion request after predict, ignoring result');
           return;
         }
 
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
-        console.info(`[Index] Final suggestions SET: [${this.suggestions.map(x => `"${x}"`).join(', ')}]`);
 
         if (DEBUG_PREDICT) {
           Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
-        console.info(`[Index] Calling predict() WITHOUT autocorrection, k=3`);
         const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
-        console.info(`[Index] predict() returned: [${list.map(x => `"${x}"`).join(', ')}]`);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
-          Logger.prediction('Stale suggestion request after predict, ignoring result');
           return;
         }
 
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
-        console.info(`[Index] Final suggestions SET: [${this.suggestions.map(x => `"${x}"`).join(', ')}]`);
 
         if (DEBUG_PREDICT) {
           Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
         }
       }
-      console.info(`[Index] === updateSuggestions END ===`);
     } catch (e) {
       console.error(`[Index] EXCEPTION in updateSuggestions:`, e);
       Logger.warn('Prediction model error', e as Error);
@@ -1332,18 +1312,14 @@ struct Index {
   }
 
   private async onTextTyped(text: string): Promise<void> {
-    console.info(`[Index] onTextTyped: text="${text}"`);
     if (!text) {
-      console.info(`[Index] onTextTyped: empty text, returning`);
       return;
     }
     if (this.isBoundaryChar(text)) {
-      console.info(`[Index] onTextTyped: boundary char detected, calling onBoundaryTyped`);
       await this.onBoundaryTyped(text);
       return;
     }
     this.currentWord = this.currentWord + text;
-    console.info(`[Index] onTextTyped: currentWord="${this.currentWord}", calling updateSuggestions()`);
     void this.updateSuggestions(); // Non-blocking async call
     this.resetInactivityTimer();
   }
