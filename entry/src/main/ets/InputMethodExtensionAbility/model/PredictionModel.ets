@@ -7,7 +7,7 @@ import { BaseLexicon } from './BaseLexicon';
 import { Logger } from '../utils/logger';
 
 // Debug mode flag - set to false for production
-const DEBUG_MODE = true; // ENABLED for debugging predictions
+const DEBUG_MODE = false; // Disabled for performance
 
 function debugLog(...args: string[]): void {
   if (DEBUG_MODE) {
@@ -163,24 +163,19 @@ class PredictionModel {
    * Lazy load BaseLexicon for language (only loads once when first needed)
    */
   private async ensureBaseLexiconLoaded(lang: string): Promise<void> {
-    console.info(`[PredictionModel] ensureBaseLexiconLoaded("${lang}") called`);
     const lexicon = this.baseLexicons.get(lang);
     if (!lexicon) {
-      console.info(`[PredictionModel] No BaseLexicon configured for language '${lang}'`);
       debugLog(`No BaseLexicon configured for language '${lang}'`);
       return;
     }
 
     const loaded = lexicon.isLoaded();
-    console.info(`[PredictionModel] BaseLexicon exists for '${lang}', isLoaded() = ${loaded}`);
 
     if (!loaded) {
-      console.info(`[PredictionModel] Loading BaseLexicon for '${lang}'...`);
       try {
         debugLog(`Lazy-loading BaseLexicon for '${lang}'...`);
         await lexicon.load(lang);
         const stats = lexicon.getStats();
-        console.info(`[PredictionModel] BaseLexicon for '${lang}' loaded successfully: ${stats.words} words, ${stats.cached} cached`);
         debugLog(`BaseLexicon for '${lang}' loaded, words: ${stats.words}, cached: ${stats.cached}`);
       } catch (err) {
         const error = err as BusinessError;
@@ -188,8 +183,6 @@ class PredictionModel {
         console.warn(`PredictionModel: Continuing without BaseLexicon for '${lang}'. Predictions will use user model only.`);
         // Don't throw - graceful fallback to user model only
       }
-    } else {
-      console.info(`[PredictionModel] BaseLexicon for '${lang}' already loaded, skipping load()`);
     }
   }
 
@@ -932,8 +925,6 @@ class PredictionModel {
    * - Anti-garbage filtering
    */
   async predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): Promise<string[]> {
-    console.info('[PredictionModel] === PREDICT START ===');
-    console.info(`[PredictionModel] Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
     debugLog(`=== PREDICT START ===`);
     debugLog(`Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
 
@@ -1199,8 +1190,6 @@ class PredictionModel {
       out.push('');
     }
 
-    console.info(`[PredictionModel] === PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
-    console.info(`[PredictionModel] candidates.size=${candidates.size}, list.length=${list.length}, out.length=${out.length}`);
     debugLog(`=== PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
     return out;
   }
