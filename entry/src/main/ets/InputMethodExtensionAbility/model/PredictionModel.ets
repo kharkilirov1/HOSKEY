@@ -91,10 +91,11 @@ class PredictionConfig {
 
   /**
    * Calculate prefix boost proportional to match length
+   * NOTE: Expects both word and prefix to be lowercase for performance
    */
   static calculatePrefixBoost(word: string, prefix: string): number {
     if (!prefix || prefix.length === 0) return 0;
-    const matchLength = PredictionConfig.getCommonPrefixLength(word.toLowerCase(), prefix.toLowerCase());
+    const matchLength = PredictionConfig.getCommonPrefixLength(word, prefix);
     return matchLength * 3; // 3 points per matched character
   }
 
@@ -778,42 +779,63 @@ class PredictionModel {
       }
     }
 
-    // 3. Contains whitespace
-    if (/\s/.test(word)) {
-      debugLog(`  [isGarbage] "${word}" -> TRUE (contains whitespace)`);
-      return true;
+    // 3-6. Combined character analysis (single pass for performance)
+    let digitCount = 0;
+    let nonLetterDigitCount = 0;
+    const uniqueChars = new Set<string>();
+    const wordLower = word.toLowerCase();
+
+    for (let i = 0; i < word.length; i++) {
+      const char = word[i];
+      const charLower = wordLower[i];
+
+      // Check whitespace (early exit)
+      if (char === ' ' || char === '\t' || char === '\n') {
+        debugLog(`  [isGarbage] "${word}" -> TRUE (contains whitespace)`);
+        return true;
+      }
+
+      // Count digits
+      if (char >= '0' && char <= '9') {
+        digitCount++;
+      }
+      // Count non-letter, non-digit characters (symbols/punctuation)
+      // Simple check: if not letter and not digit, it's a symbol
+      else if (!((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+                 (char >= 'а' && char <= 'я') || (char >= 'А' && char <= 'Я') ||
+                 (char >= '0' && char <= '9') || char === 'ё' || char === 'Ё')) {
+        nonLetterDigitCount++;
+      }
+
+      uniqueChars.add(charLower);
     }
 
-    // 4. Too many digits
-    const digitCount = (word.match(/\d/g) || []).length;
+    // Check digit ratio
     if (digitCount / word.length > PredictionConfig.MAX_DIGIT_RATIO) {
       debugLog(`  [isGarbage] "${word}" -> TRUE (too many digits: ${digitCount}/${word.length})`);
       return true;
     }
 
-    // 5. Too many symbols/punctuation
-    // Match actual punctuation/symbols, not Cyrillic letters
-    // \p{L} = any letter (Cyrillic, Latin, etc.), \p{N} = any digit
-    const symbolCount = (word.match(/[^\p{L}\p{N}]/gu) || []).length;
-    if (symbolCount / word.length > PredictionConfig.MAX_SYMBOL_RATIO) {
-      debugLog(`  [isGarbage] "${word}" -> TRUE (too many symbols: ${symbolCount}/${word.length})`);
+    // Check symbol ratio
+    if (nonLetterDigitCount / word.length > PredictionConfig.MAX_SYMBOL_RATIO) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (too many symbols: ${nonLetterDigitCount}/${word.length})`);
       return true;
     }
 
-    // 6. Too many repeating characters (keyboard mashing detection)
-    const uniqueChars = new Set(word.toLowerCase()).size;
+    // Check unique characters
+    const uniqueCount = uniqueChars.size;
 
     // Allow short words (length <= 3) to have only 1 unique char (interdictions: "ааа", "ммм")
     // For longer words, require at least 2 unique chars
     const minUniqueForLength = word.length <= 3 ? 1 : PredictionConfig.MIN_UNIQUE_CHARS;
-    if (uniqueChars < minUniqueForLength) {
-      debugLog(`  [isGarbage] "${word}" -> TRUE (unique chars ${uniqueChars} < ${minUniqueForLength})`);
+    if (uniqueCount < minUniqueForLength) {
+      debugLog(`  [isGarbage] "${word}" -> TRUE (unique chars ${uniqueCount} < ${minUniqueForLength})`);
       return true; // "aaaaaa" (length > 3, uniqueChars = 1)
     }
 
     // Check ratio of unique chars to total length (more lenient: 0.75 instead of 0.6)
     // This allows interdictions like "ааа" (repeatRatio = 0.67) to pass
-    const repeatRatio = 1 - (uniqueChars / word.length);
+    const repeatRatio = 1 - (uniqueCount / word.length);
     if (word.length > 3 && repeatRatio > 0.75) {
       debugLog(`  [isGarbage] "${word}" -> TRUE (repeat ratio ${repeatRatio.toFixed(2)} > 0.75)`);
       return true; // "aaaabbbb" (too repetitive, but only for longer words)
@@ -1058,20 +1080,30 @@ class PredictionModel {
     // SOURCE 3: Learned words (unigram)
     debugLog(`SOURCE 3: Learned words (uni map size: ${m.uni.size})`);
     let source3Count = 0;
-    m.uni.forEach((count, word) => {
-      if (matchesPrefix(word) && count >= PredictionConfig.LEARN_THRESHOLD) {
+    let source3Checked = 0;
+    const maxSource3 = 200; // Limit iterations for performance
+
+    for (const [word, count] of m.uni) {
+      if (++source3Checked > maxSource3) break; // Performance: limit scan
+
+      if (count >= PredictionConfig.LEARN_THRESHOLD && matchesPrefix(word)) {
         const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
         const score = calculateScore(word, 0, count, false, baseFreq);
         addCandidate(word, count, score);
         source3Count++;
       }
-    });
-    debugLog(`SOURCE 3: Added ${source3Count} candidates. Total: ${candidates.size}`);
+    }
+    debugLog(`SOURCE 3: Added ${source3Count} candidates (checked ${source3Checked}). Total: ${candidates.size}`);
 
     // SOURCE 4: Pending words (with smart thresholds)
     debugLog(`SOURCE 4: Pending words (pending map size: ${m.pendingWords.size}, threshold: ${hasPrefix ? 1 : 2})`);
     let source4Count = 0;
-    m.pendingWords.forEach((count, word) => {
+    let source4Checked = 0;
+    const maxSource4 = 100; // Limit iterations for performance
+
+    for (const [word, count] of m.pendingWords) {
+      if (++source4Checked > maxSource4) break; // Performance: limit scan
+
       if (matchesPrefix(word)) {
         // With prefix: show after 1 occurrence
         // Without prefix: show after 2 occurrences
@@ -1086,8 +1118,8 @@ class PredictionModel {
           source4Count++;
         }
       }
-    });
-    debugLog(`SOURCE 4: Added ${source4Count} candidates. Total: ${candidates.size}`);
+    }
+    debugLog(`SOURCE 4: Added ${source4Count} candidates (checked ${source4Checked}). Total: ${candidates.size}`);
 
     // SOURCE 5: BaseLexicon (if available)
     debugLog(`SOURCE 5: BaseLexicon`);
@@ -1128,6 +1160,7 @@ class PredictionModel {
       debugLog(`MORPHOLOGY: Expanding Russian word forms`);
       const seenLemmas = new Set<string>();
       const expandedList: RankedWord[] = [...list];
+      const expandedWords = new Set<string>(list.map(x => x.w)); // O(1) lookup instead of O(n) find()
       let morphAddedCount = 0;
 
       for (const item of list) {
@@ -1138,12 +1171,13 @@ class PredictionModel {
           if (forms) {
             debugLog(`  Lemma "${lemma}" has ${forms.size} forms`);
             for (const form of forms) {
-              if (matchesPrefix(form) && !expandedList.find(x => x.w === form)) {
+              if (matchesPrefix(form) && !expandedWords.has(form)) {
                 const formCount = m.uni.get(form) ?? 0;
                 if (formCount >= PredictionConfig.LEARN_THRESHOLD) {
                   const baseFreq = baseLexicon?.getFrequency(form) ?? 0;
                   const morphScore = calculateScore(form, 0, formCount, false, baseFreq) * PredictionConfig.SCORE_MORPHOLOGY_WEIGHT;
                   expandedList.push({ w: form, c: formCount, score: morphScore });
+                  expandedWords.add(form); // Add to Set for O(1) duplicate checking
                   debugLog(`    Added form "${form}" (score: ${morphScore.toFixed(1)})`);
                   morphAddedCount++;
                 }

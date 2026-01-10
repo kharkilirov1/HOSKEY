@@ -238,9 +238,11 @@ export class BaseLexicon {
     // Binary search for starting position
     const startIdx = this.lowerBound(prefixLower);
 
-    // Collect matching words
+    // Collect matching words (limit to maxResults * 5 for performance)
     const matches: LexEntry[] = [];
-    for (let i = startIdx; i < this.words.length; i++) {
+    const maxCollect = maxResults * 5; // Limit collection to reduce sort overhead
+
+    for (let i = startIdx; i < this.words.length && matches.length < maxCollect; i++) {
       const word = this.words[i];
 
       // Stop when prefix no longer matches
@@ -257,7 +259,7 @@ export class BaseLexicon {
       matches.push({ word, freq });
     }
 
-    // Sort by frequency descending
+    // Sort by frequency descending (only collected matches, not all 2000+)
     matches.sort((a, b) => b.freq - a.freq);
 
     // Take top N

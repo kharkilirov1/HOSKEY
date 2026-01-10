@@ -493,6 +493,7 @@ struct Index {
   @State private suggestions: string[] = ['', '', ''];
   @State private lastAutocorrection: { original: string; corrected: string } | null = null;
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
+  private suggestionsDebounceTimer: number | null = null; // Debounce timer for updateSuggestions
 
   // Swipe typing states
   @State private isSwipeTyping: boolean = false;
@@ -1229,6 +1230,23 @@ struct Index {
     });
   }
 
+  /**
+   * Debounced version of updateSuggestions - reduces load during fast typing
+   * Waits 150ms after last keystroke before triggering prediction
+   */
+  private debouncedUpdateSuggestions(): void {
+    // Clear existing timer
+    if (this.suggestionsDebounceTimer !== null) {
+      clearTimeout(this.suggestionsDebounceTimer);
+    }
+
+    // Set new timer
+    this.suggestionsDebounceTimer = setTimeout(() => {
+      this.suggestionsDebounceTimer = null;
+      void this.updateSuggestions();
+    }, 150); // 150ms debounce - good balance between responsiveness and performance
+  }
+
   private async updateSuggestions(): Promise<void> {
     // Increment request ID to handle race conditions
     this.suggestionsReqId++;
@@ -1320,7 +1338,7 @@ struct Index {
       return;
     }
     this.currentWord = this.currentWord + text;
-    void this.updateSuggestions(); // Non-blocking async call
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load during fast typing
     this.resetInactivityTimer();
   }
 
@@ -1370,7 +1388,7 @@ struct Index {
 
       this.currentWord = '';
     }
-    void this.updateSuggestions(); // Non-blocking async call
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
@@ -1383,7 +1401,7 @@ struct Index {
   private async onBackspaceTyped(): Promise<void> {
     if (this.currentWord && this.currentWord.length > 0) {
       this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      void this.updateSuggestions(); // Non-blocking async call
+      this.debouncedUpdateSuggestions(); // Debounced to reduce load
       this.resetInactivityTimer();
     }
 
@@ -1392,7 +1410,7 @@ struct Index {
       this.prevPrevWord = '';
       this.previousWord = '';
       this.currentWord = '';
-      void this.updateSuggestions(); // Non-blocking async call
+      this.debouncedUpdateSuggestions(); // Debounced to reduce load
       this.showPreTypingToolbar = true;
       // Auto-capitalize at the start of text
       this.enableAutoCapitalization();
@@ -1416,7 +1434,7 @@ struct Index {
     this.prevPrevWord = this.previousWord;
     this.previousWord = word;
     this.currentWord = '';
-    void this.updateSuggestions(); // Non-blocking async call
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load
   }
 
   private getScreenWidthVp(): number {
