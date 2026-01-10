@@ -1083,8 +1083,11 @@ class PredictionModel {
     let source3Checked = 0;
     const maxSource3 = 200; // Limit iterations for performance
 
-    for (const [word, count] of m.uni) {
+    for (const entry of m.uni.entries()) {
       if (++source3Checked > maxSource3) break; // Performance: limit scan
+
+      const word = entry[0];
+      const count = entry[1];
 
       if (count >= PredictionConfig.LEARN_THRESHOLD && matchesPrefix(word)) {
         const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
@@ -1101,8 +1104,11 @@ class PredictionModel {
     let source4Checked = 0;
     const maxSource4 = 100; // Limit iterations for performance
 
-    for (const [word, count] of m.pendingWords) {
+    for (const entry of m.pendingWords.entries()) {
       if (++source4Checked > maxSource4) break; // Performance: limit scan
+
+      const word = entry[0];
+      const count = entry[1];
 
       if (matchesPrefix(word)) {
         // With prefix: show after 1 occurrence
