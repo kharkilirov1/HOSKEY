@@ -1127,10 +1127,11 @@ class PredictionModel {
     }
     debugLog(`SOURCE 4: Added ${source4Count} candidates (checked ${source4Checked}). Total: ${candidates.size}`);
 
-    // SOURCE 5: BaseLexicon (if available)
+    // SOURCE 5: BaseLexicon (if available) - skip if we already have enough high-quality candidates
     debugLog(`SOURCE 5: BaseLexicon`);
     let source5Count = 0;
-    if (baseLexicon && baseLexicon.isLoaded()) {
+    const enoughCandidates = candidates.size >= k * 3; // Early exit: skip BaseLexicon if we have 3x needed candidates
+    if (!enoughCandidates && baseLexicon && baseLexicon.isLoaded()) {
       if (hasPrefix) {
         // Prefix search (fast O(log n))
         const lexEntries = baseLexicon.findByPrefix(prefixLower, k * 3);
@@ -1162,12 +1163,13 @@ class PredictionModel {
     debugLog(`Candidates before morphology: ${list.length}`);
 
     // MORPHOLOGICAL EXPANSION for Russian (PRESERVED!)
-    if (lang === 'ru') {
+    if (lang === 'ru' && list.length < k * 5) { // Only expand if we need more candidates
       debugLog(`MORPHOLOGY: Expanding Russian word forms`);
       const seenLemmas = new Set<string>();
       const expandedList: RankedWord[] = [...list];
       const expandedWords = new Set<string>(list.map(x => x.w)); // O(1) lookup instead of O(n) find()
       let morphAddedCount = 0;
+      const MAX_FORMS_PER_LEMMA = 3; // Limit forms per lemma for performance
 
       for (const item of list) {
         const lemma = m.lemmaMap.get(item.w) ?? item.w;
@@ -1176,7 +1178,10 @@ class PredictionModel {
           const forms = m.formsByLemma.get(lemma);
           if (forms) {
             debugLog(`  Lemma "${lemma}" has ${forms.size} forms`);
+            let formsAdded = 0;
             for (const form of forms) {
+              if (formsAdded >= MAX_FORMS_PER_LEMMA) break; // Limit forms per lemma
+
               if (matchesPrefix(form) && !expandedWords.has(form)) {
                 const formCount = m.uni.get(form) ?? 0;
                 if (formCount >= PredictionConfig.LEARN_THRESHOLD) {
@@ -1186,6 +1191,7 @@ class PredictionModel {
                   expandedWords.add(form); // Add to Set for O(1) duplicate checking
                   debugLog(`    Added form "${form}" (score: ${morphScore.toFixed(1)})`);
                   morphAddedCount++;
+                  formsAdded++;
                 }
               }
             }
@@ -1195,6 +1201,8 @@ class PredictionModel {
 
       list = expandedList;
       debugLog(`MORPHOLOGY: Added ${morphAddedCount} forms. Total: ${list.length}`);
+    } else if (lang === 'ru') {
+      debugLog(`MORPHOLOGY: Skipping expansion, have enough candidates (${list.length})`);
     }
 
     // Sort by score (highest first)
