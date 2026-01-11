@@ -1499,22 +1499,6 @@ struct Index {
       }
       .layoutWeight(1)
 
-      // CLIPBOARD
-      Column() {
-        Image($r('app.media.clipboard_icon'))
-          .width(18)
-          .height(18)
-          .fillColor(OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleClipboardClick(); })
-
       // MICROPHONE
       Column() {
         Image($r('app.media.mic_icon'))
@@ -2000,7 +1984,6 @@ struct Index {
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
         .backgroundColor(OpenBoardTheme.surface)
         .borderRadius(OpenBoardTheme.radiusMedium)
-        .border({ width: 1, color: OpenBoardTheme.divider })
         .shadow(OpenBoardTheme.shadowPanel)
 
         // MAIN CONTENT
