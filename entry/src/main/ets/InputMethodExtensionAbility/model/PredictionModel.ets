@@ -113,6 +113,67 @@ class PredictionConfig {
   }
 }
 
+/**
+ * Generate Russian verb forms from lemma (infinitive)
+ * Supports: -ать/-ять and -ить conjugations + common exceptions
+ * @param lemma - verb lemma in lowercase (e.g., "делать")
+ * @returns array of conjugated forms (e.g., ["делаю", "делаешь", ...])
+ */
+function generateRussianVerbForms(lemma: string): string[] {
+  // Protection: skip short or invalid words
+  if (lemma.length < 4) {
+    return [];
+  }
+
+  // Exception patterns (irregular verbs)
+  const exceptions: Map<string, string[]> = new Map([
+    ['идти', ['иду', 'идёшь', 'идёт', 'идём', 'идёте', 'идут']],
+    ['быть', ['буду', 'будешь', 'будет', 'будем', 'будете', 'будут']],
+    ['дать', ['даю', 'даёшь', 'даёт', 'даём', 'даёте', 'дают']],
+    ['есть', ['ем', 'ешь', 'ест', 'едим', 'едите', 'едят']],
+    ['хотеть', ['хочу', 'хочешь', 'хочет', 'хотим', 'хотите', 'хотят']],
+  ]);
+
+  // Check for exceptions
+  const exceptionForms = exceptions.get(lemma);
+  if (exceptionForms) {
+    return exceptionForms;
+  }
+
+  const forms: string[] = [];
+
+  // Pattern 1: -ать/-ять verbs (делать -> делаю, делаешь, ...)
+  if (lemma.endsWith('ать') || lemma.endsWith('ять')) {
+    const stem = lemma.slice(0, -3); // "делать" -> "дел"
+    forms.push(
+      stem + 'аю',    // я делаю
+      stem + 'аешь',  // ты делаешь
+      stem + 'ает',   // он делает
+      stem + 'аем',   // мы делаем
+      stem + 'аете',  // вы делаете
+      stem + 'ают'    // они делают
+    );
+    return forms;
+  }
+
+  // Pattern 2: -ить verbs (говорить -> говорю, говоришь, ...)
+  if (lemma.endsWith('ить')) {
+    const stem = lemma.slice(0, -3); // "говорить" -> "говор"
+    forms.push(
+      stem + 'ю',     // я говорю
+      stem + 'ишь',   // ты говоришь
+      stem + 'ит',    // он говорит
+      stem + 'им',    // мы говорим
+      stem + 'ите',   // вы говорите
+      stem + 'ят'     // они говорят
+    );
+    return forms;
+  }
+
+  // Unknown pattern - return empty
+  return [];
+}
+
 class PredictionModel {
   private models: Map<string, LangModel>; // User-learned models (mutable)
   private baseLexicons: Map<string, BaseLexicon>; // Base lexicons (50k words with binary search)
@@ -1157,6 +1218,63 @@ class PredictionModel {
     }
     debugLog(`SOURCE 5: Added ${source5Count} candidates. Total: ${candidates.size}`);
 
+    // SOURCE 5.5: Generate Russian verb forms from BaseLexicon lemmas (morphological expansion)
+    // Only when we have prefix and need more candidates
+    debugLog(`SOURCE 5.5: Russian verb forms generation`);
+    let source5_5Count = 0;
+    if (lang === 'ru' && hasPrefix && candidates.size < k * 2 && baseLexicon && baseLexicon.isLoaded()) {
+      // Get broader lemma pool using shorter prefix for better coverage
+      const searchPrefix = prefixLower.substring(0, Math.min(3, prefixLower.length));
+      const lemmaPool = baseLexicon.findByPrefix(searchPrefix, 200); // Limit to 200 lemmas
+      debugLog(`  Checking ${lemmaPool.length} lemmas from BaseLexicon with prefix "${searchPrefix}"`);
+
+      const generatedWords = new Set<string>(); // Track generated words to avoid duplicates
+      let lemmasProcessed = 0;
+      const MAX_LEMMAS_TO_PROCESS = 200;
+      const MAX_FORMS_PER_LEMMA = 6;
+
+      for (const entry of lemmaPool) {
+        if (lemmasProcessed >= MAX_LEMMAS_TO_PROCESS) break;
+        lemmasProcessed++;
+
+        const lemma = entry.word;
+
+        // Skip if lemma is blocked
+        if (baseLexicon.isBlocked(lemma) || m.blockedWords.has(lemma)) {
+          continue;
+        }
+
+        // Generate verb forms
+        const forms = generateRussianVerbForms(lemma);
+        if (forms.length === 0) continue; // Not a verb or unknown pattern
+
+        let formsAdded = 0;
+        for (const form of forms) {
+          if (formsAdded >= MAX_FORMS_PER_LEMMA) break;
+
+          // Only add forms that match the full prefix and aren't already candidates
+          if (form.startsWith(prefixLower) && !candidates.has(form) && !generatedWords.has(form)) {
+            // Check if form is not blocked
+            if (!baseLexicon.isBlocked(form) && !m.blockedWords.has(form)) {
+              // Score: use lemma frequency * 0.7 to make them competitive but not dominant
+              const lemmaFreq = entry.freq;
+              const score = calculateScore(form, 0, 0, false, lemmaFreq) * 0.7;
+
+              addCandidate(form, 0, score);
+              generatedWords.add(form);
+              source5_5Count++;
+              formsAdded++;
+
+              debugLog(`  Generated form "${form}" from lemma "${lemma}" (score: ${score.toFixed(1)})`);
+            }
+          }
+        }
+      }
+
+      debugLog(`SOURCE 5.5: Generated ${source5_5Count} verb forms from ${lemmasProcessed} lemmas. Total: ${candidates.size}`);
+    } else {
+      debugLog(`  Skipping verb generation: lang=${lang}, hasPrefix=${hasPrefix}, candidates=${candidates.size}`);
+    }
 
     // Convert to array for sorting
     let list: RankedWord[] = Array.from(candidates.values());
