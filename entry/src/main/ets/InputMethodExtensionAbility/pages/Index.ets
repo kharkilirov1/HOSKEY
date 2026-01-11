@@ -1498,22 +1498,6 @@ struct Index {
         .alignItems(VerticalAlign.Center)
       }
       .layoutWeight(1)
-
-      // MICROPHONE
-      Column() {
-        Image($r('app.media.mic_icon'))
-          .width(20)
-          .height(20)
-          .fillColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
 
@@ -1556,22 +1540,6 @@ struct Index {
 
       // RIGHT SPACER for centering
       Flex().layoutWeight(1)
-
-      // MICROPHONE
-      Column() {
-        Image($r('app.media.mic_icon'))
-          .width(20)
-          .height(20)
-          .fillColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
 
