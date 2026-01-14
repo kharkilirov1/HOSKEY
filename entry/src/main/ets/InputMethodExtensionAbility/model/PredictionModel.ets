@@ -1091,7 +1091,10 @@ class PredictionModel {
       const triMap = m.tri.get(triKeyStr);
       if (triMap) {
         debugLog(`  Found trigram map with ${triMap.size} entries`);
-        triMap.forEach((contextCount, word) => {
+        for (const [word, contextCount] of triMap.entries()) {
+          // Early exit when enough high-quality candidates
+          if (candidates.size >= k * 3) break;
+
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
             const isPending = !m.uni.has(word) && m.pendingWords.has(word);
@@ -1104,7 +1107,7 @@ class PredictionModel {
               source1Count++;
             }
           }
-        });
+        }
       } else {
         debugLog(`  No trigram map found for key "${triKeyStr}"`);
       }
@@ -1118,7 +1121,10 @@ class PredictionModel {
       const biMap = m.bi.get(prevLower);
       if (biMap) {
         debugLog(`  Found bigram map with ${biMap.size} entries`);
-        biMap.forEach((contextCount, word) => {
+        for (const [word, contextCount] of biMap.entries()) {
+          // Early exit when enough high-quality candidates
+          if (candidates.size >= k * 3) break;
+
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
             const isPending = !m.uni.has(word) && m.pendingWords.has(word);
@@ -1131,7 +1137,7 @@ class PredictionModel {
               source2Count++;
             }
           }
-        });
+        }
       } else {
         debugLog(`  No bigram map found for prev "${prevLower}"`);
       }

@@ -74,39 +74,30 @@ export class KeyboardController {
   }
 
   public insertText(text: string): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.insertText(text);
-        this.updateCacheOnInsert(text);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to insert text. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
     }
+    this.textInputClient.insertText(text);
+    this.updateCacheOnInsert(text);
   }
 
   public deleteForward(length: number): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.deleteForward(length);
-        this.updateCacheOnDeleteForward(length);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to delete forward. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
     }
+    this.textInputClient.deleteForward(length);
+    this.updateCacheOnDeleteForward(length);
   }
 
   public deleteBackward(length: number): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.deleteBackward(length);
-        this.updateCacheOnDeleteBackward(length);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to delete backward. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
     }
+    this.textInputClient.deleteBackward(length);
+    this.updateCacheOnDeleteBackward(length);
   }
 
   public moveCursor(direction: number): void {
@@ -225,9 +216,9 @@ export class KeyboardController {
       const error = err as BusinessError;
       console.error(`OpenBoard Keyboard: Failed to get display. Code: ${error.code}, Msg: ${error.message}`);
     }
-    let keyHeightRate = 0.30; // 30% of screen height for all devices
-    let keyHeight = dHeight * keyHeightRate;
-    let nonBarPosition = dHeight - keyHeight;
+    const keyHeightRate = 0.30; // 30% of screen height for all devices
+    const keyHeight = dHeight * keyHeightRate;
+    const nonBarPosition = dHeight - keyHeight;
 
     const panelInfo: inputMethodEngine.PanelInfo = {
       type: inputMethodEngine.PanelType.SOFT_KEYBOARD,
