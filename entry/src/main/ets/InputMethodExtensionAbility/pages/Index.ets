@@ -34,6 +34,7 @@ enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 const DEBUG_PREDICT = false; // Disabled for performance
+const DEBUG_SWIPE = false;
 const MIN_SWIPE_LAYOUT_KEYS = 20;
 
 // Speech recognition simulation types
@@ -226,6 +227,8 @@ struct KeyView {
   @State private swipeActivated: boolean = false;
 
   @Prop enterKeyLabel: string;
+  @Prop keyboardRootOffset: Position = { x: 0, y: 0 };
+  @Prop swipeInProgress: boolean = false;
 
   getDisplayValue(): string {
     if (this.keyData.action === KeyAction.Shift) {
@@ -347,7 +350,6 @@ struct KeyView {
         }
 
         if (event.type === TouchType.Move) {
-          let activatedNow = false;
           if (this.longPressTriggered && this.keyData.secondaryValue) {
             this.onKeyLongPressDrag(currentPosition);
           }
@@ -410,7 +412,6 @@ struct KeyView {
               this.swipeHandled = true;
               this.pendingSwipe = false;
               this.swipeActivated = true;
-              activatedNow = true;
 
               if (this.onSwipeStart) {
                 this.onSwipeStart(this.keyData, { x: this.touchStartX, y: this.touchStartY });
@@ -419,11 +420,6 @@ struct KeyView {
                 this.onSwipeMove(currentPosition);
               }
             }
-          }
-
-          // Swipe typing tracking
-          if (this.keyData.action === KeyAction.Char && this.onSwipeMove && this.swipeActivated && !activatedNow) {
-            this.onSwipeMove(currentPosition);
           }
         }
 
@@ -448,11 +444,7 @@ struct KeyView {
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
-          } else if (event.type === TouchType.Up && this.swipeActivated && this.onSwipeEnd) {
-            this.onSwipeEnd(true);
-          } else if (event.type === TouchType.Cancel && this.swipeActivated && this.onSwipeEnd) {
-            this.onSwipeEnd(false);
-          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled) {
+          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled && !this.swipeInProgress) {
             // Only trigger keyPress if no swipe was handled
             this.onKeyPress(this.keyData);
           }
@@ -471,10 +463,16 @@ struct KeyView {
       })
       .onAreaChange((_oldValue: Area, newValue: Area) => {
         if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
+          const areaAny = newValue as Record<string, Position>;
+          const globalPosition = areaAny.globalPosition;
+          const basePosition = globalPosition ?? {
+            x: (newValue.position.x as number) + this.keyboardRootOffset.x,
+            y: (newValue.position.y as number) + this.keyboardRootOffset.y
+          };
           const bounds: KeyBounds = {
             key: this.keyData.mainValue.toLowerCase(),
-            centerX: (newValue.position.x as number) + (newValue.width as number) / 2,
-            centerY: (newValue.position.y as number) + (newValue.height as number) / 2,
+            centerX: basePosition.x + (newValue.width as number) / 2,
+            centerY: basePosition.y + (newValue.height as number) / 2,
             width: newValue.width as number,
             height: newValue.height as number
           };
@@ -548,6 +546,9 @@ struct Index {
   private swipeStartTime: number = 0;
   private lastSwipePreviewTs: number = 0;
   private keyBoundsMap: Map<string, KeyBounds> = new Map();
+  @State private keyboardRootOffset: Position = { x: 0, y: 0 };
+  private swipeBoundsLogged: boolean = false;
+  private swipePathLogged: boolean = false;
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -826,6 +827,20 @@ struct Index {
 
   private handleKeyBoundsUpdate(key: string, bounds: KeyBounds): void {
     this.keyBoundsMap.set(key, bounds);
+    if (DEBUG_SWIPE && !this.swipeBoundsLogged && this.isSwipeLayoutReady()) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const item of this.keyBoundsMap.values()) {
+        minX = Math.min(minX, item.centerX);
+        maxX = Math.max(maxX, item.centerX);
+        minY = Math.min(minY, item.centerY);
+        maxY = Math.max(maxY, item.centerY);
+      }
+      console.info(`[SwipeDebug] keyBounds range x=${minX.toFixed(1)}..${maxX.toFixed(1)} y=${minY.toFixed(1)}..${maxY.toFixed(1)} count=${this.keyBoundsMap.size}`);
+      this.swipeBoundsLogged = true;
+    }
   }
 
   private updateSwipeEngineLayout(): void {
@@ -858,11 +873,24 @@ struct Index {
   private handleSwipeMove(position: Position): void {
     if (!this.isSwipeTyping) return;
 
+    const lastPoint = this.swipePath[this.swipePath.length - 1];
+    if (lastPoint && lastPoint.x === position.x && lastPoint.y === position.y) {
+      return;
+    }
+
     this.swipePath.push({
       x: position.x,
       y: position.y,
       timestamp: Date.now()
     });
+
+    if (DEBUG_SWIPE && !this.swipePathLogged && this.swipePath.length >= 5) {
+      const sample = this.swipePath.slice(0, 5)
+        .map((point: SwipePoint) => `(${point.x.toFixed(1)},${point.y.toFixed(1)})`)
+        .join(' ');
+      console.info(`[SwipeDebug] swipePath first5=${sample}`);
+      this.swipePathLogged = true;
+    }
 
     const now = Date.now();
     if (this.swipePath.length % 5 === 0 && (now - this.lastSwipePreviewTs) >= 24) {
@@ -939,6 +967,7 @@ struct Index {
     this.swipePreviewWord = '';
     this.swipeAlternatives = [];
     this.swipeStartTime = 0;
+    this.swipePathLogged = false;
   }
 
   // === END SWIPE TYPING METHODS ===
@@ -2021,55 +2050,86 @@ struct Index {
           this.buildClipboardPanel()
         } else if (!this.showEmojiPanel) {
           // Main keyboard
-          Column({ space: 5 }) {
-            ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row({ space: 3 }) {
-                ForEach(row, (key: KeyData) => {
-                  if (key.action === KeyAction.Spacer) {
-                    Flex().layoutWeight(key.flex)
-                  } else {
-                    KeyView({
-                      keyData: key,
-                      shiftState: this.shiftState,
-                      currentLanguage: this.currentLanguage,
-                      availableLanguages: this.availableLanguages,
-                      enterKeyLabel: this.enterKeyLabel,
-                      onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
-                      onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
-                      onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
-                      onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
-                      onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
-                      onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
-                      onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
-                      onKeyTouchUp: (): void => this.handleKeyTouchUp(),
-                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
-                      onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
-                      onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
-                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
-                      onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
-                      onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
-                      onCursorModeEnd: (): void => this.handleCursorModeEnd(),
-                      onSwipeStart: key.action === KeyAction.Char
-                        ? (k: KeyData, p: Position): void => this.handleSwipeStart(k, p)
-                        : undefined,
-                      onSwipeMove: key.action === KeyAction.Char
-                        ? (p: Position): void => this.handleSwipeMove(p)
-                        : undefined,
-                      onSwipeEnd: key.action === KeyAction.Char
-                        ? (commit: boolean): void => this.handleSwipeEnd(commit)
-                        : undefined,
-                      onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b)
-                    })
-                      .layoutWeight(key.flex)
-                  }
-                })
-              }
+          Stack() {
+            Column({ space: 5 }) {
+              ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
+                Row({ space: 3 }) {
+                  ForEach(row, (key: KeyData) => {
+                    if (key.action === KeyAction.Spacer) {
+                      Flex().layoutWeight(key.flex)
+                    } else {
+                      KeyView({
+                        keyData: key,
+                        shiftState: this.shiftState,
+                        currentLanguage: this.currentLanguage,
+                        availableLanguages: this.availableLanguages,
+                        enterKeyLabel: this.enterKeyLabel,
+                        onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
+                        onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
+                        onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
+                        onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
+                        onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
+                        onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
+                        onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
+                        onKeyTouchUp: (): void => this.handleKeyTouchUp(),
+                        onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
+                        onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
+                        onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
+                        onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
+                        onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
+                        onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
+                        onCursorModeEnd: (): void => this.handleCursorModeEnd(),
+                        onSwipeStart: key.action === KeyAction.Char
+                          ? (k: KeyData, p: Position): void => this.handleSwipeStart(k, p)
+                          : undefined,
+                        onSwipeMove: key.action === KeyAction.Char
+                          ? (p: Position): void => this.handleSwipeMove(p)
+                          : undefined,
+                        onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b),
+                        keyboardRootOffset: this.keyboardRootOffset,
+                        swipeInProgress: this.isSwipeTyping
+                      })
+                        .layoutWeight(key.flex)
+                    }
+                  })
+                }
+                .width('100%')
+                .layoutWeight(1)
+              })
+            }
+            .width('100%')
+            .height('100%')
+
+            Blank()
               .width('100%')
-              .layoutWeight(1)
-            })
+              .height('100%')
+              .backgroundColor('transparent')
+              .hitTestBehavior(HitTestMode.Transparent)
+              .onTouch((event) => {
+                const touch = event.touches[0];
+                if (!touch) return;
+                const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
+
+                if (event.type === TouchType.Move && this.isSwipeTyping) {
+                  this.handleSwipeMove(currentPosition);
+                }
+
+                if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.isSwipeTyping) {
+                  this.handleSwipeEnd(event.type === TouchType.Up);
+                }
+              })
           }
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const areaAny = newValue as Record<string, Position>;
+            const globalPosition = areaAny.globalPosition;
+            const basePosition = globalPosition ?? {
+              x: newValue.position.x as number,
+              y: newValue.position.y as number
+            };
+            this.keyboardRootOffset = { x: basePosition.x, y: basePosition.y };
+          })
         } else {
           // Emoji Panel
           Column({ space: 10 }) {
