@@ -37,8 +37,6 @@ const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Na
 const DEBUG_PREDICT = false; // Disabled for performance
 const DEBUG_SWIPE = false;
 const MIN_SWIPE_LAYOUT_KEYS = 20;
-const AUTO_SPACE_AFTER_PUNCTUATION = true;
-const AUTO_SPACE_PUNCTUATION: string[] = [','];
 const SWIPE_POINT_MIN_INTERVAL_MS = 14;
 const SWIPE_POINT_MIN_DISTANCE_PX = 8;
 const SWIPE_PATH_MAX_POINTS = 180;
@@ -111,10 +109,6 @@ function getVoiceRecognitionError(code: LanguageCode): string {
     case 'ru': return 'Распознавание речи не удалось';
     default: return 'Speech recognition failed';
   }
-}
-
-function isAutoSpacePunctuation(ch: string): boolean {
-  return AUTO_SPACE_AFTER_PUNCTUATION && AUTO_SPACE_PUNCTUATION.indexOf(ch) >= 0;
 }
 
 // COMPONENTS
@@ -326,7 +320,9 @@ struct KeyView {
         if (!touch) return;
         const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
         const now = Date.now();
-        const ignoreInput = this.ignoreEventsUntil > now && this.keyData.action !== KeyAction.Char;
+        const ignoreInput = this.ignoreEventsUntil > now &&
+          this.keyData.action !== KeyAction.Char &&
+          this.keyData.action !== KeyAction.Space;
 
         if (event.type === TouchType.Down) {
           if (ignoreInput) return;
@@ -1260,7 +1256,7 @@ struct Index {
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
-    if (Date.now() < this.ignoreEventsUntil && key.action !== KeyAction.Char) {
+    if (Date.now() < this.ignoreEventsUntil && key.action !== KeyAction.Char && key.action !== KeyAction.Space) {
       return;
     }
     if (key.action !== KeyAction.EMOJI_PANEL) {
@@ -1285,18 +1281,8 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        if (Date.now() < this.ignoreEventsUntil && !isAutoSpacePunctuation(text)) {
+        if (Date.now() < this.ignoreEventsUntil && !this.isBoundaryChar(text)) {
           return;
-        }
-        if (isAutoSpacePunctuation(text)) {
-          keyboardController.insertText(text);
-          await this.onBoundaryTyped(text);
-          keyboardController.insertText(' ');
-          if (wasShiftOnBeforeTyping) {
-            Logger.autocap('Disabling shift after typing character');
-            this.shiftState = ShiftState.Off;
-          }
-          break;
         }
         keyboardController.insertText(text);
         await this.onTextTyped(text);
