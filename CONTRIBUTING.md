@@ -80,19 +80,22 @@ To add support for a new language:
   * Run static analysis in DevEco Studio (Build > Analyze > Code Analysis).
   * Manually test your changes on a real HarmonyOS device or emulator.
 
-2. Create a meaningful commit message:
-  * Example:
-    ```batch
-    feat: Implement basic German QWERTZ layout
-    - Added 'de' language code to `KeyData` and `LanguageController`.
-    - Defined initial German QWERTZ layout in `KeyboardKeyData.ets`.
-    - Updated language switching logic to cycle through 'de'.
-    Closes #42
-3. Push your changes:
-```batch
-  git push origin feature/your-feature-name
-```
-4. Create a Pull Request (PR):
+1. Create a meaningful commit message:
+   - Example:
+     ```batch
+     feat: Implement basic German QWERTZ layout
+     - Added 'de' language code to `KeyData` and `LanguageController`.
+     - Defined initial German QWERTZ layout in `KeyboardKeyData.ets`.
+     - Updated language switching logic to cycle through 'de'.
+     Closes #42
+     ```
+
+1. Push your changes:
+   ```batch
+   git push origin feature/your-feature-name
+   ```
+
+1. Create a Pull Request (PR):
   * Use a clear, descriptive title.
 
   * Reference related issues with Closes #issue-number.
