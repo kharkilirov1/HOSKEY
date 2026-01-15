@@ -210,14 +210,19 @@ struct KeyView {
   onCursorModeStart: (x: number) => void = () => {};
   onCursorModeMove: (x: number) => void = () => {};
   onCursorModeEnd: () => void = () => {};
+  onSwipeStart?: (key: KeyData, position: Position) => void;
   onSwipeMove?: (position: Position) => void;
+  onSwipeEnd?: (commit: boolean) => void;
   onKeyBoundsUpdate?: (key: string, bounds: KeyBounds) => void;
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
   @State private longPressTriggered: boolean = false;
   @State private touchStartX: number = 0;
+  @State private touchStartY: number = 0;
   @State private swipeHandled: boolean = false;
+  @State private pendingSwipe: boolean = false;
+  @State private swipeActivated: boolean = false;
 
   @Prop enterKeyLabel: string;
 
@@ -306,9 +311,12 @@ struct KeyView {
 
         if (event.type === TouchType.Down) {
           this.touchStartX = currentPosition.x;
+          this.touchStartY = currentPosition.y;
           this.isPressed = true;
           this.longPressTriggered = false;
           this.swipeHandled = false;
+          this.pendingSwipe = this.keyData.action === KeyAction.Char;
+          this.swipeActivated = false;
 
           // Show popup for character keys
           if (this.keyData.action === KeyAction.Char) {
@@ -323,6 +331,7 @@ struct KeyView {
           this.longPressTimer = setTimeout(() => {
             this.longPressTriggered = true;
             this.isPressed = false;
+            this.pendingSwipe = false;
 
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressStart(this.keyData);
@@ -337,6 +346,7 @@ struct KeyView {
         }
 
         if (event.type === TouchType.Move) {
+          let activatedNow = false;
           if (this.longPressTriggered && this.keyData.secondaryValue) {
             this.onKeyLongPressDrag(currentPosition);
           }
@@ -388,8 +398,30 @@ struct KeyView {
             }
           }
 
+          if (this.keyData.action === KeyAction.Char && this.pendingSwipe && !this.swipeActivated && !this.longPressTriggered) {
+            const deltaX = currentPosition.x - this.touchStartX;
+            const deltaY = currentPosition.y - this.touchStartY;
+            const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+            const SWIPE_ACTIVATION_THRESHOLD = 16;
+
+            if (distance > SWIPE_ACTIVATION_THRESHOLD) {
+              clearTimeout(this.longPressTimer);
+              this.swipeHandled = true;
+              this.pendingSwipe = false;
+              this.swipeActivated = true;
+              activatedNow = true;
+
+              if (this.onSwipeStart) {
+                this.onSwipeStart(this.keyData, { x: this.touchStartX, y: this.touchStartY });
+              }
+              if (this.onSwipeMove) {
+                this.onSwipeMove(currentPosition);
+              }
+            }
+          }
+
           // Swipe typing tracking
-          if (this.keyData.action === KeyAction.Char && this.onSwipeMove) {
+          if (this.keyData.action === KeyAction.Char && this.onSwipeMove && this.swipeActivated && !activatedNow) {
             this.onSwipeMove(currentPosition);
           }
         }
@@ -415,6 +447,10 @@ struct KeyView {
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
+          } else if (event.type === TouchType.Up && this.swipeActivated && this.onSwipeEnd) {
+            this.onSwipeEnd(true);
+          } else if (event.type === TouchType.Cancel && this.swipeActivated && this.onSwipeEnd) {
+            this.onSwipeEnd(false);
           } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled) {
             // Only trigger keyPress if no swipe was handled
             this.onKeyPress(this.keyData);
@@ -426,7 +462,10 @@ struct KeyView {
           this.isPressed = false;
           this.longPressTriggered = false;
           this.touchStartX = 0;
+          this.touchStartY = 0;
           this.swipeHandled = false;
+          this.pendingSwipe = false;
+          this.swipeActivated = false;
         }
       })
       .onAreaChange((_oldValue: Area, newValue: Area) => {
@@ -444,6 +483,11 @@ struct KeyView {
     }
     .padding({ left: 2, right: 2, top: 2, bottom: 2 })
   }
+}
+
+interface GeneratedTypeLiteralInterface_1 {
+  original: string;
+  corrected: string;
 }
 
 @Entry
@@ -491,7 +535,7 @@ struct Index {
   @State private prevPrevWord: string = ''; // For trigram predictions
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
-  @State private lastAutocorrection: { original: string; corrected: string } | null = null;
+  @State private lastAutocorrection: GeneratedTypeLiteralInterface_1 | null = null;
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
   private suggestionsDebounceTimer: number | null = null; // Debounce timer for updateSuggestions
 
@@ -501,6 +545,7 @@ struct Index {
   @State private swipePreviewWord: string = '';
   @State private swipeAlternatives: string[] = [];
   private swipeStartTime: number = 0;
+  private lastSwipePreviewTs: number = 0;
   private keyBoundsMap: Map<string, KeyBounds> = new Map();
 
   @State private isRecording: boolean = false;
@@ -792,6 +837,7 @@ struct Index {
 
     this.isSwipeTyping = true;
     this.swipeStartTime = Date.now();
+    this.lastSwipePreviewTs = this.swipeStartTime;
     this.swipePath = [{
       x: position.x,
       y: position.y,
@@ -813,13 +859,20 @@ struct Index {
       timestamp: Date.now()
     });
 
-    if (this.swipePath.length % 5 === 0) {
+    const now = Date.now();
+    if (this.swipePath.length % 5 === 0 && (now - this.lastSwipePreviewTs) >= 24) {
+      this.lastSwipePreviewTs = now;
       this.updateSwipePreview();
     }
   }
 
-  private handleSwipeEnd(): void {
+  private handleSwipeEnd(commit: boolean = true): void {
     if (!this.isSwipeTyping) {
+      return;
+    }
+
+    if (!commit) {
+      this.resetSwipeState();
       return;
     }
 
@@ -841,7 +894,6 @@ struct Index {
       }
 
       keyboardController.insertText(word);
-      keyboardController.insertText(' ');
       this.onTextTyped(word);
       void this.onBoundaryTyped(' ');
 
@@ -959,7 +1011,7 @@ struct Index {
     }
     this.rapidDeleteTimer = setInterval(() => {
       feedbackController.provideFeedback(FeedbackType.Heavy);
-      keyboardController.deleteForward(1);
+      keyboardController.deleteBeforeCursor(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -988,7 +1040,7 @@ struct Index {
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBeforeCursor(1);
         this.onBackspaceTyped();
       }
       this.backspaceCurrentX = x;
@@ -1080,17 +1132,11 @@ struct Index {
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
     this.singleCharPopupInfo = { char: char, position: position };
-
-    // Start swipe tracking
-    this.handleSwipeStart(key, position);
   }
 
   private handleKeyTouchUp(): void {
     // Hide the popup
     this.singleCharPopupInfo = null;
-
-    // End swipe tracking
-    this.handleSwipeEnd();
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
@@ -1139,7 +1185,7 @@ struct Index {
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBeforeCursor(1);
         await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
@@ -1350,8 +1396,8 @@ struct Index {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
 
-          // Delete the typed word before cursor (HarmonyOS: deleteForward removes text before cursor)
-          keyboardController.deleteForward(this.currentWord.length);
+          // Delete the typed word before cursor using canonical delete semantics
+          keyboardController.deleteBeforeCursor(this.currentWord.length);
 
           // Insert the corrected word
           keyboardController.insertText(correction);
@@ -1423,8 +1469,8 @@ struct Index {
 
   private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
-    // HarmonyOS: deleteForward removes text before cursor
-    keyboardController.deleteForward(this.currentWord.length);
+    // Delete the typed word before cursor using canonical delete semantics
+    keyboardController.deleteBeforeCursor(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
@@ -1990,8 +2036,14 @@ struct Index {
                       onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
                       onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
                       onCursorModeEnd: (): void => this.handleCursorModeEnd(),
+                      onSwipeStart: key.action === KeyAction.Char
+                        ? (k: KeyData, p: Position): void => this.handleSwipeStart(k, p)
+                        : undefined,
                       onSwipeMove: key.action === KeyAction.Char
                         ? (p: Position): void => this.handleSwipeMove(p)
+                        : undefined,
+                      onSwipeEnd: key.action === KeyAction.Char
+                        ? (commit: boolean): void => this.handleSwipeEnd(commit)
                         : undefined,
                       onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b)
                     })

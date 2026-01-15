@@ -4,6 +4,15 @@ import { BusinessError } from '@kit.BasicServicesKit';
 
 const inputMethodAbility: inputMethodEngine.InputMethodAbility = inputMethodEngine.getInputMethodAbility();
 
+enum DeleteSemantics {
+  Unknown,
+  BackwardDeletesBeforeCursor,
+  BackwardDeletesAfterCursor
+}
+
+// Set this to override platform delete semantics during debugging.
+const FORCE_DELETE_SEMANTICS: DeleteSemantics = DeleteSemantics.Unknown;
+
 export class KeyboardController {
   private mContext: InputMethodExtensionContext | undefined = undefined;
   private panel: inputMethodEngine.Panel | undefined = undefined;
@@ -12,6 +21,7 @@ export class KeyboardController {
   private enterKeyTypeCallback?: (enterKeyType: number) => void;
   private textBufferCache: string = '';
   private cursorPosition: number = 0;
+  private deleteSemantics: DeleteSemantics = FORCE_DELETE_SEMANTICS;
 
   constructor() {}
 
@@ -87,6 +97,7 @@ export class KeyboardController {
   }
 
   public deleteForward(length: number): void {
+    if (length <= 0) return;
     if (!this.textInputClient) {
       console.warn('OpenBoard Keyboard: Text input client not available');
       return;
@@ -100,6 +111,7 @@ export class KeyboardController {
   }
 
   public deleteBackward(length: number): void {
+    if (length <= 0) return;
     if (!this.textInputClient) {
       console.warn('OpenBoard Keyboard: Text input client not available');
       return;
@@ -109,6 +121,24 @@ export class KeyboardController {
       this.updateCacheOnDeleteBackward(length);
     } catch {
       // Silent catch for ArkTS compliance - hot path optimization
+    }
+  }
+
+  public deleteBeforeCursor(length: number = 1): void {
+    if (length <= 0) return;
+    if (this.forwardDeletesBeforeCursor()) {
+      this.deleteForward(length);
+    } else {
+      this.deleteBackward(length);
+    }
+  }
+
+  public deleteAfterCursor(length: number = 1): void {
+    if (length <= 0) return;
+    if (this.forwardDeletesBeforeCursor()) {
+      this.deleteBackward(length);
+    } else {
+      this.deleteForward(length);
     }
   }
 
@@ -169,23 +199,59 @@ export class KeyboardController {
   }
 
   private updateCacheOnDeleteForward(length: number): void {
-    // HarmonyOS: deleteForward actually deletes text BEFORE cursor (not after)
-    this.textBufferCache =
-      this.textBufferCache.slice(0, Math.max(0, this.cursorPosition - length)) +
-      this.textBufferCache.slice(this.cursorPosition);
-    this.cursorPosition = Math.max(0, this.cursorPosition - length);
+    if (this.forwardDeletesBeforeCursor()) {
+      this.updateCacheOnDeleteBeforeCursor(length);
+    } else {
+      this.updateCacheOnDeleteAfterCursor(length);
+    }
   }
 
   private updateCacheOnDeleteBackward(length: number): void {
+    if (this.forwardDeletesBeforeCursor()) {
+      this.updateCacheOnDeleteAfterCursor(length);
+    } else {
+      this.updateCacheOnDeleteBeforeCursor(length);
+    }
+  }
+
+  private updateCacheOnDeleteBeforeCursor(length: number): void {
+    if (length <= 0) return;
+    const safeCursor = Math.max(0, Math.min(this.cursorPosition, this.textBufferCache.length));
+    const safeLength = Math.min(length, safeCursor);
+    if (safeLength <= 0) return;
+    const deleteStart = Math.max(0, safeCursor - safeLength);
     this.textBufferCache =
-      this.textBufferCache.slice(0, this.cursorPosition - length) +
-      this.textBufferCache.slice(this.cursorPosition);
-    this.cursorPosition = Math.max(0, this.cursorPosition - length);
+      this.textBufferCache.slice(0, deleteStart) +
+      this.textBufferCache.slice(safeCursor);
+    this.cursorPosition = deleteStart;
+  }
+
+  private updateCacheOnDeleteAfterCursor(length: number): void {
+    if (length <= 0) return;
+    const safeCursor = Math.max(0, Math.min(this.cursorPosition, this.textBufferCache.length));
+    const maxDeletable = Math.max(0, this.textBufferCache.length - safeCursor);
+    const safeLength = Math.min(length, maxDeletable);
+    if (safeLength <= 0) return;
+    const deleteEnd = safeCursor + safeLength;
+    this.textBufferCache =
+      this.textBufferCache.slice(0, safeCursor) +
+      this.textBufferCache.slice(deleteEnd);
   }
 
   private updateCacheOnCursorMove(direction: number): void {
     // direction: positive = right/forward, negative = left/backward
     this.cursorPosition = Math.max(0, Math.min(this.textBufferCache.length, this.cursorPosition + direction));
+  }
+
+  private forwardDeletesBeforeCursor(): boolean {
+    if (this.deleteSemantics === DeleteSemantics.BackwardDeletesBeforeCursor) {
+      return false;
+    }
+    if (this.deleteSemantics === DeleteSemantics.BackwardDeletesAfterCursor) {
+      return true;
+    }
+    // Default fallback: backspace uses deleteForward on HarmonyOS (inverted semantics).
+    return true;
   }
 
   private async syncInitialBuffer(): Promise<void> {
