@@ -1091,7 +1091,10 @@ class PredictionModel {
       const triMap = m.tri.get(triKeyStr);
       if (triMap) {
         debugLog(`  Found trigram map with ${triMap.size} entries`);
-        for (const [word, contextCount] of triMap.entries()) {
+        for (const entry of triMap.entries()) {
+          const word = entry[0];
+          const contextCount = entry[1];
+
           // Early exit when enough high-quality candidates
           if (candidates.size >= k * 3) break;
 
@@ -1121,7 +1124,10 @@ class PredictionModel {
       const biMap = m.bi.get(prevLower);
       if (biMap) {
         debugLog(`  Found bigram map with ${biMap.size} entries`);
-        for (const [word, contextCount] of biMap.entries()) {
+        for (const entry of biMap.entries()) {
+          const word = entry[0];
+          const contextCount = entry[1];
+
           // Early exit when enough high-quality candidates
           if (candidates.size >= k * 3) break;
 
