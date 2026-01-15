@@ -35,15 +35,16 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     });
   }
 
-  onDestroy(): void {
+  async onDestroy(): Promise<void> {
     console.info("onDestroy.");
 
-    // Save prediction model before destroying
-    predictionModel.save().then(() => {
+    // Save prediction model before destroying (with await to ensure completion)
+    try {
+      await predictionModel.save();
       console.info('OpenBoard: Prediction model saved successfully');
-    }).catch((err: Error) => {
+    } catch (err) {
       console.error('OpenBoard: Failed to save prediction model', err);
-    });
+    }
 
     keyboardController.onDestroy();
   }
