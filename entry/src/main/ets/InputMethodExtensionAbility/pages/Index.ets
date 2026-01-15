@@ -34,6 +34,7 @@ enum LayoutSwipeDirection { Left, Right }
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 const DEBUG_PREDICT = false; // Disabled for performance
+const MIN_SWIPE_LAYOUT_KEYS = 20;
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -832,6 +833,10 @@ struct Index {
     swipeEngine.setKeyboardLayout(keyBounds);
   }
 
+  private isSwipeLayoutReady(): boolean {
+    return this.keyBoundsMap.size >= MIN_SWIPE_LAYOUT_KEYS;
+  }
+
   private handleSwipeStart(key: KeyData, position: Position): void {
     if (key.action !== KeyAction.Char) return;
 
@@ -883,6 +888,11 @@ struct Index {
       return;
     }
 
+    if (!this.isSwipeLayoutReady()) {
+      this.resetSwipeState();
+      return;
+    }
+
     this.updateSwipeEngineLayout();
 
     const result = swipeEngine.processSwipe(this.swipePath);
@@ -912,6 +922,9 @@ struct Index {
   }
 
   private updateSwipePreview(): void {
+    if (!this.isSwipeLayoutReady()) {
+      return;
+    }
     this.updateSwipeEngineLayout();
     const result = swipeEngine.processSwipe(this.swipePath);
     if (result) {
