@@ -463,7 +463,7 @@ struct KeyView {
       })
       .onAreaChange((_oldValue: Area, newValue: Area) => {
         if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
-          const areaAny = newValue as Record<string, Position>;
+          const areaAny = newValue as unknown as { globalPosition?: Position };
           const globalPosition = areaAny.globalPosition;
           const basePosition = globalPosition ?? {
             x: (newValue.position.x as number) + this.keyboardRootOffset.x,
@@ -2100,7 +2100,7 @@ struct Index {
             .width('100%')
             .height('100%')
 
-            Blank()
+            Flex()
               .width('100%')
               .height('100%')
               .backgroundColor('transparent')
@@ -2122,7 +2122,7 @@ struct Index {
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
           .onAreaChange((_oldValue: Area, newValue: Area) => {
-            const areaAny = newValue as Record<string, Position>;
+            const areaAny = newValue as unknown as { globalPosition?: Position };
             const globalPosition = areaAny.globalPosition;
             const basePosition = globalPosition ?? {
               x: newValue.position.x as number,
