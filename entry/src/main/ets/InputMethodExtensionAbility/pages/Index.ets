@@ -1126,7 +1126,6 @@ struct Index {
         break;
       case KeyAction.Space:
         feedbackController.provideFeedback(FeedbackType.Light);
-        keyboardController.insertText(' ');
         await this.onBoundaryTyped(' ');
         // Auto-return to alphabet layout after typing space in symbols layout
         if (this.keyboardLayout === KeyboardLayout.Symbols1 || this.keyboardLayout === KeyboardLayout.Symbols2) {
@@ -1377,6 +1376,9 @@ struct Index {
           this.prevPrevWord = this.previousWord;
           this.previousWord = this.currentWord;
         }
+
+        // Insert space after autocorrection (or no correction)
+        keyboardController.insertText(' ');
       } else {
         // Non-space boundary, just record the word with trigram context
         predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);

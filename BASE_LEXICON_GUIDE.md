@@ -147,13 +147,13 @@ This reduces autocorrect from O(50k) to O(2000) while maintaining 95%+ accuracy.
 
 ## Performance Characteristics
 
-| Operation | Complexity | Notes |
-|-----------|-----------|-------|
-| Prefix search (binary) | O(log n + m) | n=50k words, m=matches |
-| Prefix search (cached) | O(1) | LRU cache hit |
-| Autocorrect (user) | O(user_words) | Typically < 10k |
-| Autocorrect (base) | O(2000) | Limited pool |
-| Full lexicon scan | O(50k) | **Avoided** |
+| Operation              | Complexity      | Notes                    |
+|------------------------|-----------------|--------------------------|
+| Prefix search (binary) | O(log n + m)    | n=50k words, m=matches   |
+| Prefix search (cached) | O(1)            | LRU cache hit            |
+| Autocorrect (user)     | O(user_words)   | Typically < 10k          |
+| Autocorrect (base)     | O(2000)         | Limited pool             |
+| Full lexicon scan      | O(50k)          | Avoided                  |
 
 ## Memory Usage
 
@@ -171,7 +171,7 @@ Estimated memory footprint:
 import predictionModel from '../model/PredictionModel';
 
 // On app start
-onCreate(want: Want): void {
+async onCreate(want: Want): Promise<void> {
   const context = this.context;
 
   // Initialize prediction model

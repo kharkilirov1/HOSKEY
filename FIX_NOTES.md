@@ -11,7 +11,7 @@
 
 
 
-```typescript
+```text
 class PredictionConfig {
   static readonly LEARN_THRESHOLD = 3;
 
@@ -27,11 +27,11 @@ class PredictionConfig {
 
 
 
-```typescript
+```text
 // 2. Add 'en' to baseLexiconLanguages array below
 ```
 
-```typescript
+```text
 hasBaseLexicon(lang: string): boolean
 getBaseLexicon(lang: string): BaseLexicon | null
 ```
@@ -40,7 +40,7 @@ getBaseLexicon(lang: string): BaseLexicon | null
 ---
 
 
-```typescript
+```text
 } else {
   // Still pending, increment count
   m.pendingWords.set(w, newPendingCount);
@@ -48,20 +48,11 @@ getBaseLexicon(lang: string): BaseLexicon | null
   this.updateBigramTrigram(m, w, prev, prev2, now);
   m.lastUsed.set(w, now);
 }
-
-
-```typescript
 ```
 
-
-```typescript
-  }
-  }
-
+```text
 }
-```
-
-```typescript
+  }
 }
 ```
 
@@ -69,11 +60,11 @@ getBaseLexicon(lang: string): BaseLexicon | null
 ---
 
 
-```typescript
+```text
   if (this.isWordLearned(m, wordLower) || this.isBaseWord(lang, wordLower)) return null;
 ```
 
-```typescript
+```text
   await this.ensureBaseLexiconLoaded(lang);
   const baseLexicon = this.getBaseLexicon(lang);
 
