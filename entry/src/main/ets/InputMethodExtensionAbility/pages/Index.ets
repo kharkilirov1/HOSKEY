@@ -37,6 +37,11 @@ const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Na
 const DEBUG_PREDICT = false; // Disabled for performance
 const DEBUG_SWIPE = false;
 const MIN_SWIPE_LAYOUT_KEYS = 20;
+const SWIPE_POINT_MIN_INTERVAL_MS = 14;
+const SWIPE_POINT_MIN_DISTANCE_PX = 8;
+const SWIPE_PATH_MAX_POINTS = 180;
+const SWIPE_PREVIEW_MIN_POINTS = 6;
+const SWIPE_PREVIEW_INTERVAL_MS = 50;
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -230,6 +235,7 @@ struct KeyView {
   @Prop enterKeyLabel: string;
   @Prop keyboardRootOffset: Position = { x: 0, y: 0 };
   @Prop swipeInProgress: boolean = false;
+  @Prop ignoreEventsUntil: number = 0;
 
   getDisplayValue(): string {
     if (this.keyData.action === KeyAction.Shift) {
@@ -313,8 +319,11 @@ struct KeyView {
         const touch = event.touches[0];
         if (!touch) return;
         const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
+        const now = Date.now();
+        const ignoreInput = this.ignoreEventsUntil > now;
 
         if (event.type === TouchType.Down) {
+          if (ignoreInput) return;
           this.touchStartX = currentPosition.x;
           this.touchStartY = currentPosition.y;
           this.isPressed = true;
@@ -351,6 +360,7 @@ struct KeyView {
         }
 
         if (event.type === TouchType.Move) {
+          if (ignoreInput) return;
           if (this.longPressTriggered && this.keyData.secondaryValue) {
             this.onKeyLongPressDrag(currentPosition);
           }
@@ -426,6 +436,30 @@ struct KeyView {
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
           clearTimeout(this.longPressTimer);
+
+          if (ignoreInput) {
+            // End backspace swipe tracking
+            if (this.keyData.action === KeyAction.Backspace) {
+              this.onBackspaceSwipeEnd();
+            }
+
+            // End cursor mode tracking
+            if (this.keyData.action === KeyAction.Space) {
+              this.onCursorModeEnd();
+            }
+
+            // Hide popup
+            this.onKeyTouchUp();
+
+            this.isPressed = false;
+            this.longPressTriggered = false;
+            this.touchStartX = 0;
+            this.touchStartY = 0;
+            this.swipeHandled = false;
+            this.pendingSwipe = false;
+            this.swipeActivated = false;
+            return;
+          }
 
           // End backspace swipe tracking
           if (this.keyData.action === KeyAction.Backspace) {
@@ -545,11 +579,16 @@ struct Index {
   @State private swipePreviewWord: string = '';
   @State private swipeAlternatives: string[] = [];
   private swipeStartTime: number = 0;
-  private lastSwipePreviewTs: number = 0;
+  private lastPreviewTs: number = 0;
   private keyBoundsMap: Map<string, KeyBounds> = new Map();
   @State private keyboardRootOffset: Position = { x: 0, y: 0 };
   private swipeBoundsLogged: boolean = false;
   private swipePathLogged: boolean = false;
+  private swipeSessionId: number = 0;
+  private swipeCommitted: boolean = false;
+  private ignoreEventsUntil: number = 0;
+  private lastSwipePointTs: number = 0;
+  private lastSwipePoint: Position | null = null;
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -856,13 +895,20 @@ struct Index {
   private handleSwipeStart(key: KeyData, position: Position): void {
     if (key.action !== KeyAction.Char) return;
 
+    const now = Date.now();
+    if (now < this.ignoreEventsUntil) return;
+
+    this.swipeSessionId++;
+    this.swipeCommitted = false;
     this.isSwipeTyping = true;
-    this.swipeStartTime = Date.now();
-    this.lastSwipePreviewTs = this.swipeStartTime;
+    this.swipeStartTime = now;
+    this.lastPreviewTs = now;
+    this.lastSwipePointTs = now;
+    this.lastSwipePoint = { x: position.x, y: position.y };
     this.swipePath = [{
       x: position.x,
       y: position.y,
-      timestamp: Date.now()
+      timestamp: now
     }];
 
     const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
@@ -872,17 +918,31 @@ struct Index {
   }
 
   private handleSwipeMove(position: Position): void {
-    if (!this.isSwipeTyping) return;
+    if (!this.isSwipeTyping || this.swipeCommitted) return;
+    const now = Date.now();
+    if (now < this.ignoreEventsUntil) return;
 
-    const lastPoint = this.swipePath[this.swipePath.length - 1];
-    if (lastPoint && lastPoint.x === position.x && lastPoint.y === position.y) {
-      return;
+    const lastPoint = this.lastSwipePoint;
+    if (lastPoint) {
+      const deltaX = position.x - lastPoint.x;
+      const deltaY = position.y - lastPoint.y;
+      const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+      const tooSoon = (now - this.lastSwipePointTs) < SWIPE_POINT_MIN_INTERVAL_MS;
+      if (tooSoon && distance < SWIPE_POINT_MIN_DISTANCE_PX) {
+        return;
+      }
     }
 
+    this.lastSwipePoint = { x: position.x, y: position.y };
+    this.lastSwipePointTs = now;
+
+    if (this.swipePath.length >= SWIPE_PATH_MAX_POINTS) {
+      this.swipePath.shift();
+    }
     this.swipePath.push({
       x: position.x,
       y: position.y,
-      timestamp: Date.now()
+      timestamp: now
     });
 
     if (DEBUG_SWIPE && !this.swipePathLogged && this.swipePath.length >= 5) {
@@ -893,9 +953,9 @@ struct Index {
       this.swipePathLogged = true;
     }
 
-    const now = Date.now();
-    if (this.swipePath.length % 5 === 0 && (now - this.lastSwipePreviewTs) >= 24) {
-      this.lastSwipePreviewTs = now;
+    if (this.swipePath.length >= SWIPE_PREVIEW_MIN_POINTS &&
+      (now - this.lastPreviewTs) >= SWIPE_PREVIEW_INTERVAL_MS) {
+      this.lastPreviewTs = now;
       this.updateSwipePreview();
     }
   }
@@ -904,6 +964,11 @@ struct Index {
     if (!this.isSwipeTyping) {
       return;
     }
+    if (this.swipeCommitted) {
+      return;
+    }
+    this.swipeCommitted = true;
+    this.ignoreEventsUntil = Date.now() + 200;
 
     if (!commit) {
       this.resetSwipeState();
@@ -951,6 +1016,9 @@ struct Index {
   }
 
   private updateSwipePreview(): void {
+    if (this.swipePath.length < SWIPE_PREVIEW_MIN_POINTS) {
+      return;
+    }
     if (!this.isSwipeLayoutReady()) {
       return;
     }
@@ -968,6 +1036,9 @@ struct Index {
     this.swipePreviewWord = '';
     this.swipeAlternatives = [];
     this.swipeStartTime = 0;
+    this.lastPreviewTs = 0;
+    this.lastSwipePointTs = 0;
+    this.lastSwipePoint = null;
     this.swipePathLogged = false;
   }
 
@@ -1183,6 +1254,9 @@ struct Index {
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
+    if (Date.now() < this.ignoreEventsUntil) {
+      return;
+    }
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -2088,7 +2162,8 @@ struct Index {
                           : undefined,
                         onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b),
                         keyboardRootOffset: this.keyboardRootOffset,
-                        swipeInProgress: this.isSwipeTyping
+                        swipeInProgress: this.isSwipeTyping,
+                        ignoreEventsUntil: this.ignoreEventsUntil
                       })
                         .layoutWeight(key.flex)
                     }
@@ -2110,6 +2185,7 @@ struct Index {
                 const touch = event.touches[0];
                 if (!touch) return;
                 const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
+                if (Date.now() < this.ignoreEventsUntil) return;
 
                 if (event.type === TouchType.Move && this.isSwipeTyping) {
                   this.handleSwipeMove(currentPosition);

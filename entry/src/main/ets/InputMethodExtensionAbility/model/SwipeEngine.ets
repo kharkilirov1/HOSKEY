@@ -165,7 +165,26 @@ export class SwipeEngine {
       }
     }
 
-    return sequence;
+    return this.compressKeySequence(sequence);
+  }
+
+  private compressKeySequence(sequence: string[]): string[] {
+    if (sequence.length < 3) return sequence;
+
+    const compressed: string[] = [];
+    for (const key of sequence) {
+      const prev = compressed[compressed.length - 1];
+      const prevPrev = compressed[compressed.length - 2];
+      if (prev === key) {
+        continue;
+      }
+      if (prevPrev === key) {
+        compressed.pop();
+      }
+      compressed.push(key);
+    }
+
+    return compressed;
   }
 
   private findNearestKey(point: SwipePoint): string | null {
