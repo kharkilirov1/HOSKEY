@@ -801,8 +801,11 @@ class PredictionModel {
   private applyCasing(word: string, reference: string): string {
     if (!reference || reference.length === 0) return word;
 
-    // Check if reference is all uppercase
-    if (reference === reference.toUpperCase() && reference !== reference.toLowerCase()) {
+    // Check if reference is all uppercase (requires at least 2 characters)
+    // Single uppercase letter like "П" should be treated as capitalize, not ALL CAPS
+    if (reference.length >= 2 &&
+        reference === reference.toUpperCase() &&
+        reference !== reference.toLowerCase()) {
       return word.toUpperCase();
     }
 
