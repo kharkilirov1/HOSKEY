@@ -169,9 +169,11 @@ export class KeyboardController {
   }
 
   private updateCacheOnDeleteForward(length: number): void {
+    // HarmonyOS: deleteForward actually deletes text BEFORE cursor (not after)
     this.textBufferCache =
-      this.textBufferCache.slice(0, this.cursorPosition) +
-      this.textBufferCache.slice(this.cursorPosition + length);
+      this.textBufferCache.slice(0, Math.max(0, this.cursorPosition - length)) +
+      this.textBufferCache.slice(this.cursorPosition);
+    this.cursorPosition = Math.max(0, this.cursorPosition - length);
   }
 
   private updateCacheOnDeleteBackward(length: number): void {
