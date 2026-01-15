@@ -27,6 +27,7 @@ const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, 
 
 // TYPE DEFINITIONS
 interface Position { x: number; y: number; }
+interface AreaWithGlobalPosition { globalPosition?: Position; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
 type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
@@ -463,7 +464,7 @@ struct KeyView {
       })
       .onAreaChange((_oldValue: Area, newValue: Area) => {
         if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
-          const areaAny = newValue as unknown as { globalPosition?: Position };
+          const areaAny = newValue as AreaWithGlobalPosition;
           const globalPosition = areaAny.globalPosition;
           const basePosition = globalPosition ?? {
             x: (newValue.position.x as number) + this.keyboardRootOffset.x,
@@ -2122,7 +2123,7 @@ struct Index {
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
           .onAreaChange((_oldValue: Area, newValue: Area) => {
-            const areaAny = newValue as unknown as { globalPosition?: Position };
+            const areaAny = newValue as AreaWithGlobalPosition;
             const globalPosition = areaAny.globalPosition;
             const basePosition = globalPosition ?? {
               x: newValue.position.x as number,
