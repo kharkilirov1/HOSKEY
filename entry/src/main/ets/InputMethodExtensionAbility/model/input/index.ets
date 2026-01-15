@@ -31,3 +31,4 @@ export type {
 export { TextBuffer } from './TextBuffer';
 export { Debouncer } from './Debouncer';
 export { HarmonyTextClientAdapter } from './HarmonyTextClientAdapter';
+export { PredictorFacade } from './PredictorFacade';
