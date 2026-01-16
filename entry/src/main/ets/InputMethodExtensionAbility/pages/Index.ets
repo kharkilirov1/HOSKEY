@@ -1170,19 +1170,25 @@ struct Index {
         const bounds = this.keyBoundsMap.get(boundsKey);
         if (!bounds) continue;
 
+        // Calculate bounds from centerX/centerY + width/height
+        const left = bounds.centerX - bounds.width / 2;
+        const right = bounds.centerX + bounds.width / 2;
+        const top = bounds.centerY - bounds.height / 2;
+        const bottom = bounds.centerY + bounds.height / 2;
+
         // Check if point is inside bounds
-        const inside = position.x >= bounds.left &&
-                       position.x <= bounds.right &&
-                       position.y >= bounds.top &&
-                       position.y <= bounds.bottom;
+        const inside = position.x >= left &&
+                       position.x <= right &&
+                       position.y >= top &&
+                       position.y <= bottom;
 
         if (inside) {
           return key; // Direct hit
         }
 
         // Calculate distance to center
-        const centerX = (bounds.left + bounds.right) / 2;
-        const centerY = (bounds.top + bounds.bottom) / 2;
+        const centerX = bounds.centerX;
+        const centerY = bounds.centerY;
         const distance = Math.sqrt(
           (position.x - centerX) ** 2 +
           (position.y - centerY) ** 2
@@ -1202,7 +1208,7 @@ struct Index {
    * Error handler with rate limiting (300ms window)
    * Prevents "burst" errors from crashing IME
    */
-  private handleInsertError(error: unknown, source: string): void {
+  private handleInsertError(error: Error | object | string, source: string): void {
     const now = Date.now();
 
     // Reset counter if outside error window
@@ -1542,7 +1548,7 @@ struct Index {
         break;
       case KeyAction.Shift:
         feedbackController.provideFeedback(FeedbackType.Medium);
-        const now = Date.now();
+        // Use 'now' from line 1478 (function scope)
         if (this.shiftState === ShiftState.CapsLock) {
           this.shiftState = ShiftState.Off;
           this.lastShiftTapTs = now;
