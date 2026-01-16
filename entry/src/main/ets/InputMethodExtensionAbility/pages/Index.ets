@@ -32,16 +32,20 @@ interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
 type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
+enum InputMode { Tap, Swipe } // iOS-style input mode
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 const DEBUG_PREDICT = false; // Disabled for performance
 const DEBUG_SWIPE = false;
 const MIN_SWIPE_LAYOUT_KEYS = 20;
-const SWIPE_POINT_MIN_INTERVAL_MS = 14;
+// iOS-style swipe thresholds
+const SWIPE_ACTIVATION_THRESHOLD = 20; // px to activate swipe vs tap
+const SWIPE_POINT_MIN_INTERVAL_MS = 14; // 12-16ms throttle
 const SWIPE_POINT_MIN_DISTANCE_PX = 8;
-const SWIPE_PATH_MAX_POINTS = 180;
-const SWIPE_PREVIEW_MIN_POINTS = 6;
-const SWIPE_PREVIEW_INTERVAL_MS = 50;
+const SWIPE_PATH_MAX_POINTS = 180; // 160-200 max points
+const SWIPE_MIN_PATH_LENGTH = 3; // Minimum 2-3 keys for word
+const SWIPE_KEY_DEBOUNCE_MS = 18; // 12-25ms debounce for key collection
+const SWIPE_IGNORE_INPUT_MS = 200; // 150-250ms block after swipe
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -575,25 +579,31 @@ struct Index {
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
   private suggestionsDebounceTimer: number | null = null; // Debounce timer for updateSuggestions
 
-  // Swipe typing states
-  @State private isSwipeTyping: boolean = false;
-  @State private swipePath: SwipePoint[] = [];
-  @State private swipePreviewWord: string = '';
-  @State private swipeAlternatives: string[] = [];
-  @State private swipeTrailPoints: Position[] = []; // NEW: Trail visualization
-  private swipeStartTime: number = 0;
-  private lastPreviewTs: number = 0;
-  private keyBoundsMap: Map<string, KeyBounds> = new Map();
-  @State private keyboardRootOffset: Position = { x: 0, y: 0 };
-  private swipeBoundsLogged: boolean = false;
-  private swipePathLogged: boolean = false;
-  private swipeSessionId: number = 0;
+  // iOS-style swipe input states
+  private inputMode: InputMode = InputMode.Tap;
+  @State private isSwipeActive: boolean = false; // For UI (trail rendering)
   private swipeCommitted: boolean = false;
-  private ignoreEventsUntil: number = 0;
-  private lastSwipePointTs: number = 0;
-  private lastSwipePoint: Position | null = null;
-  private lastTrailPointTs: number = 0; // NEW: Throttle trail points
+  private swipePath: SwipePoint[] = []; // Raw touch points
+  private swipeKeySeq: string[] = []; // Collected letter sequence
+  private lastKeyId: string | null = null;
+  private candidateKeyId: string | null = null;
+  private candidateKeyTs: number = 0;
+  private swipeStartPt: Position | null = null;
+  private swipeStartTs: number = 0;
+  private ignoreKeysUntilTs: number = 0;
+  @State private swipeTrailPoints: Position[] = []; // Trail visualization
+  private lastTrailPointTs: number = 0;
   private trailCanvasContext: CanvasRenderingContext2D = new CanvasRenderingContext2D();
+
+  // Layout bounds management (per-language)
+  private keyBoundsMap: Map<string, KeyBounds> = new Map(); // Key: "${lang}:${layoutId}:${keyId}"
+  @State private keyboardRootOffset: Position = { x: 0, y: 0 };
+  private currentLayoutId: string = ''; // Track current layout for bounds validation
+
+  // Error rate limiting
+  private insertErrorCount: number = 0;
+  private lastErrorWindowTs: number = 0;
+  private lastErrorLogTs: number = 0;
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -870,21 +880,21 @@ struct Index {
 
   // === SWIPE TYPING METHODS ===
 
+  /**
+   * Store key bounds with layout-specific key: "${lang}:${layoutId}:${keyId}"
+   * Only for Alphabet layout (not Symbols)
+   */
   private handleKeyBoundsUpdate(key: string, bounds: KeyBounds): void {
-    this.keyBoundsMap.set(key, bounds);
-    if (DEBUG_SWIPE && !this.swipeBoundsLogged && this.isSwipeLayoutReady()) {
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for (const item of this.keyBoundsMap.values()) {
-        minX = Math.min(minX, item.centerX);
-        maxX = Math.max(maxX, item.centerX);
-        minY = Math.min(minY, item.centerY);
-        maxY = Math.max(maxY, item.centerY);
-      }
-      console.info(`[SwipeDebug] keyBounds range x=${minX.toFixed(1)}..${maxX.toFixed(1)} y=${minY.toFixed(1)}..${maxY.toFixed(1)} count=${this.keyBoundsMap.size}`);
-      this.swipeBoundsLogged = true;
+    // Only store bounds for Alphabet layout (not Symbols)
+    if (this.keyboardLayout !== KeyboardLayout.Alphabet) {
+      return;
+    }
+
+    const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${key}`;
+    this.keyBoundsMap.set(boundsKey, bounds);
+
+    if (DEBUG_SWIPE && this.isSwipeLayoutReady()) {
+      console.info(`[SwipeDebug] Stored bounds for ${boundsKey}, total=${this.keyBoundsMap.size}`);
     }
   }
 
@@ -897,64 +907,90 @@ struct Index {
     return this.keyBoundsMap.size >= MIN_SWIPE_LAYOUT_KEYS;
   }
 
+  /**
+   * iOS-style swipe start: TouchDown handler
+   * Just saves start position - swipe not yet activated
+   */
   private handleSwipeStart(key: KeyData, position: Position): void {
     if (key.action !== KeyAction.Char) return;
 
     const now = Date.now();
-    if (now < this.ignoreEventsUntil) return;
+    if (now < this.ignoreKeysUntilTs) return;
 
-    this.swipeSessionId++;
+    // Reset state (not yet swipe mode)
+    this.swipeStartPt = { x: position.x, y: position.y };
+    this.swipeStartTs = now;
+    this.isSwipeActive = false;
     this.swipeCommitted = false;
-    this.isSwipeTyping = true;
-    this.swipeStartTime = now;
-    this.lastPreviewTs = now;
-    this.lastSwipePointTs = now;
-    this.lastTrailPointTs = now; // NEW: Reset trail throttle
-    this.lastSwipePoint = { x: position.x, y: position.y };
-    this.swipePath = [{
-      x: position.x,
-      y: position.y,
-      timestamp: now
-    }];
+    this.inputMode = InputMode.Tap;
 
-    // NEW: Initialize trail with first point
-    this.swipeTrailPoints = [{ x: position.x, y: position.y }];
+    // Clear all buffers
+    this.swipePath = [];
+    this.swipeKeySeq = [];
+    this.swipeTrailPoints = [];
+    this.lastKeyId = null;
+    this.candidateKeyId = null;
+    this.candidateKeyTs = 0;
+    this.lastTrailPointTs = now;
 
+    // Store first key (start key)
     const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
-    this.swipePreviewWord = char.toLowerCase();
+    this.lastKeyId = key.mainValue;
+    this.swipeKeySeq.push(char.toLowerCase());
   }
 
+  /**
+   * iOS-style swipe move: Collect path & letters WITHOUT inserting text
+   * NO preview updates, NO insertText calls
+   */
   private handleSwipeMove(position: Position): void {
-    if (!this.isSwipeTyping || this.swipeCommitted) return;
-    const now = Date.now();
-    if (now < this.ignoreEventsUntil) return;
+    if (this.swipeCommitted) return;
 
-    const lastPoint = this.lastSwipePoint;
-    if (lastPoint) {
+    const now = Date.now();
+    if (now < this.ignoreKeysUntilTs) return;
+
+    if (!this.swipeStartPt) return;
+
+    // 1) Check if swipe should be activated
+    if (!this.isSwipeActive) {
+      const deltaX = position.x - this.swipeStartPt.x;
+      const deltaY = position.y - this.swipeStartPt.y;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+      if (distance < SWIPE_ACTIVATION_THRESHOLD) {
+        return; // Still tap mode
+      }
+
+      // Activate swipe mode
+      this.isSwipeActive = true;
+      this.inputMode = InputMode.Swipe;
+
+      // Initialize trail with start point
+      this.swipeTrailPoints = [{ x: this.swipeStartPt.x, y: this.swipeStartPt.y }];
+    }
+
+    // 2) Collect path points with throttling
+    if (this.swipePath.length > 0) {
+      const lastPoint = this.swipePath[this.swipePath.length - 1];
       const deltaX = position.x - lastPoint.x;
       const deltaY = position.y - lastPoint.y;
-      const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
-      const tooSoon = (now - this.lastSwipePointTs) < SWIPE_POINT_MIN_INTERVAL_MS;
-      if (tooSoon && distance < SWIPE_POINT_MIN_DISTANCE_PX) {
-        return;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+      const timeSinceLast = now - lastPoint.timestamp;
+
+      if (timeSinceLast < SWIPE_POINT_MIN_INTERVAL_MS && distance < SWIPE_POINT_MIN_DISTANCE_PX) {
+        return; // Skip this point
       }
     }
 
-    this.lastSwipePoint = { x: position.x, y: position.y };
-    this.lastSwipePointTs = now;
-
+    // Add path point
     if (this.swipePath.length >= SWIPE_PATH_MAX_POINTS) {
       this.swipePath.shift();
     }
-    this.swipePath.push({
-      x: position.x,
-      y: position.y,
-      timestamp: now
-    });
+    this.swipePath.push({ x: position.x, y: position.y, timestamp: now });
 
-    // NEW: Update trail points with throttle (16ms = 60fps max)
+    // 3) Update trail visualization
     const timeSinceLastTrail = now - this.lastTrailPointTs;
     const lastTrail = this.swipeTrailPoints[this.swipeTrailPoints.length - 1];
     const trailDistance = lastTrail ?
@@ -964,112 +1000,230 @@ struct Index {
       this.swipeTrailPoints.push({ x: position.x, y: position.y });
       this.lastTrailPointTs = now;
 
-      // Limit trail length to 50 points to avoid performance issues
       if (this.swipeTrailPoints.length > 50) {
         this.swipeTrailPoints.shift();
       }
 
-      // Redraw trail with new point
       this.renderTrailPath();
     }
 
-    if (DEBUG_SWIPE && !this.swipePathLogged && this.swipePath.length >= 5) {
-      const sample = this.swipePath.slice(0, 5)
-        .map((point: SwipePoint) => `(${point.x.toFixed(1)},${point.y.toFixed(1)})`)
-        .join(' ');
-      console.info(`[SwipeDebug] swipePath first5=${sample}`);
-      this.swipePathLogged = true;
+    // 4) Collect letter sequence via hit-test (NO insertText!)
+    const nearestKey = this.findNearestKey(position);
+    if (nearestKey && nearestKey.action === KeyAction.Char) {
+      const keyId = nearestKey.mainValue;
+
+      // Ignore keys not from current layout
+      const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${keyId}`;
+      if (!this.keyBoundsMap.has(boundsKey)) {
+        return; // Wrong layout/language
+      }
+
+      // Check if this is a new key
+      if (keyId === this.lastKeyId) {
+        return; // Same key, skip
+      }
+
+      // Debounce: candidate key must be stable for SWIPE_KEY_DEBOUNCE_MS
+      if (this.candidateKeyId !== keyId) {
+        this.candidateKeyId = keyId;
+        this.candidateKeyTs = now;
+        return;
+      }
+
+      if (now - this.candidateKeyTs >= SWIPE_KEY_DEBOUNCE_MS) {
+        // Commit this letter to sequence
+        const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
+          ? (nearestKey.shiftValue ?? nearestKey.mainValue)
+          : nearestKey.mainValue;
+
+        this.swipeKeySeq.push(char.toLowerCase());
+        this.lastKeyId = keyId;
+        this.candidateKeyId = null;
+      }
     }
 
-    if (this.swipePath.length >= SWIPE_PREVIEW_MIN_POINTS &&
-      (now - this.lastPreviewTs) >= SWIPE_PREVIEW_INTERVAL_MS) {
-      this.lastPreviewTs = now;
-      this.updateSwipePreview();
-    }
+    // ❌ NO updateSwipePreview()
+    // ❌ NO insertText()
+    // ❌ NO prediction/autocorrection
   }
 
+  /**
+   * iOS-style swipe end: SINGLE commit point, ONLY insertText call
+   * NO autocorrection, NO onBoundaryTyped, NO mid-swipe updates
+   */
   private handleSwipeEnd(commit: boolean = true): void {
-    if (!this.isSwipeTyping) {
+    // Guard: not in swipe mode
+    if (!this.isSwipeActive && this.inputMode === InputMode.Tap) {
       return;
     }
+
+    // Guard: already committed
     if (this.swipeCommitted) {
       return;
     }
-    this.swipeCommitted = true;
-    this.ignoreEventsUntil = Date.now() + 200;
 
+    this.swipeCommitted = true;
+    const now = Date.now();
+
+    // Block tap input for SWIPE_IGNORE_INPUT_MS
+    this.ignoreKeysUntilTs = now + SWIPE_IGNORE_INPUT_MS;
+
+    // Reset mode immediately
+    this.inputMode = InputMode.Tap;
+    this.isSwipeActive = false;
+
+    // Don't commit if cancelled
     if (!commit) {
       this.resetSwipeState();
       return;
     }
 
-    const duration = Date.now() - this.swipeStartTime;
-
-    if (duration < 200 || this.swipePath.length < 5) {
+    // Validate minimum requirements
+    const duration = now - this.swipeStartTs;
+    if (duration < 100 || this.swipeKeySeq.length < SWIPE_MIN_PATH_LENGTH) {
       this.resetSwipeState();
       return;
     }
 
+    // Get word from swipe engine
     if (!this.isSwipeLayoutReady()) {
       this.resetSwipeState();
       return;
     }
 
     this.updateSwipeEngineLayout();
-
     const result = swipeEngine.processSwipe(this.swipePath);
 
     if (result && result.bestWord) {
       let word = result.bestWord;
+
+      // Apply capitalization
       if (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock) {
         word = word.charAt(0).toUpperCase() + word.slice(1);
       }
 
-      keyboardController.insertText(word);
-      this.onTextTyped(word);
-      void this.onBoundaryTyped(' ');
+      // SINGLE insertText with error handling
+      try {
+        keyboardController.insertText(word);
 
-      this.suggestions = [
-        word,
-        result.alternatives[0] || '',
-        result.alternatives[1] || ''
-      ];
+        // Track word for context (NO autocorrection)
+        this.previousWord = word;
+        this.currentWord = '';
 
-      if (this.shiftState === ShiftState.On) {
-        this.shiftState = ShiftState.Off;
+        // Reset error counter on success
+        this.insertErrorCount = 0;
+
+        // Update suggestions AFTER commit
+        this.suggestions = [
+          word,
+          result.alternatives[0] || '',
+          result.alternatives[1] || ''
+        ];
+
+        // Reset shift if needed
+        if (this.shiftState === ShiftState.On) {
+          this.shiftState = ShiftState.Off;
+        }
+
+      } catch (error) {
+        this.handleInsertError(error, 'swipe');
       }
     }
 
+    // Clean up
     this.resetSwipeState();
+    this.debouncedUpdateSuggestions(); // Refresh after commit
   }
 
-  private updateSwipePreview(): void {
-    if (this.swipePath.length < SWIPE_PREVIEW_MIN_POINTS) {
-      return;
-    }
-    if (!this.isSwipeLayoutReady()) {
-      return;
-    }
-    this.updateSwipeEngineLayout();
-    const result = swipeEngine.processSwipe(this.swipePath);
-    if (result) {
-      this.swipePreviewWord = result.bestWord;
-      this.swipeAlternatives = result.alternatives;
-    }
-  }
-
+  /**
+   * Reset swipe state after commit/cancel
+   */
   private resetSwipeState(): void {
-    this.isSwipeTyping = false;
+    this.inputMode = InputMode.Tap;
+    this.isSwipeActive = false;
+    this.swipeCommitted = false;
     this.swipePath = [];
-    this.swipePreviewWord = '';
-    this.swipeAlternatives = [];
-    this.swipeTrailPoints = []; // NEW: Clear trail
-    this.swipeStartTime = 0;
-    this.lastPreviewTs = 0;
-    this.lastSwipePointTs = 0;
-    this.lastSwipePoint = null;
-    this.lastTrailPointTs = 0; // NEW: Reset trail throttle
-    this.swipePathLogged = false;
+    this.swipeKeySeq = [];
+    this.swipeTrailPoints = [];
+    this.lastKeyId = null;
+    this.candidateKeyId = null;
+    this.candidateKeyTs = 0;
+    this.swipeStartPt = null;
+    this.swipeStartTs = 0;
+    this.lastTrailPointTs = 0;
+  }
+
+  /**
+   * Find nearest key via hit-test for swipe letter collection
+   * Only returns keys from current layout/language
+   */
+  private findNearestKey(position: Position): KeyData | null {
+    let nearestKey: KeyData | null = null;
+    let minDistance = Infinity;
+
+    const layout = this.getCurrentLayout();
+    for (const row of layout) {
+      for (const key of row) {
+        if (key.action !== KeyAction.Char) continue;
+
+        const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${key.mainValue}`;
+        const bounds = this.keyBoundsMap.get(boundsKey);
+        if (!bounds) continue;
+
+        // Check if point is inside bounds
+        const inside = position.x >= bounds.left &&
+                       position.x <= bounds.right &&
+                       position.y >= bounds.top &&
+                       position.y <= bounds.bottom;
+
+        if (inside) {
+          return key; // Direct hit
+        }
+
+        // Calculate distance to center
+        const centerX = (bounds.left + bounds.right) / 2;
+        const centerY = (bounds.top + bounds.bottom) / 2;
+        const distance = Math.sqrt(
+          (position.x - centerX) ** 2 +
+          (position.y - centerY) ** 2
+        );
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          nearestKey = key;
+        }
+      }
+    }
+
+    return nearestKey;
+  }
+
+  /**
+   * Error handler with rate limiting (300ms window)
+   * Prevents "burst" errors from crashing IME
+   */
+  private handleInsertError(error: unknown, source: string): void {
+    const now = Date.now();
+
+    // Reset counter if outside error window
+    if (now - this.lastErrorWindowTs > 300) {
+      this.insertErrorCount = 0;
+      this.lastErrorWindowTs = now;
+    }
+
+    this.insertErrorCount++;
+
+    // Log throttling (max 1/sec)
+    if (now - this.lastErrorLogTs > 1000) {
+      console.error(`[${source}] insertText error (count=${this.insertErrorCount}):`, error);
+      this.lastErrorLogTs = now;
+    }
+
+    // Block input on burst (>3 errors in 300ms)
+    if (this.insertErrorCount > 3) {
+      this.ignoreKeysUntilTs = now + 400;
+      console.warn(`[${source}] Error burst detected, blocking input for 400ms`);
+    }
   }
 
   /**
@@ -1108,6 +1262,9 @@ struct Index {
       this.updateEnterKeyLabel(enterKeyType);
     });
     this.updateEnterKeyLabel(keyboardController.getCurrentEnterKeyType());
+
+    // Initialize currentLayoutId (iOS-style swipe)
+    this.currentLayoutId = `${this.currentLanguage}_alphabet`;
   }
 
   aboutToDisappear(): void {
@@ -1312,9 +1469,17 @@ struct Index {
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
-    if (Date.now() < this.ignoreEventsUntil && key.action !== KeyAction.Char && key.action !== KeyAction.Space) {
+    // iOS-style: Block ALL input during swipe
+    if (this.inputMode === InputMode.Swipe || this.isSwipeActive) {
       return;
     }
+
+    // Block during ignore window
+    const now = Date.now();
+    if (now < this.ignoreKeysUntilTs && key.action !== KeyAction.Char && key.action !== KeyAction.Space) {
+      return;
+    }
+
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -1337,10 +1502,19 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        if (Date.now() < this.ignoreEventsUntil && !this.isBoundaryChar(text)) {
+        if (now < this.ignoreKeysUntilTs && !this.isBoundaryChar(text)) {
           return;
         }
-        keyboardController.insertText(text);
+
+        // insertText with error handling
+        try {
+          keyboardController.insertText(text);
+          this.insertErrorCount = 0; // Reset on success
+        } catch (error) {
+          this.handleInsertError(error, 'tap');
+          break; // Don't proceed on error
+        }
+
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
@@ -1386,8 +1560,13 @@ struct Index {
       case KeyAction.SwitchAlphabet:
       case KeyAction.SwitchSymbols:
         feedbackController.provideFeedback(FeedbackType.Medium);
-        this.keyboardLayout = (this.keyboardLayout === KeyboardLayout.Alphabet) ?
-          KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
+        const wasAlphabet = this.keyboardLayout === KeyboardLayout.Alphabet;
+        this.keyboardLayout = wasAlphabet ? KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
+
+        // Update layoutId when switching back to Alphabet
+        if (!wasAlphabet) {
+          this.currentLayoutId = `${this.currentLanguage}_alphabet`;
+        }
         break;
       case KeyAction.SwitchSymbolsAlt:
         feedbackController.provideFeedback(FeedbackType.Medium);
@@ -1442,6 +1621,10 @@ struct Index {
 
     this.currentLanguage = this.availableLanguages[currentIndex];
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
+
+    // Clear keyBoundsMap on language change (iOS-style)
+    this.keyBoundsMap.clear();
+    this.currentLayoutId = `${this.currentLanguage}_alphabet`;
 
     // Warmup BaseLexicon for new language
     predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
@@ -1699,15 +1882,11 @@ struct Index {
       .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
-      // SUGGESTIONS
+      // SUGGESTIONS (iOS-style: NO preview during swipe)
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
         Row({ space: 0 }) {
           ForEach(
-            this.isSwipeTyping
-              ? (this.swipeAlternatives.length > 0
-                  ? this.swipeAlternatives
-                  : (this.swipePreviewWord ? [this.swipePreviewWord, '', ''] : ['', '', '']))
-              : this.suggestions,
+            this.isSwipeActive ? ['', '', ''] : this.suggestions,
             (suggestion: string, index: number) => {
             Column() {
               Text(suggestion)
@@ -2236,8 +2415,8 @@ struct Index {
                           : undefined,
                         onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b),
                         keyboardRootOffset: this.keyboardRootOffset,
-                        swipeInProgress: this.isSwipeTyping,
-                        ignoreEventsUntil: this.ignoreEventsUntil
+                        swipeInProgress: this.isSwipeActive,
+                        ignoreEventsUntil: this.ignoreKeysUntilTs
                       })
                         .layoutWeight(key.flex)
                     }
@@ -2259,13 +2438,13 @@ struct Index {
                 const touch = event.touches[0];
                 if (!touch) return;
                 const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
-                if (Date.now() < this.ignoreEventsUntil) return;
+                if (Date.now() < this.ignoreKeysUntilTs) return;
 
-                if (event.type === TouchType.Move && this.isSwipeTyping) {
+                if (event.type === TouchType.Move && this.isSwipeActive) {
                   this.handleSwipeMove(currentPosition);
                 }
 
-                if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.isSwipeTyping) {
+                if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.isSwipeActive) {
                   this.handleSwipeEnd(event.type === TouchType.Up);
                 }
               })
@@ -2364,8 +2543,8 @@ struct Index {
           .zIndex(300)
       }
 
-      // Swipe typing trail visualization
-      if (this.isSwipeTyping && this.swipeTrailPoints.length > 1) {
+      // Swipe typing trail visualization (iOS-style: only trail, no text)
+      if (this.isSwipeActive && this.swipeTrailPoints.length > 1) {
         Canvas(this.trailCanvasContext)
           .width('100%')
           .height('100%')
