@@ -1545,8 +1545,8 @@ struct Index {
           this.previousWord = this.currentWord;
         }
 
-        // Insert space after autocorrection (or no correction)
-        keyboardController.insertText(' ');
+        // NOTE: Space insertion moved outside if (this.currentWord) block
+        // to ensure space is ALWAYS inserted, even when currentWord is empty
       } else {
         // Non-space boundary, just record the word with trigram context
         predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
@@ -1558,6 +1558,13 @@ struct Index {
 
       this.currentWord = '';
     }
+
+    // Insert space ALWAYS when ch === ' ', regardless of whether currentWord was empty
+    // This fixes the bug where space doesn't insert after punctuation or consecutive spaces
+    if (ch === ' ') {
+      keyboardController.insertText(' ');
+    }
+
     this.debouncedUpdateSuggestions(); // Debounced to reduce load
     this.resetInactivityTimer();
 
