@@ -580,6 +580,7 @@ struct Index {
   @State private swipePath: SwipePoint[] = [];
   @State private swipePreviewWord: string = '';
   @State private swipeAlternatives: string[] = [];
+  @State private swipeTrailPoints: Position[] = []; // NEW: Trail visualization
   private swipeStartTime: number = 0;
   private lastPreviewTs: number = 0;
   private keyBoundsMap: Map<string, KeyBounds> = new Map();
@@ -591,6 +592,7 @@ struct Index {
   private ignoreEventsUntil: number = 0;
   private lastSwipePointTs: number = 0;
   private lastSwipePoint: Position | null = null;
+  private lastTrailPointTs: number = 0; // NEW: Throttle trail points
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -906,12 +908,16 @@ struct Index {
     this.swipeStartTime = now;
     this.lastPreviewTs = now;
     this.lastSwipePointTs = now;
+    this.lastTrailPointTs = now; // NEW: Reset trail throttle
     this.lastSwipePoint = { x: position.x, y: position.y };
     this.swipePath = [{
       x: position.x,
       y: position.y,
       timestamp: now
     }];
+
+    // NEW: Initialize trail with first point
+    this.swipeTrailPoints = [{ x: position.x, y: position.y }];
 
     const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
       ? (key.shiftValue ?? key.mainValue)
@@ -946,6 +952,22 @@ struct Index {
       y: position.y,
       timestamp: now
     });
+
+    // NEW: Update trail points with throttle (16ms = 60fps max)
+    const timeSinceLastTrail = now - this.lastTrailPointTs;
+    const lastTrail = this.swipeTrailPoints[this.swipeTrailPoints.length - 1];
+    const trailDistance = lastTrail ?
+      Math.sqrt((position.x - lastTrail.x) ** 2 + (position.y - lastTrail.y) ** 2) : 999;
+
+    if (timeSinceLastTrail >= 16 || trailDistance >= 8) {
+      this.swipeTrailPoints.push({ x: position.x, y: position.y });
+      this.lastTrailPointTs = now;
+
+      // Limit trail length to 50 points to avoid performance issues
+      if (this.swipeTrailPoints.length > 50) {
+        this.swipeTrailPoints.shift();
+      }
+    }
 
     if (DEBUG_SWIPE && !this.swipePathLogged && this.swipePath.length >= 5) {
       const sample = this.swipePath.slice(0, 5)
@@ -1037,11 +1059,41 @@ struct Index {
     this.swipePath = [];
     this.swipePreviewWord = '';
     this.swipeAlternatives = [];
+    this.swipeTrailPoints = []; // NEW: Clear trail
     this.swipeStartTime = 0;
     this.lastPreviewTs = 0;
     this.lastSwipePointTs = 0;
     this.lastSwipePoint = null;
+    this.lastTrailPointTs = 0; // NEW: Reset trail throttle
     this.swipePathLogged = false;
+  }
+
+  /**
+   * Render swipe trail path on Canvas
+   * Draws a smooth polyline following the user's finger movement
+   */
+  private renderTrailPath = (context: CanvasRenderingContext2D): void => {
+    if (this.swipeTrailPoints.length < 2) {
+      return;
+    }
+
+    context.clearRect(0, 0, context.width, context.height);
+
+    // Trail style: semi-transparent blue line
+    context.strokeStyle = 'rgba(33, 150, 243, 0.6)'; // Blue with 60% opacity
+    context.lineWidth = 4;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+
+    // Draw polyline through all trail points
+    context.beginPath();
+    context.moveTo(this.swipeTrailPoints[0].x, this.swipeTrailPoints[0].y);
+
+    for (let i = 1; i < this.swipeTrailPoints.length; i++) {
+      context.lineTo(this.swipeTrailPoints[i].x, this.swipeTrailPoints[i].y);
+    }
+
+    context.stroke();
   }
 
   // === END SWIPE TYPING METHODS ===
@@ -1646,7 +1698,13 @@ struct Index {
       // SUGGESTIONS
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
         Row({ space: 0 }) {
-          ForEach(this.suggestions, (suggestion: string, index: number) => {
+          ForEach(
+            this.isSwipeTyping
+              ? (this.swipeAlternatives.length > 0
+                  ? this.swipeAlternatives
+                  : (this.swipePreviewWord ? [this.swipePreviewWord, '', ''] : ['', '', '']))
+              : this.suggestions,
+            (suggestion: string, index: number) => {
             Column() {
               Text(suggestion)
                 .fontSize(16)
@@ -2302,23 +2360,12 @@ struct Index {
           .zIndex(300)
       }
 
-      // Swipe typing preview
-      if (this.isSwipeTyping && this.swipePreviewWord.length > 1 && this.swipePath.length > 0) {
-        Column() {
-          Text(this.swipePreviewWord)
-            .fontSize(22)
-            .fontWeight(500)
-            .fontColor(OpenBoardTheme.primaryText)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .backgroundColor(OpenBoardTheme.surface)
-            .borderRadius(OpenBoardTheme.radiusMedium)
-            .shadow(OpenBoardTheme.shadowPanel)
-        }
-        .position({
-          x: this.swipePath[this.swipePath.length - 1].x - 40,
-          y: this.swipePath[this.swipePath.length - 1].y - 70
-        })
-        .zIndex(350)
+      // Swipe typing trail visualization
+      if (this.isSwipeTyping && this.swipeTrailPoints.length > 1) {
+        Canvas(this.renderTrailPath)
+          .width('100%')
+          .height('100%')
+          .zIndex(350)
       }
     }
     .width('100%')
