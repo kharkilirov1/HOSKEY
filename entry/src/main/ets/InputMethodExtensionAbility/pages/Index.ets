@@ -593,6 +593,7 @@ struct Index {
   private lastSwipePointTs: number = 0;
   private lastSwipePoint: Position | null = null;
   private lastTrailPointTs: number = 0; // NEW: Throttle trail points
+  private trailCanvasContext: CanvasRenderingContext2D = new CanvasRenderingContext2D();
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -967,6 +968,9 @@ struct Index {
       if (this.swipeTrailPoints.length > 50) {
         this.swipeTrailPoints.shift();
       }
+
+      // Redraw trail with new point
+      this.renderTrailPath();
     }
 
     if (DEBUG_SWIPE && !this.swipePathLogged && this.swipePath.length >= 5) {
@@ -1072,28 +1076,28 @@ struct Index {
    * Render swipe trail path on Canvas
    * Draws a smooth polyline following the user's finger movement
    */
-  private renderTrailPath = (context: CanvasRenderingContext2D): void => {
+  private renderTrailPath(): void {
     if (this.swipeTrailPoints.length < 2) {
       return;
     }
 
-    context.clearRect(0, 0, context.width, context.height);
+    this.trailCanvasContext.clearRect(0, 0, this.trailCanvasContext.width, this.trailCanvasContext.height);
 
     // Trail style: semi-transparent blue line
-    context.strokeStyle = 'rgba(33, 150, 243, 0.6)'; // Blue with 60% opacity
-    context.lineWidth = 4;
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
+    this.trailCanvasContext.strokeStyle = 'rgba(33, 150, 243, 0.6)'; // Blue with 60% opacity
+    this.trailCanvasContext.lineWidth = 4;
+    this.trailCanvasContext.lineCap = 'round';
+    this.trailCanvasContext.lineJoin = 'round';
 
     // Draw polyline through all trail points
-    context.beginPath();
-    context.moveTo(this.swipeTrailPoints[0].x, this.swipeTrailPoints[0].y);
+    this.trailCanvasContext.beginPath();
+    this.trailCanvasContext.moveTo(this.swipeTrailPoints[0].x, this.swipeTrailPoints[0].y);
 
     for (let i = 1; i < this.swipeTrailPoints.length; i++) {
-      context.lineTo(this.swipeTrailPoints[i].x, this.swipeTrailPoints[i].y);
+      this.trailCanvasContext.lineTo(this.swipeTrailPoints[i].x, this.swipeTrailPoints[i].y);
     }
 
-    context.stroke();
+    this.trailCanvasContext.stroke();
   }
 
   // === END SWIPE TYPING METHODS ===
@@ -2362,9 +2366,12 @@ struct Index {
 
       // Swipe typing trail visualization
       if (this.isSwipeTyping && this.swipeTrailPoints.length > 1) {
-        Canvas(this.renderTrailPath)
+        Canvas(this.trailCanvasContext)
           .width('100%')
           .height('100%')
+          .onReady(() => {
+            this.renderTrailPath();
+          })
           .zIndex(350)
       }
     }
