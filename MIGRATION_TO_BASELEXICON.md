@@ -101,7 +101,7 @@ private isBaseWord(lang: string, word: string): boolean {
 
 **No changes needed!** Still synchronous, relies on warmup:
 
-```typescript
+```text
 recordWord(lang: string, prev: string | null, word: string, prev2: string | null = null): void {
   // ...
   const isBase = this.isBaseWord(lang, w); // Fast sync check
@@ -230,7 +230,7 @@ async onLanguageSwitch(newLang: string) {
 
 ### ❌ Alternative: Async recordWord
 
-```typescript
+```text
 // BAD: async recordWord
 async recordWord(lang: string, prev: string, word: string) {
   await this.ensureBaseLexiconLoaded(lang); // Delay on EVERY keystroke!
@@ -247,7 +247,7 @@ async recordWord(lang: string, prev: string, word: string) {
 
 ### ✅ Chosen: warmup() Pattern
 
-```typescript
+```text
 // GOOD: warmup on keyboard start
 async onCreate() {
   await predictionModel.warmup('ru'); // Once, before typing starts
@@ -270,14 +270,14 @@ recordWord(lang: string, prev: string, word: string) {
 
 ## 📊 Performance Comparison
 
-| Operation | Old (BaseDict) | New (BaseLexicon) | Speedup |
-|-----------|----------------|-------------------|---------|
-| **Startup** | Load dictionary_ru.txt (~500 words) | Warmup 50k lexicon | -300ms (lazy) |
-| **predict()** with prefix | O(n) scan | O(log n) binary search | **25x** |
-| **autocorrect** | O(n) scan all words | O(2000) limited pool | **25x** |
-| **findSimilar** | O(n) scan all words | O(1k-3k) first letter | **17x** |
-| **recordWord()** | Sync check small dict | Sync check (if warmed up) | Same |
-| **Memory** | ~50KB (500 words) | ~5MB (50k words) | -4.95MB |
+| Operation                 | Old (BaseDict)                     | New (BaseLexicon)             | Speedup        |
+|---------------------------|------------------------------------|-------------------------------|----------------|
+| Startup                   | Load dictionary_ru.txt (~500 words)| Warmup 50k lexicon            | -300ms (lazy)  |
+| predict() with prefix     | O(n) scan                          | O(log n) binary search        | 25x            |
+| autocorrect               | O(n) scan all words                | O(2000) limited pool          | 25x            |
+| findSimilar               | O(n) scan all words                | O(1k-3k) first letter         | 17x            |
+| recordWord()              | Sync check small dict              | Sync check (if warmed up)     | Same           |
+| Memory                    | ~50KB (500 words)                  | ~5MB (50k words)              | -4.95MB        |
 
 **Net result:** 10-25x faster predictions, -300ms startup (lazy loading), predictable performance.
 
@@ -309,7 +309,7 @@ recordWord(lang: string, prev: string, word: string) {
 ## ✅ Verification Steps
 
 1. **Check warmup is called:**
-   ```typescript
+   ```text
    // Should see in logs:
    PredictionModel: Lazy-loading BaseLexicon for 'ru'...
    BaseLexicon: Loaded 50000 words, 50000 frequencies, 0 blocked words for 'ru'
@@ -317,7 +317,7 @@ recordWord(lang: string, prev: string, word: string) {
    ```
 
 2. **Check recordWord uses base words:**
-   ```typescript
+   ```text
    // For common word like "привет", should see:
    OpenBoard: Base word "привет" personalized (rank: 1)
    // NOT:
@@ -327,9 +327,11 @@ recordWord(lang: string, prev: string, word: string) {
 3. **Check predictions are fast:**
    ```typescript
    // Should be < 10ms
-   const start = Date.now();
-   const predictions = await predictionModel.predict('ru', null, 'при', 3);
-   console.info(`Prediction latency: ${Date.now() - start}ms`);
+   async function checkPredictionSpeed() {
+     const start = Date.now();
+     const predictions = await predictionModel.predict('ru', null, 'при', 3);
+     console.info(`Prediction latency: ${Date.now() - start}ms`);
+   }
    ```
 
 ---

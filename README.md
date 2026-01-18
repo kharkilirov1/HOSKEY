@@ -4,7 +4,7 @@
 [![HarmonyOS](https://img.shields.io/badge/HarmonyOS-6.0-red)](https://consumer.huawei.com/cn/harmonyos-6/)
 [![ArkTS](https://img.shields.io/badge/ArkTS-Language-blue)](https://developer.harmonyos.com/en/docs/documentation/doc-guides/arkts-get-started-0000001774119986)
 [![AppGallery](https://img.shields.io/badge/Available%20on-AppGallery-orange)](https://appgallery.huawei.com/app/detail?id=com.huawei.hmsapp.appgallery&channelId=SHARE&source=appshare)
-[![License](https://img.shields.io/badge/License-Open%20Source-green)](#license)
+[![License](https://img.shields.io/badge/License-Open%20Source-green)](#-license)
 
 OpenBoard is a modern, open-source keyboard application designed specifically for **HarmonyOS 6.0**. Built with ArkTS, OpenBoard delivers a seamless typing experience with advanced features and multi-language support, available exclusively on Huawei AppGallery.
 
@@ -20,22 +20,20 @@ OpenBoard is a modern, open-source keyboard application designed specifically fo
 - **Customizable Themes**: Beautiful, responsive design with theme support
 
 ## 📱 Supported Languages
-```bash
+
 | Language | Status | Layout | Prediction |
 |----------|--------|--------|------------|
 | English | ✅ Full Support | QWERTY | ✅ Available |
 | Polish | ✅ Full Support | QWERTY | ✅ Available |
 | Italian | ✅ Full Support | QWERTY | ✅ Available |
 | Persian | ✅ Full Support | فارسی | ✅ Available |
-```
 ## 🚀 Quick Start
-```bash
+
 ### Prerequisites
 
 - **HarmonyOS 6.0** or later
 - **DevEco Studio 6.0.1 or later** (for development)
 - **ArkTS** development language
-```
 
 ### Installation
 
@@ -61,7 +59,7 @@ OpenBoard is built using a modular architecture with the following key component
 - **Input Method Extension**: HarmonyOS IME integration
 
 ### Key Components
-```bash
+```typescript
 // Core keyboard structure
 - KeyboardKeyData (Alphabet, Symbols, special keys)
 - Multi-language layout definitions
@@ -72,24 +70,24 @@ OpenBoard is built using a modular architecture with the following key component
 OpenBoard features intelligent toolbars that adapt to your usage context:
 
 1. **Standard Typing Toolbar**
-[Close] [Suggestion 1 | Suggestion 2 | Suggestion 3] [Microphone]
-- Active during regular typing
-- Shows word predictions and voice input option
+   - Layout: `[Close] [Suggestion 1 | Suggestion 2 | Suggestion 3]`
+   - Active during regular typing
+   - Shows word predictions
 
-2. **Pre-Typing Toolbar**
-[Close] [Clipboard] [Microphone]
-- Appears after 5 seconds of inactivity
-- Quick access to clipboard and voice input
+1. **Pre-Typing Toolbar**
+   - Layout: `[Close] [Clipboard]`
+   - Appears after 5 seconds of inactivity
+   - Quick access to clipboard
 
-3. **Emoji Toolbar**
-[⌨ Return] [Empty Space] [Empty Space]
-- Active in emoji selection mode
-- Easy return to main keyboard
+1. **Emoji Toolbar**
+   - Layout: `[⌨ Return]`
+   - Active in emoji selection mode
+   - Easy return to main keyboard
 
-4. **Voice Typing Toolbar**
-[Close] [🎤 Typing with voice...]
-- Active during voice input sessions
-- Shows voice recognition status
+1. **Voice Typing Toolbar**
+   - Layout: `[Close] [🎤 Typing with voice...]`
+   - Active during voice input sessions
+   - Shows voice recognition status
 
 ## 🤝 Contributing
 
@@ -98,31 +96,29 @@ We welcome contributions from the HarmonyOS developer community! Please read our
 ### Development Setup
 
 1. **Fork the repository**
-```bash
-git clone https://github.com/Open-Tech-Project/OpenBoard.git
-cd OpenBoard
-Open in DevEco Studio
-```bash
-Import project into DevEco Studio
-Set up signing certificates
-```
-Build and Test thoroughly
-```bash
-Connect HarmonyOS device or emulator
-Build project: Build > Build Project
-Run on target device
-```
-Adding New Languages
-```bash
-To add support for a new language:
-Create layout definition in model/KeyboardKeyData.ets
-Add language code to LanguageCode type
-Implement prediction model integration
-Update language switching logic
-```
-Open a Pull Request
+   ```bash
+   git clone https://github.com/Open-Tech-Project/OpenBoard.git
+   cd OpenBoard
+   ```
 
-📄 License
+1. **Open in DevEco Studio**
+   - Import project into DevEco Studio
+   - Set up signing certificates
+
+1. **Build and Test thoroughly**
+   - Connect HarmonyOS device or emulator
+   - Build project: Build > Build Project
+   - Run on target device
+
+1. **Adding New Languages**
+   - Create layout definition in `model/KeyboardKeyData.ets`
+   - Add language code to `LanguageCode` type
+   - Implement prediction model integration
+   - Update language switching logic
+
+1. **Open a Pull Request**
+
+## 📄 License
 
 This project is licensed under the GNU Affero General Public License, Version 3 or later (AGPLv3+).
 

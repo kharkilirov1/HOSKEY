@@ -15,6 +15,7 @@ import {
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
+import optimizedPredictionModel from '../model/OptimizedPredictionModel';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
@@ -23,17 +24,30 @@ import pasteboard from '@ohos.pasteboard';
 import { Logger } from '../utils/logger';
 import { swipeEngine, SwipePoint, KeyBounds, SwipeResult } from '../model/SwipeEngine';
 
+const logger = new Logger('Index');
 const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
 
 // TYPE DEFINITIONS
 interface Position { x: number; y: number; }
+interface AreaWithGlobalPosition { globalPosition?: Position; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
 type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
+enum InputMode { Tap, Swipe } // iOS-style input mode
 const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
-const DEBUG_PREDICT = false; // Set to true for prediction debugging
+const DEBUG_PREDICT = false; // Disabled for performance
+const DEBUG_SWIPE = false;
+const MIN_SWIPE_LAYOUT_KEYS = 20;
+// iOS-style swipe thresholds
+const SWIPE_ACTIVATION_THRESHOLD = 20; // px to activate swipe vs tap
+const SWIPE_POINT_MIN_INTERVAL_MS = 14; // 12-16ms throttle
+const SWIPE_POINT_MIN_DISTANCE_PX = 8;
+const SWIPE_PATH_MAX_POINTS = 180; // 160-200 max points
+const SWIPE_MIN_PATH_LENGTH = 3; // Minimum 2-3 keys for word
+const SWIPE_KEY_DEBOUNCE_MS = 18; // 12-25ms debounce for key collection
+const SWIPE_IGNORE_INPUT_MS = 200; // 150-250ms block after swipe
 
 // Speech recognition simulation types
 interface SpeechRecognitionResult {
@@ -210,16 +224,24 @@ struct KeyView {
   onCursorModeStart: (x: number) => void = () => {};
   onCursorModeMove: (x: number) => void = () => {};
   onCursorModeEnd: () => void = () => {};
+  onSwipeStart?: (key: KeyData, position: Position) => void;
   onSwipeMove?: (position: Position) => void;
+  onSwipeEnd?: (commit: boolean) => void;
   onKeyBoundsUpdate?: (key: string, bounds: KeyBounds) => void;
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
   @State private longPressTriggered: boolean = false;
   @State private touchStartX: number = 0;
+  @State private touchStartY: number = 0;
   @State private swipeHandled: boolean = false;
+  @State private pendingSwipe: boolean = false;
+  @State private swipeActivated: boolean = false;
 
   @Prop enterKeyLabel: string;
+  @Prop keyboardRootOffset: Position = { x: 0, y: 0 };
+  @Prop swipeInProgress: boolean = false;
+  @Prop ignoreEventsUntil: number = 0;
 
   getDisplayValue(): string {
     if (this.keyData.action === KeyAction.Shift) {
@@ -303,12 +325,20 @@ struct KeyView {
         const touch = event.touches[0];
         if (!touch) return;
         const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
+        const now = Date.now();
+        const ignoreInput = this.ignoreEventsUntil > now &&
+          this.keyData.action !== KeyAction.Char &&
+          this.keyData.action !== KeyAction.Space;
 
         if (event.type === TouchType.Down) {
+          if (ignoreInput) return;
           this.touchStartX = currentPosition.x;
+          this.touchStartY = currentPosition.y;
           this.isPressed = true;
           this.longPressTriggered = false;
           this.swipeHandled = false;
+          this.pendingSwipe = this.keyData.action === KeyAction.Char;
+          this.swipeActivated = false;
 
           // Show popup for character keys
           if (this.keyData.action === KeyAction.Char) {
@@ -323,6 +353,7 @@ struct KeyView {
           this.longPressTimer = setTimeout(() => {
             this.longPressTriggered = true;
             this.isPressed = false;
+            this.pendingSwipe = false;
 
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressStart(this.keyData);
@@ -337,6 +368,7 @@ struct KeyView {
         }
 
         if (event.type === TouchType.Move) {
+          if (ignoreInput) return;
           if (this.longPressTriggered && this.keyData.secondaryValue) {
             this.onKeyLongPressDrag(currentPosition);
           }
@@ -388,14 +420,54 @@ struct KeyView {
             }
           }
 
-          // Swipe typing tracking
-          if (this.keyData.action === KeyAction.Char && this.onSwipeMove) {
-            this.onSwipeMove(currentPosition);
+          if (this.keyData.action === KeyAction.Char && this.pendingSwipe && !this.swipeActivated && !this.longPressTriggered) {
+            const deltaX = currentPosition.x - this.touchStartX;
+            const deltaY = currentPosition.y - this.touchStartY;
+            const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+            const SWIPE_ACTIVATION_THRESHOLD = 16;
+
+            if (distance > SWIPE_ACTIVATION_THRESHOLD) {
+              clearTimeout(this.longPressTimer);
+              this.swipeHandled = true;
+              this.pendingSwipe = false;
+              this.swipeActivated = true;
+
+              if (this.onSwipeStart) {
+                this.onSwipeStart(this.keyData, { x: this.touchStartX, y: this.touchStartY });
+              }
+              if (this.onSwipeMove) {
+                this.onSwipeMove(currentPosition);
+              }
+            }
           }
         }
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
           clearTimeout(this.longPressTimer);
+
+          if (ignoreInput) {
+            // End backspace swipe tracking
+            if (this.keyData.action === KeyAction.Backspace) {
+              this.onBackspaceSwipeEnd();
+            }
+
+            // End cursor mode tracking
+            if (this.keyData.action === KeyAction.Space) {
+              this.onCursorModeEnd();
+            }
+
+            // Hide popup
+            this.onKeyTouchUp();
+
+            this.isPressed = false;
+            this.longPressTriggered = false;
+            this.touchStartX = 0;
+            this.touchStartY = 0;
+            this.swipeHandled = false;
+            this.pendingSwipe = false;
+            this.swipeActivated = false;
+            return;
+          }
 
           // End backspace swipe tracking
           if (this.keyData.action === KeyAction.Backspace) {
@@ -415,7 +487,7 @@ struct KeyView {
             } else if (this.keyData.secondaryValue) {
               this.onKeyLongPressEnd();
             }
-          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled) {
+          } else if (event.type === TouchType.Up && !this.longPressTriggered && !this.swipeHandled && !this.swipeInProgress) {
             // Only trigger keyPress if no swipe was handled
             this.onKeyPress(this.keyData);
           }
@@ -426,15 +498,24 @@ struct KeyView {
           this.isPressed = false;
           this.longPressTriggered = false;
           this.touchStartX = 0;
+          this.touchStartY = 0;
           this.swipeHandled = false;
+          this.pendingSwipe = false;
+          this.swipeActivated = false;
         }
       })
       .onAreaChange((_oldValue: Area, newValue: Area) => {
         if (this.onKeyBoundsUpdate && this.keyData.action === KeyAction.Char) {
+          const areaAny = newValue as AreaWithGlobalPosition;
+          const globalPosition = areaAny.globalPosition;
+          const basePosition = globalPosition ?? {
+            x: (newValue.position.x as number) + this.keyboardRootOffset.x,
+            y: (newValue.position.y as number) + this.keyboardRootOffset.y
+          };
           const bounds: KeyBounds = {
             key: this.keyData.mainValue.toLowerCase(),
-            centerX: (newValue.position.x as number) + (newValue.width as number) / 2,
-            centerY: (newValue.position.y as number) + (newValue.height as number) / 2,
+            centerX: basePosition.x + (newValue.width as number) / 2,
+            centerY: basePosition.y + (newValue.height as number) / 2,
             width: newValue.width as number,
             height: newValue.height as number
           };
@@ -446,10 +527,15 @@ struct KeyView {
   }
 }
 
+interface GeneratedTypeLiteralInterface_1 {
+  original: string;
+  corrected: string;
+}
+
 @Entry
 @Component
 struct Index {
-  @State currentLanguage: LanguageCode = 'en';
+  @State currentLanguage: LanguageCode = 'ru';
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
   @State keyboardLayout: KeyboardLayout = KeyboardLayout.Alphabet;
@@ -491,16 +577,35 @@ struct Index {
   @State private prevPrevWord: string = ''; // For trigram predictions
   @State private currentWord: string = '';
   @State private suggestions: string[] = ['', '', ''];
-  @State private lastAutocorrection: { original: string; corrected: string } | null = null;
+  @State private lastAutocorrection: GeneratedTypeLiteralInterface_1 | null = null;
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
+  private suggestionsDebounceTimer: number | null = null; // Debounce timer for updateSuggestions
 
-  // Swipe typing states
-  @State private isSwipeTyping: boolean = false;
-  @State private swipePath: SwipePoint[] = [];
-  @State private swipePreviewWord: string = '';
-  @State private swipeAlternatives: string[] = [];
-  private swipeStartTime: number = 0;
-  private keyBoundsMap: Map<string, KeyBounds> = new Map();
+  // iOS-style swipe input states
+  private inputMode: InputMode = InputMode.Tap;
+  @State private isSwipeActive: boolean = false; // For UI (trail rendering)
+  private swipeCommitted: boolean = false;
+  private swipePath: SwipePoint[] = []; // Raw touch points
+  private swipeKeySeq: string[] = []; // Collected letter sequence
+  private lastKeyId: string | null = null;
+  private candidateKeyId: string | null = null;
+  private candidateKeyTs: number = 0;
+  private swipeStartPt: Position | null = null;
+  private swipeStartTs: number = 0;
+  private ignoreKeysUntilTs: number = 0;
+  @State private swipeTrailPoints: Position[] = []; // Trail visualization
+  private lastTrailPointTs: number = 0;
+  private trailCanvasContext: CanvasRenderingContext2D = new CanvasRenderingContext2D();
+
+  // Layout bounds management (per-language)
+  private keyBoundsMap: Map<string, KeyBounds> = new Map(); // Key: "${lang}:${layoutId}:${keyId}"
+  @State private keyboardRootOffset: Position = { x: 0, y: 0 };
+  private currentLayoutId: string = ''; // Track current layout for bounds validation
+
+  // Error rate limiting
+  private insertErrorCount: number = 0;
+  private lastErrorWindowTs: number = 0;
+  private lastErrorLogTs: number = 0;
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
@@ -766,19 +871,39 @@ struct Index {
     this.enableAutoCapitalization();
 
     // Warmup BaseLexicon for current language (background loading for instant predictions)
+    // Warmup both regular and optimized prediction models
     predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
+    });
+    
+    // Also warmup optimized prediction model if available
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
     });
   }
 
   // === SWIPE TYPING METHODS ===
 
+  /**
+   * Store key bounds with layout-specific key: "${lang}:${layoutId}:${keyId}"
+   * Only for Alphabet layout (not Symbols)
+   */
   private handleKeyBoundsUpdate(key: string, bounds: KeyBounds): void {
-    this.keyBoundsMap.set(key, bounds);
+    // Only store bounds for Alphabet layout (not Symbols)
+    if (this.keyboardLayout !== KeyboardLayout.Alphabet) {
+      return;
+    }
+
+    const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${key}`;
+    this.keyBoundsMap.set(boundsKey, bounds);
+
+    if (DEBUG_SWIPE && this.isSwipeLayoutReady()) {
+      console.info(`[SwipeDebug] Stored bounds for ${boundsKey}, total=${this.keyBoundsMap.size}`);
+    }
   }
 
   private updateSwipeEngineLayout(): void {
@@ -786,93 +911,361 @@ struct Index {
     swipeEngine.setKeyboardLayout(keyBounds);
   }
 
+  private isSwipeLayoutReady(): boolean {
+    return this.keyBoundsMap.size >= MIN_SWIPE_LAYOUT_KEYS;
+  }
+
+  /**
+   * iOS-style swipe start: TouchDown handler
+   * Just saves start position - swipe not yet activated
+   */
   private handleSwipeStart(key: KeyData, position: Position): void {
     if (key.action !== KeyAction.Char) return;
 
-    this.isSwipeTyping = true;
-    this.swipeStartTime = Date.now();
-    this.swipePath = [{
-      x: position.x,
-      y: position.y,
-      timestamp: Date.now()
-    }];
+    const now = Date.now();
+    if (now < this.ignoreKeysUntilTs) return;
 
+    // Reset state (not yet swipe mode)
+    this.swipeStartPt = { x: position.x, y: position.y };
+    this.swipeStartTs = now;
+    this.isSwipeActive = false;
+    this.swipeCommitted = false;
+    this.inputMode = InputMode.Tap;
+
+    // Clear all buffers
+    this.swipePath = [];
+    this.swipeKeySeq = [];
+    this.swipeTrailPoints = [];
+    this.lastKeyId = null;
+    this.candidateKeyId = null;
+    this.candidateKeyTs = 0;
+    this.lastTrailPointTs = now;
+
+    // Store first key (start key)
     const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
-    this.swipePreviewWord = char.toLowerCase();
+    this.lastKeyId = key.mainValue;
+    this.swipeKeySeq.push(char.toLowerCase());
   }
 
+  /**
+   * iOS-style swipe move: Collect path & letters WITHOUT inserting text
+   * NO preview updates, NO insertText calls
+   */
   private handleSwipeMove(position: Position): void {
-    if (!this.isSwipeTyping) return;
+    if (this.swipeCommitted) return;
 
-    this.swipePath.push({
-      x: position.x,
-      y: position.y,
-      timestamp: Date.now()
-    });
+    const now = Date.now();
+    if (now < this.ignoreKeysUntilTs) return;
 
-    if (this.swipePath.length % 5 === 0) {
-      this.updateSwipePreview();
+    if (!this.swipeStartPt) return;
+
+    // 1) Check if swipe should be activated
+    if (!this.isSwipeActive) {
+      const deltaX = position.x - this.swipeStartPt.x;
+      const deltaY = position.y - this.swipeStartPt.y;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+      if (distance < SWIPE_ACTIVATION_THRESHOLD) {
+        return; // Still tap mode
+      }
+
+      // Activate swipe mode
+      this.isSwipeActive = true;
+      this.inputMode = InputMode.Swipe;
+
+      // Initialize trail with start point
+      this.swipeTrailPoints = [{ x: this.swipeStartPt.x, y: this.swipeStartPt.y }];
     }
+
+    // 2) Collect path points with throttling
+    if (this.swipePath.length > 0) {
+      const lastPoint = this.swipePath[this.swipePath.length - 1];
+      const deltaX = position.x - lastPoint.x;
+      const deltaY = position.y - lastPoint.y;
+      const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+      const timeSinceLast = now - lastPoint.timestamp;
+
+      if (timeSinceLast < SWIPE_POINT_MIN_INTERVAL_MS && distance < SWIPE_POINT_MIN_DISTANCE_PX) {
+        return; // Skip this point
+      }
+    }
+
+    // Add path point
+    if (this.swipePath.length >= SWIPE_PATH_MAX_POINTS) {
+      this.swipePath.shift();
+    }
+    this.swipePath.push({ x: position.x, y: position.y, timestamp: now });
+
+    // 3) Update trail visualization
+    const timeSinceLastTrail = now - this.lastTrailPointTs;
+    const lastTrail = this.swipeTrailPoints[this.swipeTrailPoints.length - 1];
+    const trailDistance = lastTrail ?
+      Math.sqrt((position.x - lastTrail.x) ** 2 + (position.y - lastTrail.y) ** 2) : 999;
+
+    if (timeSinceLastTrail >= 16 || trailDistance >= 8) {
+      this.swipeTrailPoints.push({ x: position.x, y: position.y });
+      this.lastTrailPointTs = now;
+
+      if (this.swipeTrailPoints.length > 50) {
+        this.swipeTrailPoints.shift();
+      }
+
+      this.renderTrailPath();
+    }
+
+    // 4) Collect letter sequence via hit-test (NO insertText!)
+    const nearestKey = this.findNearestKey(position);
+    if (nearestKey && nearestKey.action === KeyAction.Char) {
+      const keyId = nearestKey.mainValue;
+
+      // Ignore keys not from current layout
+      const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${keyId}`;
+      if (!this.keyBoundsMap.has(boundsKey)) {
+        return; // Wrong layout/language
+      }
+
+      // Check if this is a new key
+      if (keyId === this.lastKeyId) {
+        return; // Same key, skip
+      }
+
+      // Debounce: candidate key must be stable for SWIPE_KEY_DEBOUNCE_MS
+      if (this.candidateKeyId !== keyId) {
+        this.candidateKeyId = keyId;
+        this.candidateKeyTs = now;
+        return;
+      }
+
+      if (now - this.candidateKeyTs >= SWIPE_KEY_DEBOUNCE_MS) {
+        // Commit this letter to sequence
+        const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
+          ? (nearestKey.shiftValue ?? nearestKey.mainValue)
+          : nearestKey.mainValue;
+
+        this.swipeKeySeq.push(char.toLowerCase());
+        this.lastKeyId = keyId;
+        this.candidateKeyId = null;
+      }
+    }
+
+    // ❌ NO updateSwipePreview()
+    // ❌ NO insertText()
+    // ❌ NO prediction/autocorrection
   }
 
-  private handleSwipeEnd(): void {
-    if (!this.isSwipeTyping) {
+  /**
+   * iOS-style swipe end: SINGLE commit point, ONLY insertText call
+   * NO autocorrection, NO onBoundaryTyped, NO mid-swipe updates
+   */
+  private handleSwipeEnd(commit: boolean = true): void {
+    // Guard: not in swipe mode
+    if (!this.isSwipeActive && this.inputMode === InputMode.Tap) {
       return;
     }
 
-    const duration = Date.now() - this.swipeStartTime;
+    // Guard: already committed
+    if (this.swipeCommitted) {
+      return;
+    }
 
-    if (duration < 200 || this.swipePath.length < 5) {
+    this.swipeCommitted = true;
+    const now = Date.now();
+
+    // Block tap input for SWIPE_IGNORE_INPUT_MS
+    this.ignoreKeysUntilTs = now + SWIPE_IGNORE_INPUT_MS;
+
+    // Reset mode immediately
+    this.inputMode = InputMode.Tap;
+    this.isSwipeActive = false;
+
+    // Don't commit if cancelled
+    if (!commit) {
+      this.resetSwipeState();
+      return;
+    }
+
+    // Validate minimum requirements
+    const duration = now - this.swipeStartTs;
+    if (duration < 100 || this.swipeKeySeq.length < SWIPE_MIN_PATH_LENGTH) {
+      this.resetSwipeState();
+      return;
+    }
+
+    // Get word from swipe engine
+    if (!this.isSwipeLayoutReady()) {
       this.resetSwipeState();
       return;
     }
 
     this.updateSwipeEngineLayout();
-
     const result = swipeEngine.processSwipe(this.swipePath);
 
     if (result && result.bestWord) {
       let word = result.bestWord;
+
+      // Apply capitalization
       if (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock) {
         word = word.charAt(0).toUpperCase() + word.slice(1);
       }
 
-      keyboardController.insertText(word);
-      keyboardController.insertText(' ');
-      this.onTextTyped(word);
-      void this.onBoundaryTyped(' ');
+      // SINGLE insertText with error handling
+      try {
+        keyboardController.insertText(word);
 
-      this.suggestions = [
-        word,
-        result.alternatives[0] || '',
-        result.alternatives[1] || ''
-      ];
+        // Track word for context (NO autocorrection)
+        this.previousWord = word;
+        this.currentWord = '';
 
-      if (this.shiftState === ShiftState.On) {
-        this.shiftState = ShiftState.Off;
+        // Reset error counter on success
+        this.insertErrorCount = 0;
+
+        // Update suggestions AFTER commit
+        this.suggestions = [
+          word,
+          result.alternatives[0] || '',
+          result.alternatives[1] || ''
+        ];
+
+        // Reset shift if needed
+        if (this.shiftState === ShiftState.On) {
+          this.shiftState = ShiftState.Off;
+        }
+
+      } catch (error) {
+        this.handleInsertError(error, 'swipe');
       }
     }
 
+    // Clean up
     this.resetSwipeState();
+    this.debouncedUpdateSuggestions(); // Refresh after commit
   }
 
-  private updateSwipePreview(): void {
-    this.updateSwipeEngineLayout();
-    const result = swipeEngine.processSwipe(this.swipePath);
-    if (result) {
-      this.swipePreviewWord = result.bestWord;
-      this.swipeAlternatives = result.alternatives;
+  /**
+   * Reset swipe state after commit/cancel
+   */
+  private resetSwipeState(): void {
+    this.inputMode = InputMode.Tap;
+    this.isSwipeActive = false;
+    this.swipeCommitted = false;
+    this.swipePath = [];
+    this.swipeKeySeq = [];
+    this.swipeTrailPoints = [];
+    this.lastKeyId = null;
+    this.candidateKeyId = null;
+    this.candidateKeyTs = 0;
+    this.swipeStartPt = null;
+    this.swipeStartTs = 0;
+    this.lastTrailPointTs = 0;
+  }
+
+  /**
+   * Find nearest key via hit-test for swipe letter collection
+   * Only returns keys from current layout/language
+   */
+  private findNearestKey(position: Position): KeyData | null {
+    let nearestKey: KeyData | null = null;
+    let minDistance = Infinity;
+
+    const layout = this.getCurrentLayout();
+    for (const row of layout) {
+      for (const key of row) {
+        if (key.action !== KeyAction.Char) continue;
+
+        const boundsKey = `${this.currentLanguage}:${this.currentLayoutId}:${key.mainValue}`;
+        const bounds = this.keyBoundsMap.get(boundsKey);
+        if (!bounds) continue;
+
+        // Calculate bounds from centerX/centerY + width/height
+        const left = bounds.centerX - bounds.width / 2;
+        const right = bounds.centerX + bounds.width / 2;
+        const top = bounds.centerY - bounds.height / 2;
+        const bottom = bounds.centerY + bounds.height / 2;
+
+        // Check if point is inside bounds
+        const inside = position.x >= left &&
+                       position.x <= right &&
+                       position.y >= top &&
+                       position.y <= bottom;
+
+        if (inside) {
+          return key; // Direct hit
+        }
+
+        // Calculate distance to center
+        const centerX = bounds.centerX;
+        const centerY = bounds.centerY;
+        const distance = Math.sqrt(
+          (position.x - centerX) ** 2 +
+          (position.y - centerY) ** 2
+        );
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          nearestKey = key;
+        }
+      }
+    }
+
+    return nearestKey;
+  }
+
+  /**
+   * Error handler with rate limiting (300ms window)
+   * Prevents "burst" errors from crashing IME
+   */
+  private handleInsertError(error: Error | object | string, source: string): void {
+    const now = Date.now();
+
+    // Reset counter if outside error window
+    if (now - this.lastErrorWindowTs > 300) {
+      this.insertErrorCount = 0;
+      this.lastErrorWindowTs = now;
+    }
+
+    this.insertErrorCount++;
+
+    // Log throttling (max 1/sec)
+    if (now - this.lastErrorLogTs > 1000) {
+      console.error(`[${source}] insertText error (count=${this.insertErrorCount}):`, error);
+      this.lastErrorLogTs = now;
+    }
+
+    // Block input on burst (>3 errors in 300ms)
+    if (this.insertErrorCount > 3) {
+      this.ignoreKeysUntilTs = now + 400;
+      console.warn(`[${source}] Error burst detected, blocking input for 400ms`);
     }
   }
 
-  private resetSwipeState(): void {
-    this.isSwipeTyping = false;
-    this.swipePath = [];
-    this.swipePreviewWord = '';
-    this.swipeAlternatives = [];
-    this.swipeStartTime = 0;
+  /**
+   * Render swipe trail path on Canvas
+   * Draws a smooth polyline following the user's finger movement
+   */
+  private renderTrailPath(): void {
+    if (this.swipeTrailPoints.length < 2) {
+      return;
+    }
+
+    this.trailCanvasContext.clearRect(0, 0, this.trailCanvasContext.width, this.trailCanvasContext.height);
+
+    // Trail style: semi-transparent blue line
+    this.trailCanvasContext.strokeStyle = 'rgba(33, 150, 243, 0.6)'; // Blue with 60% opacity
+    this.trailCanvasContext.lineWidth = 4;
+    this.trailCanvasContext.lineCap = 'round';
+    this.trailCanvasContext.lineJoin = 'round';
+
+    // Draw polyline through all trail points
+    this.trailCanvasContext.beginPath();
+    this.trailCanvasContext.moveTo(this.swipeTrailPoints[0].x, this.swipeTrailPoints[0].y);
+
+    for (let i = 1; i < this.swipeTrailPoints.length; i++) {
+      this.trailCanvasContext.lineTo(this.swipeTrailPoints[i].x, this.swipeTrailPoints[i].y);
+    }
+
+    this.trailCanvasContext.stroke();
   }
 
   // === END SWIPE TYPING METHODS ===
@@ -883,6 +1276,9 @@ struct Index {
       this.updateEnterKeyLabel(enterKeyType);
     });
     this.updateEnterKeyLabel(keyboardController.getCurrentEnterKeyType());
+
+    // Initialize currentLayoutId (iOS-style swipe)
+    this.currentLayoutId = `${this.currentLanguage}_alphabet`;
   }
 
   aboutToDisappear(): void {
@@ -958,7 +1354,7 @@ struct Index {
     }
     this.rapidDeleteTimer = setInterval(() => {
       feedbackController.provideFeedback(FeedbackType.Heavy);
-      keyboardController.deleteForward(1);
+      keyboardController.deleteBeforeCursor(1);
       this.onBackspaceTyped();
     }, 100);
   }
@@ -987,7 +1383,7 @@ struct Index {
       const textBefore = keyboardController.getTextBeforeCursor(1);
       if (textBefore.length > 0) {
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBeforeCursor(1);
         this.onBackspaceTyped();
       }
       this.backspaceCurrentX = x;
@@ -1079,20 +1475,25 @@ struct Index {
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
     this.singleCharPopupInfo = { char: char, position: position };
-
-    // Start swipe tracking
-    this.handleSwipeStart(key, position);
   }
 
   private handleKeyTouchUp(): void {
     // Hide the popup
     this.singleCharPopupInfo = null;
-
-    // End swipe tracking
-    this.handleSwipeEnd();
   }
 
   async handleKeyPress(key: KeyData): Promise<void> {
+    // iOS-style: Block ALL input during swipe
+    if (this.inputMode === InputMode.Swipe || this.isSwipeActive) {
+      return;
+    }
+
+    // Block during ignore window
+    const now = Date.now();
+    if (now < this.ignoreKeysUntilTs && key.action !== KeyAction.Char && key.action !== KeyAction.Space) {
+      return;
+    }
+
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -1115,18 +1516,28 @@ struct Index {
         let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
-        Logger.autocap(`Typing char, shift state: ${this.shiftState}, text: ${text}, mainValue: ${key.mainValue}, shiftValue: ${key.shiftValue ?? 'none'}`);
-        keyboardController.insertText(text);
+        if (now < this.ignoreKeysUntilTs && !this.isBoundaryChar(text)) {
+          return;
+        }
+
+        // insertText with error handling
+        try {
+          keyboardController.insertText(text);
+          this.insertErrorCount = 0; // Reset on success
+        } catch (error) {
+          this.handleInsertError(error, 'tap');
+          break; // Don't proceed on error
+        }
+
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
-          Logger.autocap('Disabling shift after typing character');
+          logger.autocap('Disabling shift after typing character');
           this.shiftState = ShiftState.Off;
         }
         break;
       case KeyAction.Space:
         feedbackController.provideFeedback(FeedbackType.Light);
-        keyboardController.insertText(' ');
         await this.onBoundaryTyped(' ');
         // Auto-return to alphabet layout after typing space in symbols layout
         if (this.keyboardLayout === KeyboardLayout.Symbols1 || this.keyboardLayout === KeyboardLayout.Symbols2) {
@@ -1140,12 +1551,12 @@ struct Index {
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
-        keyboardController.deleteForward(1);
+        keyboardController.deleteBeforeCursor(1);
         await this.onBackspaceTyped();
         break;
       case KeyAction.Shift:
         feedbackController.provideFeedback(FeedbackType.Medium);
-        const now = Date.now();
+        // Use 'now' from line 1478 (function scope)
         if (this.shiftState === ShiftState.CapsLock) {
           this.shiftState = ShiftState.Off;
           this.lastShiftTapTs = now;
@@ -1163,8 +1574,13 @@ struct Index {
       case KeyAction.SwitchAlphabet:
       case KeyAction.SwitchSymbols:
         feedbackController.provideFeedback(FeedbackType.Medium);
-        this.keyboardLayout = (this.keyboardLayout === KeyboardLayout.Alphabet) ?
-          KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
+        const wasAlphabet = this.keyboardLayout === KeyboardLayout.Alphabet;
+        this.keyboardLayout = wasAlphabet ? KeyboardLayout.Symbols1 : KeyboardLayout.Alphabet;
+
+        // Update layoutId when switching back to Alphabet
+        if (!wasAlphabet) {
+          this.currentLayoutId = `${this.currentLanguage}_alphabet`;
+        }
         break;
       case KeyAction.SwitchSymbolsAlt:
         feedbackController.provideFeedback(FeedbackType.Medium);
@@ -1220,14 +1636,40 @@ struct Index {
     this.currentLanguage = this.availableLanguages[currentIndex];
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
 
+    // Clear keyBoundsMap on language change (iOS-style)
+    this.keyBoundsMap.clear();
+    this.currentLayoutId = `${this.currentLanguage}_alphabet`;
+
     // Warmup BaseLexicon for new language
     predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language:', err);
     }).then(() => {
       // Update SwipeEngine with new language lexicon
-      const baseLexicon = predictionModel.getBaseLexiconPublic(this.currentLanguage);
+      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
+    
+    // Also warmup optimized prediction model if available
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
+    });
+  }
+
+  /**
+   * Debounced version of updateSuggestions - reduces load during fast typing
+   * Waits 150ms after last keystroke before triggering prediction
+   */
+  private debouncedUpdateSuggestions(): void {
+    // Clear existing timer
+    if (this.suggestionsDebounceTimer !== null) {
+      clearTimeout(this.suggestionsDebounceTimer);
+    }
+
+    // Set new timer
+    this.suggestionsDebounceTimer = setTimeout(() => {
+      this.suggestionsDebounceTimer = null;
+      void this.updateSuggestions();
+    }, 150); // 150ms debounce - good balance between responsiveness and performance
   }
 
   private async updateSuggestions(): Promise<void> {
@@ -1238,48 +1680,46 @@ struct Index {
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
-        ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+        ? await optimizedPredictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
 
       // Check if request is stale (user typed more keys while we were waiting)
       if (currentReqId !== this.suggestionsReqId) {
-        Logger.prediction('Stale suggestion request, ignoring result');
         return;
       }
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
-          Logger.prediction('Stale suggestion request after predict, ignoring result');
           return;
         }
 
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
 
         if (DEBUG_PREDICT) {
-          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
+          logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
-          Logger.prediction('Stale suggestion request after predict, ignoring result');
           return;
         }
 
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
 
         if (DEBUG_PREDICT) {
-          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
+          logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
         }
       }
     } catch (e) {
-      Logger.warn('Prediction model error', e as Error);
+      console.error(`[Index] EXCEPTION in updateSuggestions:`, e);
+      logger.warn('Prediction model error', e as Error);
       this.suggestions = ['', '', ''];
     }
   }
@@ -1302,26 +1742,28 @@ struct Index {
   private enableAutoCapitalization(): void {
     // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
     if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      Logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
+      logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
       return;
     }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
-      Logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
+      logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
       this.shiftState = ShiftState.On;
     } else {
-      Logger.autocap('Already in CapsLock, not changing');
+      logger.autocap('Already in CapsLock, not changing');
     }
   }
 
   private async onTextTyped(text: string): Promise<void> {
-    if (!text) return;
+    if (!text) {
+      return;
+    }
     if (this.isBoundaryChar(text)) {
       await this.onBoundaryTyped(text);
       return;
     }
     this.currentWord = this.currentWord + text;
-    void this.updateSuggestions(); // Non-blocking async call
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load during fast typing
     this.resetInactivityTimer();
   }
 
@@ -1334,8 +1776,8 @@ struct Index {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
 
-          // Delete the typed word (HarmonyOS: deleteForward removes chars before cursor)
-          keyboardController.deleteForward(this.currentWord.length);
+          // Delete the typed word before cursor using canonical delete semantics
+          keyboardController.deleteBeforeCursor(this.currentWord.length);
 
           // Insert the corrected word
           keyboardController.insertText(correction);
@@ -1347,22 +1789,25 @@ struct Index {
           };
 
           // Record corrected word with trigram context
-          predictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
+          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
           this.previousWord = correction;
         } else {
           // No correction, record the word as typed with trigram context
-          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
           this.previousWord = this.currentWord;
         }
+
+        // NOTE: Space insertion moved outside if (this.currentWord) block
+        // to ensure space is ALWAYS inserted, even when currentWord is empty
       } else {
         // Non-space boundary, just record the word with trigram context
-        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+        optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
 
         // Shift word history for trigram
         this.prevPrevWord = this.previousWord;
@@ -1371,11 +1816,21 @@ struct Index {
 
       this.currentWord = '';
     }
-    void this.updateSuggestions(); // Non-blocking async call
+
+    // Insert the boundary character that was typed
+    // For space, it's already handled in the autocorrection flow above
+    if (ch !== ' ') {
+      keyboardController.insertText(ch);
+    } else {
+      // For space character, insert it after potential autocorrection
+      keyboardController.insertText(' ');
+    }
+
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
-    Logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
+    logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
     if (this.shouldAutoCapitalize(ch)) {
       this.enableAutoCapitalization();
     }
@@ -1384,7 +1839,7 @@ struct Index {
   private async onBackspaceTyped(): Promise<void> {
     if (this.currentWord && this.currentWord.length > 0) {
       this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      void this.updateSuggestions(); // Non-blocking async call
+      this.debouncedUpdateSuggestions(); // Debounced to reduce load
       this.resetInactivityTimer();
     }
 
@@ -1393,7 +1848,7 @@ struct Index {
       this.prevPrevWord = '';
       this.previousWord = '';
       this.currentWord = '';
-      void this.updateSuggestions(); // Non-blocking async call
+      this.debouncedUpdateSuggestions(); // Debounced to reduce load
       this.showPreTypingToolbar = true;
       // Auto-capitalize at the start of text
       this.enableAutoCapitalization();
@@ -1404,20 +1859,20 @@ struct Index {
 
   private async pickSuggestion(word: string): Promise<void> {
     this.resetInactivityTimer();
-    // HarmonyOS: deleteForward removes chars before cursor (like Backspace)
-    keyboardController.deleteForward(this.currentWord.length);
+    // Delete the typed word before cursor using canonical delete semantics
+    keyboardController.deleteBeforeCursor(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
     // Record the picked suggestion word with trigram context
     // Don't call onBoundaryTyped to avoid double recording
-    predictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
+    optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
 
     // Shift word history for trigram
     this.prevPrevWord = this.previousWord;
     this.previousWord = word;
     this.currentWord = '';
-    void this.updateSuggestions(); // Non-blocking async call
+    this.debouncedUpdateSuggestions(); // Debounced to reduce load
   }
 
   private getScreenWidthVp(): number {
@@ -1439,6 +1894,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -1449,10 +1905,12 @@ struct Index {
       .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
-      // SUGGESTIONS
+      // SUGGESTIONS (iOS-style: NO preview during swipe)
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
         Row({ space: 0 }) {
-          ForEach(this.suggestions, (suggestion: string, index: number) => {
+          ForEach(
+            this.isSwipeActive ? ['', '', ''] : this.suggestions,
+            (suggestion: string, index: number) => {
             Column() {
               Text(suggestion)
                 .fontSize(16)
@@ -1460,6 +1918,7 @@ struct Index {
                 .fontColor(OpenBoardTheme.primaryText)
                 .textAlign(TextAlign.Center)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .accessibilityText(suggestion ? `Suggestion: ${suggestion}` : '')
             }
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
@@ -1481,38 +1940,6 @@ struct Index {
         .alignItems(VerticalAlign.Center)
       }
       .layoutWeight(1)
-
-      // CLIPBOARD
-      Column() {
-        Image($r('app.media.clipboard_icon'))
-          .width(18)
-          .height(18)
-          .fillColor(OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleClipboardClick(); })
-
-      // MICROPHONE
-      Column() {
-        Image($r('app.media.mic_icon'))
-          .width(20)
-          .height(20)
-          .fillColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
 
@@ -1524,6 +1951,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -1543,6 +1971,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Open clipboard panel')
       }
       .width(34)
       .height(34)
@@ -1555,22 +1984,6 @@ struct Index {
 
       // RIGHT SPACER for centering
       Flex().layoutWeight(1)
-
-      // MICROPHONE
-      Column() {
-        Image($r('app.media.mic_icon'))
-          .width(20)
-          .height(20)
-          .fillColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.primaryText)
-      }
-      .width(34)
-      .height(34)
-      .justifyContent(FlexAlign.Center)
-      .alignItems(HorizontalAlign.Center)
-      .borderRadius(OpenBoardTheme.radiusSmall)
-      .backgroundColor(this.isRecording ? OpenBoardTheme.accent : OpenBoardTheme.specialKey)
-      .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleMicrophoneClick(); })
     }
   }
 
@@ -1583,6 +1996,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Return to keyboard')
       }
       .width(34)
       .height(34)
@@ -1611,6 +2025,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -1633,11 +2048,13 @@ struct Index {
             .width(18)
             .height(18)
             .fillColor(OpenBoardTheme.primaryText)
+            .accessibilityText('Microphone recording')
 
           Text(getVoiceDictationStatus(this.currentLanguage))
             .fontSize(16)
             .fontWeight(500)
             .fontColor(OpenBoardTheme.primaryText)
+            .accessibilityText(`${getVoiceDictationStatus(this.currentLanguage)}`)
 
           // Show recognized text preview if available
           if (this.recognizedText) {
@@ -1647,6 +2064,7 @@ struct Index {
               .fontColor(OpenBoardTheme.secondaryText)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .accessibilityText(`Recognized text: ${this.recognizedText}`)
           }
         }
         .width('100%')
@@ -1660,10 +2078,18 @@ struct Index {
     switch (type) {
       case ClipboardItemType.URL:
         return '🔗';
+      case ClipboardItemType.Link:
+        return '🔗';
       case ClipboardItemType.Email:
         return '📧';
       case ClipboardItemType.Phone:
         return '📞';
+      case ClipboardItemType.Image:
+        return '🖼️';
+      case ClipboardItemType.File:
+        return '📁';
+      case ClipboardItemType.Emoji:
+        return '😃';
       case ClipboardItemType.Text:
       default:
         return '📝';
@@ -1711,6 +2137,66 @@ struct Index {
               .fontSize(14)
               .fontWeight(500)
               .fontColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Text; })
+
+          // Images
+          Row({ space: 4 }) {
+            Text('🖼️')
+              .fontSize(14)
+            Text('Images')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Image; })
+
+          // Links
+          Row({ space: 4 }) {
+            Text('🔗')
+              .fontSize(14)
+            Text('Links')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Link; })
+
+          // Files
+          Row({ space: 4 }) {
+            Text('📁')
+              .fontSize(14)
+            Text('Files')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.File; })
+
+          // Emojis
+          Row({ space: 4 }) {
+            Text('😃')
+              .fontSize(14)
+            Text('Emojis')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Emoji ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
@@ -1778,6 +2264,7 @@ struct Index {
                 .fontSize(20)
                 .width(30)
                 .textAlign(TextAlign.Center)
+                .accessibilityText(this.getClipboardTypeDescription(item.type))
 
               // Item content
               Column({ space: 4 }) {
@@ -1787,14 +2274,17 @@ struct Index {
                   .fontColor(OpenBoardTheme.primaryText)
                   .maxLines(2)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .accessibilityText(`Clipboard item: ${item.text}`)
 
                 // Timestamp
                 Text(this.formatTimestamp(item.timestamp))
                   .fontSize(11)
                   .fontColor(OpenBoardTheme.secondaryText)
+                  .accessibilityText(`Copied ${this.formatTimestamp(item.timestamp)}`)
               }
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
+              .accessibilityGroup(true)  // Group content for accessibility
               .onClick(() => {
                 this.pasteClipboardItem(item);
               })
@@ -1803,6 +2293,7 @@ struct Index {
               Column() {
                 Text(item.isPinned ? '📌' : '📍')
                   .fontSize(16)
+                  .accessibilityText(item.isPinned ? 'Unpin clipboard item' : 'Pin clipboard item')
               }
               .width(40)
               .height(40)
@@ -1819,6 +2310,7 @@ struct Index {
               Column() {
                 Text('🗑️')
                   .fontSize(16)
+                  .accessibilityText('Delete clipboard item')
               }
               .width(40)
               .height(40)
@@ -1836,6 +2328,7 @@ struct Index {
             .backgroundColor(OpenBoardTheme.surface)
             .borderRadius(OpenBoardTheme.radiusMedium)
             .shadow(OpenBoardTheme.shadowKey)
+            .accessibilityGroup(true)  // Group entire item for accessibility
           }, (item: ClipboardItem) => item.id)
 
           // Empty state
@@ -1894,6 +2387,47 @@ struct Index {
     }
   }
 
+  // Helper method to generate accessibility text for keys
+  private getKeyAccessibilityText(key: KeyData): string {
+    switch (key.action) {
+      case KeyAction.Char:
+        return key.mainValue;
+      case KeyAction.Space:
+        return 'Space';
+      case KeyAction.Enter:
+        return this.enterKeyLabel;
+      case KeyAction.Backspace:
+        return 'Backspace';
+      case KeyAction.Shift:
+        return this.shiftState !== ShiftState.Off ? 'Shift locked' : 'Shift';
+      case KeyAction.SwitchAlphabet:
+        return 'Switch to symbols';
+      case KeyAction.SwitchSymbols:
+        return 'Switch to letters';
+      case KeyAction.SwitchSymbolsAlt:
+        return 'Switch to more symbols';
+      case KeyAction.EMOJI_PANEL:
+        return 'Emoji';
+      default:
+        return key.mainValue;
+    }
+  }
+
+  // Helper method to describe clipboard types for accessibility
+  private getClipboardTypeDescription(type: ClipboardItemType): string {
+    switch (type) {
+      case ClipboardItemType.URL:
+        return 'Link';
+      case ClipboardItemType.Email:
+        return 'Email address';
+      case ClipboardItemType.Phone:
+        return 'Phone number';
+      case ClipboardItemType.Text:
+      default:
+        return 'Text';
+    }
+  }
+
   @Builder
   buildClipboardToolbar() {
     Row({ space: 3 }) {
@@ -1903,6 +2437,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Return to keyboard')
       }
       .width(34)
       .height(34)
@@ -1923,6 +2458,7 @@ struct Index {
           .placeholderColor(OpenBoardTheme.secondaryText)
           .backgroundColor('transparent')
           .border({ width: 0 })
+          .accessibilityText('Search clipboard items')
           .onChange((value: string) => {
             this.clipboardSearchQuery = value;
           })
@@ -1935,6 +2471,7 @@ struct Index {
           .fontSize(12)
           .fontWeight(500)
           .fontColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Clear all clipboard items')
       }
       .width(50)
       .height(34)
@@ -1949,14 +2486,16 @@ struct Index {
     }
   }
 
+
   build() {
     Stack() {
       Column() {}
       .width('100%')
       .height('100%')
       .hitTestBehavior(HitTestMode.None)
-      .backgroundColor(OpenBoardTheme.background)
+      .backgroundColor(OpenBoardTheme.keyboardBackground)
       .animation({ duration: 200 })
+      .accessibilityText('Background layer')  // Accessibility text for background
 
       Column() {
         // MAIN TOOLBAR - CONDITIONAL RENDERING
@@ -1981,10 +2520,10 @@ struct Index {
         .width('100%')
         .height(46)
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-        .backgroundColor(OpenBoardTheme.surface)
+        .backgroundColor(OpenBoardTheme.keyboardBackgroundSemi)
         .borderRadius(OpenBoardTheme.radiusMedium)
-        .border({ width: 1, color: OpenBoardTheme.divider })
         .shadow(OpenBoardTheme.shadowPanel)
+        .accessibilityText('Input method toolbar')  // Accessibility text for toolbar
 
         // MAIN CONTENT
         if (this.showClipboardPanel) {
@@ -1992,49 +2531,92 @@ struct Index {
           this.buildClipboardPanel()
         } else if (!this.showEmojiPanel) {
           // Main keyboard
-          Column({ space: 5 }) {
-            ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
-              Row({ space: 3 }) {
-                ForEach(row, (key: KeyData) => {
-                  if (key.action === KeyAction.Spacer) {
-                    Flex().layoutWeight(key.flex)
-                  } else {
-                    KeyView({
-                      keyData: key,
-                      shiftState: this.shiftState,
-                      currentLanguage: this.currentLanguage,
-                      availableLanguages: this.availableLanguages,
-                      enterKeyLabel: this.enterKeyLabel,
-                      onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
-                      onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
-                      onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
-                      onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
-                      onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
-                      onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
-                      onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
-                      onKeyTouchUp: (): void => this.handleKeyTouchUp(),
-                      onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
-                      onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
-                      onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
-                      onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
-                      onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
-                      onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
-                      onCursorModeEnd: (): void => this.handleCursorModeEnd(),
-                      onSwipeMove: key.action === KeyAction.Char
-                        ? (p: Position): void => this.handleSwipeMove(p)
-                        : undefined,
-                      onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b)
-                    })
-                      .layoutWeight(key.flex)
-                  }
-                })
-              }
+          Stack() {
+            Column({ space: 5 }) {
+              ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
+                Row({ space: 3 }) {
+                  ForEach(row, (key: KeyData) => {
+                    if (key.action === KeyAction.Spacer) {
+                      Flex().layoutWeight(key.flex)
+                    } else {
+                      KeyView({
+                        keyData: key,
+                        shiftState: this.shiftState,
+                        currentLanguage: this.currentLanguage,
+                        availableLanguages: this.availableLanguages,
+                        enterKeyLabel: this.enterKeyLabel,
+                        onKeyPress: (k: KeyData): Promise<void> => this.handleKeyPress(k),
+                        onKeyLongPress: (k: KeyData, p: Position): void => this.handleLongPress(k, p),
+                        onKeyLongPressDrag: (p: Position): void => this.handleLongPressDrag(p),
+                        onKeyLongPressEnd: (): void => this.handleLongPressEnd(),
+                        onKeyContinuousPressStart: (): void => this.handleRapidDeleteStart(),
+                        onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
+                        onKeyTouchDown: (k: KeyData, p: Position): void => this.handleKeyTouchDown(k, p),
+                        onKeyTouchUp: (): void => this.handleKeyTouchUp(),
+                        onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined,
+                        onBackspaceSwipeStart: (x: number): void => this.handleBackspaceSwipeStart(x),
+                        onBackspaceSwipeMove: (x: number): void => this.handleBackspaceSwipeMove(x),
+                        onBackspaceSwipeEnd: (): void => this.handleBackspaceSwipeEnd(),
+                        onCursorModeStart: (x: number): void => this.handleCursorModeStart(x),
+                        onCursorModeMove: (x: number): void => this.handleCursorModeMove(x),
+                        onCursorModeEnd: (): void => this.handleCursorModeEnd(),
+                        onSwipeStart: key.action === KeyAction.Char
+                          ? (k: KeyData, p: Position): void => this.handleSwipeStart(k, p)
+                          : undefined,
+                        onSwipeMove: key.action === KeyAction.Char
+                          ? (p: Position): void => this.handleSwipeMove(p)
+                          : undefined,
+                        onKeyBoundsUpdate: (k: string, b: KeyBounds): void => this.handleKeyBoundsUpdate(k, b),
+                        keyboardRootOffset: this.keyboardRootOffset,
+                        swipeInProgress: this.isSwipeActive,
+                        ignoreEventsUntil: this.ignoreKeysUntilTs
+                      })
+                        .layoutWeight(key.flex)
+                        .accessibilityText(this.getKeyAccessibilityText(key))  // Add accessibility text for the key
+                    }
+                  })
+                }
+                .width('100%')
+                .layoutWeight(1)
+                .accessibilityGroup(true)  // Group keys in each row for accessibility
+              })
+            }
+            .width('100%')
+            .height('100%')
+            .accessibilityText('Keyboard layout')  // Accessibility text for keyboard area
+
+            Flex()
               .width('100%')
-              .layoutWeight(1)
-            })
+              .height('100%')
+              .backgroundColor('transparent')
+              .hitTestBehavior(HitTestMode.Transparent)
+              .accessibilityText('Swipe gesture area')  // Accessibility text for swipe area
+              .onTouch((event) => {
+                const touch = event.touches[0];
+                if (!touch) return;
+                const currentPosition: Position = { x: touch.windowX, y: touch.windowY };
+                if (Date.now() < this.ignoreKeysUntilTs) return;
+
+                if (event.type === TouchType.Move && this.isSwipeActive) {
+                  this.handleSwipeMove(currentPosition);
+                }
+
+                if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.isSwipeActive) {
+                  this.handleSwipeEnd(event.type === TouchType.Up);
+                }
+              })
           }
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
+          .onAreaChange((_oldValue: Area, newValue: Area) => {
+            const areaAny = newValue as AreaWithGlobalPosition;
+            const globalPosition = areaAny.globalPosition;
+            const basePosition = globalPosition ?? {
+              x: newValue.position.x as number,
+              y: newValue.position.y as number
+            };
+            this.keyboardRootOffset = { x: basePosition.x, y: basePosition.y };
+          })
         } else {
           // Emoji Panel
           Column({ space: 10 }) {
@@ -2050,10 +2632,12 @@ struct Index {
                     .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
                     .borderRadius(OpenBoardTheme.radiusMedium)
                     .shadow(this.emojiCategory === cat ? OpenBoardTheme.shadowKey : { radius: 0 })
+                    .accessibilityText(`Select ${cat} category`)
                     .onClick(() => { this.emojiCategory = cat; })
                 })
               }
               .padding({ left: 8, right: 8 })
+              .accessibilityText('Emoji categories')  // Accessibility text for categories
             }
 
             // Emoji
@@ -2065,6 +2649,7 @@ struct Index {
                     .textAlign(TextAlign.Center)
                     .width('11%')
                     .height(46)
+                    .accessibilityText(`Insert ${emoji}`)
                     .onClick(async () => {
                       keyboardController.insertText(emoji);
                       // Emoji is a boundary - don't add to currentWord
@@ -2075,6 +2660,7 @@ struct Index {
               }
               .width('100%')
               .padding({ left: 8, right: 8 })
+              .accessibilityText('Emoji selection')  // Accessibility text for emoji grid
             }
             .scrollable(ScrollDirection.Vertical)
             .scrollBar(BarState.On)
@@ -2084,22 +2670,25 @@ struct Index {
           }
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
+          .accessibilityText('Emoji panel')  // Accessibility text for emoji panel
         }
       }
       .alignSelf(ItemAlign.End)
-      .backgroundColor(OpenBoardTheme.background)
+      .backgroundColor(OpenBoardTheme.keyboardBackground)
 
       // Popups
       if (this.longPressInfo) {
         KeyPopup({ info: this.longPressInfo, hoveredChar: this.hoveredChar, keyWidth: this.popupKeyWidth })
           .position({ x: this.popupPosition.x, y: this.popupPosition.y })
           .zIndex(200)
+          .accessibilityText('Character alternatives')  // Accessibility text for key popup
       }
 
       if (this.singleCharPopupInfo) {
         SingleKeyPopup({ char: this.singleCharPopupInfo.char })
           .position({ x: this.singleCharPopupInfo.position.x - 25, y: this.singleCharPopupInfo.position.y - 70 })
           .zIndex(150)
+          .accessibilityText(`Preview character: ${this.singleCharPopupInfo.char}`)  // Accessibility text for single char popup
       }
 
       if (this.languageIndicatorOpacity > 0) {
@@ -2107,6 +2696,7 @@ struct Index {
           .opacity(this.languageIndicatorOpacity)
           .position({ x: (this.getScreenWidthVp() / 2) - 100, y: 150 })
           .zIndex(250)
+          .accessibilityText(`Current language: ${getLanguageName(this.currentLanguage)}`)  // Accessibility text for language indicator
       }
 
       // Voice interruption popup
@@ -2116,25 +2706,19 @@ struct Index {
           popupPosition: this.interruptionPopupPosition
         })
           .zIndex(300)
+          .accessibilityText(this.interruptionMessage)  // Accessibility text for interruption popup
       }
 
-      // Swipe typing preview
-      if (this.isSwipeTyping && this.swipePreviewWord.length > 1 && this.swipePath.length > 0) {
-        Column() {
-          Text(this.swipePreviewWord)
-            .fontSize(22)
-            .fontWeight(500)
-            .fontColor(OpenBoardTheme.primaryText)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .backgroundColor(OpenBoardTheme.surface)
-            .borderRadius(OpenBoardTheme.radiusMedium)
-            .shadow(OpenBoardTheme.shadowPanel)
-        }
-        .position({
-          x: this.swipePath[this.swipePath.length - 1].x - 40,
-          y: this.swipePath[this.swipePath.length - 1].y - 70
-        })
-        .zIndex(350)
+      // Swipe typing trail visualization (iOS-style: only trail, no text)
+      if (this.isSwipeActive && this.swipeTrailPoints.length > 1) {
+        Canvas(this.trailCanvasContext)
+          .width('100%')
+          .height('100%')
+          .accessibilityText('Swipe gesture trail')  // Accessibility text for swipe trail
+          .onReady(() => {
+            this.renderTrailPath();
+          })
+          .zIndex(350)
       }
     }
     .width('100%')

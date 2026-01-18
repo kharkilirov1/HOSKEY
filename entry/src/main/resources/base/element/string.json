@@ -27,6 +27,14 @@
     {
       "name": "InputMethodExtensionAbility_label",
       "value": "OpenBoard Keyboard"
+    },
+    {
+      "name": "russian_keyboard",
+      "value": "Russian Keyboard"
+    },
+    {
+      "name": "english_keyboard",
+      "value": "English Keyboard"
     }
   ]
 }

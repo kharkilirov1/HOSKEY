@@ -37,6 +37,7 @@ export class BaseLexicon {
   private prefixCache: LRUCache<string, PrefixResult>;
   private blockedWords: Set<string> = new Set(); // Base blocked words list
   private loaded: boolean = false;
+  private isLoading: boolean = false; // Prevents multiple simultaneous load() calls
 
   // Cache configuration
   private readonly CACHE_SIZE = 500; // LRU cache capacity
@@ -54,6 +55,11 @@ export class BaseLexicon {
   }
 
   isLoaded(): boolean {
+    // Check for corrupted state: loaded=true but words array is empty
+    // This can happen if load() was interrupted or files failed to load
+    if (this.loaded && this.words.length === 0) {
+      this.loaded = false; // Reset to force reload
+    }
     return this.loaded;
   }
 
@@ -62,10 +68,16 @@ export class BaseLexicon {
    * Call this on app initialization
    */
   async load(lang: string): Promise<void> {
-    if (!this.context) {
-      console.warn('BaseLexicon: Context not set, cannot load');
+    // Guard against multiple simultaneous loads
+    if (this.isLoading) {
       return;
     }
+
+    if (!this.context) {
+      return;
+    }
+
+    this.isLoading = true;
 
     try {
       // Load word list (50k words, sorted alphabetically)
@@ -106,13 +118,20 @@ export class BaseLexicon {
         .slice(0, this.AUTOCORRECT_POOL_SIZE)
         .map(e => e.word);
 
-      this.loaded = true;
-      console.info(`BaseLexicon: Loaded ${this.words.length} words, ${this.freqMap.size} frequencies, ${this.blockedWords.size} blocked words for '${lang}'`);
+      // Only set loaded=true if we actually loaded words
+      if (this.words.length > 0) {
+        this.loaded = true;
+      } else {
+        this.loaded = false;
+        console.error(`[BaseLexicon] LOAD FAILED: 0 words loaded for '${lang}'`);
+      }
 
     } catch (err) {
       const error = err as BusinessError;
       console.error(`BaseLexicon: Failed to load for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
       this.loaded = false;
+    } finally {
+      this.isLoading = false;
     }
   }
 
@@ -120,7 +139,9 @@ export class BaseLexicon {
    * Load text file from rawfile (one word per line)
    */
   private async loadTextFile(filename: string): Promise<string[]> {
-    if (!this.context) return [];
+    if (!this.context) {
+      return [];
+    }
 
     try {
       const resMgr = this.context.resourceManager;
@@ -133,8 +154,7 @@ export class BaseLexicon {
         .filter(line => line.length > 0);
 
     } catch (err) {
-      // File might not exist (e.g., blocked_words.txt is optional)
-      console.warn(`BaseLexicon: Could not load ${filename}, using empty list`);
+      // File might not exist (e.g., blocked_words.txt is optional) - fail silently
       return [];
     }
   }
@@ -218,9 +238,11 @@ export class BaseLexicon {
     // Binary search for starting position
     const startIdx = this.lowerBound(prefixLower);
 
-    // Collect matching words
+    // Collect matching words (limit to maxResults * 5 for performance)
     const matches: LexEntry[] = [];
-    for (let i = startIdx; i < this.words.length; i++) {
+    const maxCollect = maxResults * 5; // Limit collection to reduce sort overhead
+
+    for (let i = startIdx; i < this.words.length && matches.length < maxCollect; i++) {
       const word = this.words[i];
 
       // Stop when prefix no longer matches
@@ -237,7 +259,7 @@ export class BaseLexicon {
       matches.push({ word, freq });
     }
 
-    // Sort by frequency descending
+    // Sort by frequency descending (only collected matches, not all 2000+)
     matches.sort((a, b) => b.freq - a.freq);
 
     // Take top N

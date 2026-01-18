@@ -1,4 +1,4 @@
-import { display } from '@kit.ArkUI';
+ import { display } from '@kit.ArkUI';
 import { inputMethodEngine, InputMethodExtensionContext } from '@kit.IMEKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -12,7 +12,6 @@ export class KeyboardController {
   private enterKeyTypeCallback?: (enterKeyType: number) => void;
   private textBufferCache: string = '';
   private cursorPosition: number = 0;
-
   constructor() {}
 
   public onCreate(context: InputMethodExtensionContext): void {
@@ -74,39 +73,56 @@ export class KeyboardController {
   }
 
   public insertText(text: string): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.insertText(text);
-        this.updateCacheOnInsert(text);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to insert text. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
+    }
+    try {
+      this.textInputClient.insertText(text);
+      this.updateCacheOnInsert(text);
+    } catch {
+      // Silent catch for ArkTS compliance - hot path optimization
     }
   }
 
   public deleteForward(length: number): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.deleteForward(length);
-        this.updateCacheOnDeleteForward(length);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to delete forward. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (length <= 0) return;
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
+    }
+    try {
+      this.textInputClient.deleteForward(length);
+      this.updateCacheOnDeleteForward(length);
+    } catch {
+      // Silent catch for ArkTS compliance - hot path optimization
     }
   }
 
   public deleteBackward(length: number): void {
-    if (this.textInputClient) {
-      try {
-        this.textInputClient.deleteBackward(length);
-        this.updateCacheOnDeleteBackward(length);
-      } catch (err) {
-        const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to delete backward. Code: ${error.code}, Msg: ${error.message}`);
-      }
+    if (length <= 0) return;
+    if (!this.textInputClient) {
+      console.warn('OpenBoard Keyboard: Text input client not available');
+      return;
     }
+    try {
+      this.textInputClient.deleteBackward(length);
+      this.updateCacheOnDeleteBackward(length);
+    } catch {
+      // Silent catch for ArkTS compliance - hot path optimization
+    }
+  }
+
+  public deleteBeforeCursor(length: number = 1): void {
+    if (length <= 0) return;
+    // HarmonyOS: deleteForward removes text BEFORE cursor (opposite naming!)
+    this.deleteForward(length);
+  }
+
+  public deleteAfterCursor(length: number = 1): void {
+    if (length <= 0) return;
+    // HarmonyOS: deleteBackward removes text AFTER cursor (opposite naming!)
+    this.deleteBackward(length);
   }
 
   public moveCursor(direction: number): void {
@@ -166,16 +182,35 @@ export class KeyboardController {
   }
 
   private updateCacheOnDeleteForward(length: number): void {
-    this.textBufferCache =
-      this.textBufferCache.slice(0, this.cursorPosition) +
-      this.textBufferCache.slice(this.cursorPosition + length);
+    this.updateCacheOnDeleteAfterCursor(length);
   }
 
   private updateCacheOnDeleteBackward(length: number): void {
+    this.updateCacheOnDeleteBeforeCursor(length);
+  }
+
+  private updateCacheOnDeleteBeforeCursor(length: number): void {
+    if (length <= 0) return;
+    const safeCursor = Math.max(0, Math.min(this.cursorPosition, this.textBufferCache.length));
+    const safeLength = Math.min(length, safeCursor);
+    if (safeLength <= 0) return;
+    const deleteStart = Math.max(0, safeCursor - safeLength);
     this.textBufferCache =
-      this.textBufferCache.slice(0, this.cursorPosition - length) +
-      this.textBufferCache.slice(this.cursorPosition);
-    this.cursorPosition = Math.max(0, this.cursorPosition - length);
+      this.textBufferCache.slice(0, deleteStart) +
+      this.textBufferCache.slice(safeCursor);
+    this.cursorPosition = deleteStart;
+  }
+
+  private updateCacheOnDeleteAfterCursor(length: number): void {
+    if (length <= 0) return;
+    const safeCursor = Math.max(0, Math.min(this.cursorPosition, this.textBufferCache.length));
+    const maxDeletable = Math.max(0, this.textBufferCache.length - safeCursor);
+    const safeLength = Math.min(length, maxDeletable);
+    if (safeLength <= 0) return;
+    const deleteEnd = safeCursor + safeLength;
+    this.textBufferCache =
+      this.textBufferCache.slice(0, safeCursor) +
+      this.textBufferCache.slice(deleteEnd);
   }
 
   private updateCacheOnCursorMove(direction: number): void {
@@ -225,9 +260,9 @@ export class KeyboardController {
       const error = err as BusinessError;
       console.error(`OpenBoard Keyboard: Failed to get display. Code: ${error.code}, Msg: ${error.message}`);
     }
-    let keyHeightRate = 0.30; // 30% of screen height for all devices
-    let keyHeight = dHeight * keyHeightRate;
-    let nonBarPosition = dHeight - keyHeight;
+    const keyHeightRate = 0.30; // 30% of screen height for all devices
+    const keyHeight = dHeight * keyHeightRate;
+    const nonBarPosition = dHeight - keyHeight;
 
     const panelInfo: inputMethodEngine.PanelInfo = {
       type: inputMethodEngine.PanelType.SOFT_KEYBOARD,

@@ -88,7 +88,7 @@ case 'fa': return 'تشخیص گفتار ناموفق بود';
 **Файл:** `Index.ets:610-620`
 **Описание:** Таймер `inactivityTimer` не очищается перед повторным запуском в `startInactivityTimer()`.
 
-```typescript
+```text
 // ❌ ПОТЕНЦИАЛЬНАЯ ПРОБЛЕМА
 private startInactivityTimer(): void {
   if (this.inactivityTimer !== -1) {
@@ -129,7 +129,7 @@ private stopInactivityTimer(): void {
 **Файл:** `Index.ets:1202`
 **Описание:** При вставке emoji вызывается `onTextTyped(emoji)`, что может некорректно обновить `currentWord`.
 
-```typescript
+```text
 // ❌ ПРОБЛЕМА
 .onClick(() => {
   keyboardController.insertText(emoji);
@@ -140,7 +140,7 @@ private stopInactivityTimer(): void {
 **Проблема:** Emoji не является текстом, поэтому не должен обрабатываться как обычный символ.
 
 **Решение:**
-```typescript
+```text
 .onClick(() => {
   keyboardController.insertText(emoji);
   // Emoji = граничный символ
@@ -198,7 +198,7 @@ private async handleMicrophoneClick(): Promise<void> {
 **Файл:** `KeyboardController.ets:174-184`
 **Описание:** Синхронизация начального текста никогда не работает.
 
-```typescript
+```text
 private queryTextFromIME(): Promise<string> {
   return new Promise((resolve, reject) => {
     // ...
@@ -318,7 +318,7 @@ getCurrentLayout(): KeyData[][] {
 **Файл:** `PredictionModel.ets:73-102`
 
 **Решение:**
-```typescript
+```text
 private levenshteinDistance(a: string, b: string, maxDistance: number = 2): number {
   if (Math.abs(a.length - b.length) > maxDistance) {
     return maxDistance + 1; // Ранний выход
@@ -351,7 +351,7 @@ private levenshteinDistance(a: string, b: string, maxDistance: number = 2): numb
 **Проблема:** Модели могут расти бесконечно, потребляя память.
 
 **Решение:**
-```typescript
+```text
 class PredictionModel {
   private readonly MAX_WORDS_PER_LANGUAGE = 10000;
   private readonly MAX_BIGRAMS_PER_WORD = 100;
@@ -430,7 +430,7 @@ class Position {
 **Файл:** `Index.ets`
 
 **Решение:**
-```typescript
+```text
 import { vibrator } from '@kit.SensorServiceKit';
 
 handleKeyPress(key: KeyData): void {
@@ -457,7 +457,7 @@ handleKeyPress(key: KeyData): void {
 **Проблема:** Нет поддержки screen readers.
 
 **Решение:**
-```typescript
+```text
 @Component
 struct KeyView {
   build() {
@@ -496,7 +496,7 @@ struct KeyView {
 **Проблема:** Ошибки только логируются, пользователь не видит проблем.
 
 **Решение:**
-```typescript
+```text
 @State private errorMessage: string = '';
 @State private showErrorToast: boolean = false;
 
@@ -533,7 +533,7 @@ if (this.showErrorToast) {
 **Проблема:** Нет проверки вставляемого контента.
 
 **Решение:**
-```typescript
+```text
 private async handleClipboardClick(): Promise<void> {
   // ... существующий код ...
 
@@ -561,7 +561,7 @@ private async handleClipboardClick(): Promise<void> {
 **Файл:** `PredictionModel.ets`
 
 **Решение:**
-```typescript
+```text
 private readonly MAX_BLOCKED_WORDS = 1000;
 
 blockWord(lang: string, word: string): void {

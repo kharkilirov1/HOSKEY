@@ -6,7 +6,11 @@ export enum ClipboardItemType {
   Text = 'text',
   URL = 'url',
   Email = 'email',
-  Phone = 'phone'
+  Phone = 'phone',
+  Image = 'image',
+  Link = 'link',
+  File = 'file',
+  Emoji = 'emoji'
 }
 
 export interface ClipboardItem {
@@ -85,11 +89,30 @@ class ClipboardHistory {
 
     const trimmed = text.trim();
 
+    // Image detection - check if it looks like an image URL
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'];
+    if (imageExtensions.some(ext => trimmed.toLowerCase().includes(ext))) {
+      return ClipboardItemType.Image;
+    }
+
+    // File detection - check if it looks like a file path
+    const fileExtensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.zip', '.rar', '.mp3', '.mp4', '.avi', '.mov'];
+    if (fileExtensions.some(ext => trimmed.toLowerCase().includes(ext)) || 
+        (trimmed.includes('/') && trimmed.includes('.')) || 
+        trimmed.startsWith('/')) {
+      return ClipboardItemType.File;
+    }
+
     // URL detection - more comprehensive
     const urlPattern = /^(https?:\/\/)?([\w-]+(\.[\w-]+)+)(:\d+)?(\/[^\s]*)?$/i;
     const simpleUrlPattern = /^(www\.[\w-]+(\.[\w-]+)+)(\/[^\s]*)?$/i;
     if (urlPattern.test(trimmed) || simpleUrlPattern.test(trimmed)) {
       return ClipboardItemType.URL;
+    }
+
+    // Link detection - similar to URL but for links specifically
+    if (trimmed.includes('http://') || trimmed.includes('https://')) {
+      return ClipboardItemType.Link;
     }
 
     // Email detection
@@ -103,6 +126,17 @@ class ClipboardHistory {
     const digitsOnly = trimmed.replace(/[\s\-\(\)\.]/g, '');
     if (phonePattern.test(trimmed) && digitsOnly.length >= 7 && digitsOnly.length <= 15) {
       return ClipboardItemType.Phone;
+    }
+
+    // Emoji detection - check if text contains mostly emojis
+    const emojiRegex = /(?:\ud83c[\udf00-\udfff]|\ud83d[\udc00-\ude4f\ude80-\udeff]|[\u2600-\u27bf]\ufe0f?|\ud83c[\udde6-\uddff]){1,}/g;
+    const emojiMatches = trimmed.match(emojiRegex);
+    if (emojiMatches && emojiMatches.length > 0) {
+      const emojiCount = emojiMatches.join('').length;
+      const totalLength = trimmed.replace(/\s/g, '').length;
+      if (emojiCount > 0 && totalLength > 0 && emojiCount / totalLength > 0.3) { // More than 30% emojis
+        return ClipboardItemType.Emoji;
+      }
     }
 
     return ClipboardItemType.Text;

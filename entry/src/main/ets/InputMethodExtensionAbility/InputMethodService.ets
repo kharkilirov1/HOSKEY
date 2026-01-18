@@ -1,6 +1,7 @@
 import { Want } from '@kit.AbilityKit';
 import keyboardController from './model/KeyboardController';
 import predictionModel from './model/PredictionModel';
+import optimizedPredictionModel from './model/OptimizedPredictionModel';
 import clipboardHistory from './model/ClipboardHistory';
 import { InputMethodExtensionAbility } from '@kit.IMEKit';
 
@@ -25,6 +26,19 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     }).catch((err: Error) => {
       console.error('OpenBoard: Failed to initialize prediction model', err);
     });
+    
+    // Initialize optimized prediction model with context
+    optimizedPredictionModel.setContext(this.context);
+    optimizedPredictionModel.load().then(() => {
+      console.info('OpenBoard: Optimized prediction model loaded successfully');
+
+      // Warmup optimized model for default language (ru)
+      return optimizedPredictionModel.warmup('ru');
+    }).then(() => {
+      console.info('OpenBoard: Optimized prediction model warmed up for default language');
+    }).catch((err: Error) => {
+      console.error('OpenBoard: Failed to initialize optimized prediction model', err);
+    });
 
     // Initialize clipboard history
     clipboardHistory.setContext(this.context);
@@ -35,15 +49,19 @@ export default class InputDemoService extends InputMethodExtensionAbility {
     });
   }
 
-  onDestroy(): void {
+  async onDestroy(): Promise<void> {
     console.info("onDestroy.");
 
-    // Save prediction model before destroying
-    predictionModel.save().then(() => {
+    // Save prediction models before destroying (with await to ensure completion)
+    try {
+      await predictionModel.save();
       console.info('OpenBoard: Prediction model saved successfully');
-    }).catch((err: Error) => {
+      
+      await optimizedPredictionModel.save();
+      console.info('OpenBoard: Optimized prediction model saved successfully');
+    } catch (err) {
       console.error('OpenBoard: Failed to save prediction model', err);
-    });
+    }
 
     keyboardController.onDestroy();
   }
