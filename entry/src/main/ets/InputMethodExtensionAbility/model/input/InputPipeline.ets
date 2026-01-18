@@ -24,11 +24,7 @@
  */
 
 import {
-  InputEvent,
-  InputMode,
-  ITextClientAdapter,
-  ISuggestionPresenter,
-  IPredictor
+  InputEvent, InputMode, ITextClientAdapter, ISuggestionPresenter, IPredictor
 } from './InputTypes';
 import { TextBuffer } from './TextBuffer';
 import { Debouncer } from './Debouncer';
@@ -43,13 +39,19 @@ function perfLog(label: string, startTime: number): void {
   }
 }
 
+interface GeneratedTypeLiteralInterface_1 {
+  currentToken: string;
+  prevWord: string;
+  mode: InputMode;
+  isSwipeActive: boolean;
+}
+
 export class InputPipeline {
   // Core components
   private textBuffer: TextBuffer = new TextBuffer();
   private client: ITextClientAdapter | undefined;
   private presenter: ISuggestionPresenter | undefined;
   private predictor: IPredictor | undefined;
-
   // Debouncing
   private predictionDebouncer: Debouncer = new Debouncer(30); // 30ms delay
 
@@ -57,12 +59,12 @@ export class InputPipeline {
   private currentMode: InputMode = InputMode.Tap;
   private currentLanguage: string = 'en';
   private isProcessing: boolean = false;
-
   // Swipe state (will be implemented next)
   private isSwipeActive: boolean = false;
   private swipeStartTime: number = 0;
 
-  constructor() {}
+  constructor() {
+  }
 
   // === CONFIGURATION ===
 
@@ -322,12 +324,7 @@ export class InputPipeline {
   /**
    * Get current state (for debugging/testing)
    */
-  getState(): {
-    currentToken: string;
-    prevWord: string;
-    mode: InputMode;
-    isSwipeActive: boolean;
-  } {
+  getState(): GeneratedTypeLiteralInterface_1 {
     return {
       currentToken: this.textBuffer.getCurrentToken(),
       prevWord: this.textBuffer.getPrevWord(),

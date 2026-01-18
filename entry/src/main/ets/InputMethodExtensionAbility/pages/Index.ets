@@ -15,6 +15,7 @@ import {
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
+import optimizedPredictionModel from '../model/OptimizedPredictionModel';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
@@ -23,6 +24,7 @@ import pasteboard from '@ohos.pasteboard';
 import { Logger } from '../utils/logger';
 import { swipeEngine, SwipePoint, KeyBounds, SwipeResult } from '../model/SwipeEngine';
 
+const logger = new Logger('Index');
 const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
 
 // TYPE DEFINITIONS
@@ -869,12 +871,18 @@ struct Index {
     this.enableAutoCapitalization();
 
     // Warmup BaseLexicon for current language (background loading for instant predictions)
+    // Warmup both regular and optimized prediction models
     predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
       const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
+    });
+    
+    // Also warmup optimized prediction model if available
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
     });
   }
 
@@ -1524,7 +1532,7 @@ struct Index {
         await this.onTextTyped(text);
         // Only turn off shift if it was on BEFORE typing (not if enabled by typing boundary char like '.')
         if (wasShiftOnBeforeTyping) {
-          Logger.autocap('Disabling shift after typing character');
+          logger.autocap('Disabling shift after typing character');
           this.shiftState = ShiftState.Off;
         }
         break;
@@ -1640,6 +1648,11 @@ struct Index {
       const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     });
+    
+    // Also warmup optimized prediction model if available
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
+    });
   }
 
   /**
@@ -1667,7 +1680,7 @@ struct Index {
     try {
       // Check for autocorrection first
       const autocorrection = this.currentWord.length >= 2
-        ? await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+        ? await optimizedPredictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
         : null;
 
       // Check if request is stale (user typed more keys while we were waiting)
@@ -1677,7 +1690,7 @@ struct Index {
 
       if (autocorrection && autocorrection !== this.currentWord) {
         // Show autocorrection as first suggestion, then predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
@@ -1687,11 +1700,11 @@ struct Index {
         this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
 
         if (DEBUG_PREDICT) {
-          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
+          logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
-        const list = await predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
@@ -1701,12 +1714,12 @@ struct Index {
         this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
 
         if (DEBUG_PREDICT) {
-          Logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
+          logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
         }
       }
     } catch (e) {
       console.error(`[Index] EXCEPTION in updateSuggestions:`, e);
-      Logger.warn('Prediction model error', e as Error);
+      logger.warn('Prediction model error', e as Error);
       this.suggestions = ['', '', ''];
     }
   }
@@ -1729,15 +1742,15 @@ struct Index {
   private enableAutoCapitalization(): void {
     // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
     if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      Logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
+      logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
       return;
     }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
-      Logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
+      logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
       this.shiftState = ShiftState.On;
     } else {
-      Logger.autocap('Already in CapsLock, not changing');
+      logger.autocap('Already in CapsLock, not changing');
     }
   }
 
@@ -1776,14 +1789,14 @@ struct Index {
           };
 
           // Record corrected word with trigram context
-          predictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
+          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
           this.previousWord = correction;
         } else {
           // No correction, record the word as typed with trigram context
-          predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
@@ -1794,7 +1807,7 @@ struct Index {
         // to ensure space is ALWAYS inserted, even when currentWord is empty
       } else {
         // Non-space boundary, just record the word with trigram context
-        predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+        optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
 
         // Shift word history for trigram
         this.prevPrevWord = this.previousWord;
@@ -1804,9 +1817,12 @@ struct Index {
       this.currentWord = '';
     }
 
-    // Insert space ALWAYS when ch === ' ', regardless of whether currentWord was empty
-    // This fixes the bug where space doesn't insert after punctuation or consecutive spaces
-    if (ch === ' ') {
+    // Insert the boundary character that was typed
+    // For space, it's already handled in the autocorrection flow above
+    if (ch !== ' ') {
+      keyboardController.insertText(ch);
+    } else {
+      // For space character, insert it after potential autocorrection
       keyboardController.insertText(' ');
     }
 
@@ -1814,7 +1830,7 @@ struct Index {
     this.resetInactivityTimer();
 
     // Auto-capitalize after sentence-ending punctuation
-    Logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
+    logger.autocap(`Boundary typed: ${ch}, should auto-cap: ${this.shouldAutoCapitalize(ch)}`);
     if (this.shouldAutoCapitalize(ch)) {
       this.enableAutoCapitalization();
     }
@@ -1850,7 +1866,7 @@ struct Index {
 
     // Record the picked suggestion word with trigram context
     // Don't call onBoundaryTyped to avoid double recording
-    predictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
+    optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
 
     // Shift word history for trigram
     this.prevPrevWord = this.previousWord;
@@ -1878,6 +1894,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -1901,6 +1918,7 @@ struct Index {
                 .fontColor(OpenBoardTheme.primaryText)
                 .textAlign(TextAlign.Center)
                 .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .accessibilityText(suggestion ? `Suggestion: ${suggestion}` : '')
             }
             .justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
@@ -1933,6 +1951,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -1952,6 +1971,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Open clipboard panel')
       }
       .width(34)
       .height(34)
@@ -1976,6 +1996,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Return to keyboard')
       }
       .width(34)
       .height(34)
@@ -2004,6 +2025,7 @@ struct Index {
         Image($r('app.media.close_icon'))
           .width(18)
           .height(18)
+          .accessibilityText('Hide keyboard')
       }
       .width(34)
       .height(34)
@@ -2026,11 +2048,13 @@ struct Index {
             .width(18)
             .height(18)
             .fillColor(OpenBoardTheme.primaryText)
+            .accessibilityText('Microphone recording')
 
           Text(getVoiceDictationStatus(this.currentLanguage))
             .fontSize(16)
             .fontWeight(500)
             .fontColor(OpenBoardTheme.primaryText)
+            .accessibilityText(`${getVoiceDictationStatus(this.currentLanguage)}`)
 
           // Show recognized text preview if available
           if (this.recognizedText) {
@@ -2040,6 +2064,7 @@ struct Index {
               .fontColor(OpenBoardTheme.secondaryText)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .accessibilityText(`Recognized text: ${this.recognizedText}`)
           }
         }
         .width('100%')
@@ -2053,10 +2078,18 @@ struct Index {
     switch (type) {
       case ClipboardItemType.URL:
         return '🔗';
+      case ClipboardItemType.Link:
+        return '🔗';
       case ClipboardItemType.Email:
         return '📧';
       case ClipboardItemType.Phone:
         return '📞';
+      case ClipboardItemType.Image:
+        return '🖼️';
+      case ClipboardItemType.File:
+        return '📁';
+      case ClipboardItemType.Emoji:
+        return '😃';
       case ClipboardItemType.Text:
       default:
         return '📝';
@@ -2104,6 +2137,66 @@ struct Index {
               .fontSize(14)
               .fontWeight(500)
               .fontColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Text; })
+
+          // Images
+          Row({ space: 4 }) {
+            Text('🖼️')
+              .fontSize(14)
+            Text('Images')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Image ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Image; })
+
+          // Links
+          Row({ space: 4 }) {
+            Text('🔗')
+              .fontSize(14)
+            Text('Links')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.Link ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.Link; })
+
+          // Files
+          Row({ space: 4 }) {
+            Text('📁')
+              .fontSize(14)
+            Text('Files')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+          }
+          .padding({ left: 12, right: 16, top: 8, bottom: 8 })
+          .backgroundColor(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.surface : OpenBoardTheme.background)
+          .borderRadius(OpenBoardTheme.radiusMedium)
+          .shadow(this.clipboardFilter === ClipboardItemType.File ? OpenBoardTheme.shadowKey : { radius: 0 })
+          .onClick(() => { this.clipboardFilter = ClipboardItemType.File; })
+
+          // Emojis
+          Row({ space: 4 }) {
+            Text('😃')
+              .fontSize(14)
+            Text('Emojis')
+              .fontSize(14)
+              .fontWeight(500)
+              .fontColor(this.clipboardFilter === ClipboardItemType.Emoji ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
           }
           .padding({ left: 12, right: 16, top: 8, bottom: 8 })
           .backgroundColor(this.clipboardFilter === ClipboardItemType.Text ? OpenBoardTheme.surface : OpenBoardTheme.background)
@@ -2171,6 +2264,7 @@ struct Index {
                 .fontSize(20)
                 .width(30)
                 .textAlign(TextAlign.Center)
+                .accessibilityText(this.getClipboardTypeDescription(item.type))
 
               // Item content
               Column({ space: 4 }) {
@@ -2180,14 +2274,17 @@ struct Index {
                   .fontColor(OpenBoardTheme.primaryText)
                   .maxLines(2)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .accessibilityText(`Clipboard item: ${item.text}`)
 
                 // Timestamp
                 Text(this.formatTimestamp(item.timestamp))
                   .fontSize(11)
                   .fontColor(OpenBoardTheme.secondaryText)
+                  .accessibilityText(`Copied ${this.formatTimestamp(item.timestamp)}`)
               }
               .alignItems(HorizontalAlign.Start)
               .layoutWeight(1)
+              .accessibilityGroup(true)  // Group content for accessibility
               .onClick(() => {
                 this.pasteClipboardItem(item);
               })
@@ -2196,6 +2293,7 @@ struct Index {
               Column() {
                 Text(item.isPinned ? '📌' : '📍')
                   .fontSize(16)
+                  .accessibilityText(item.isPinned ? 'Unpin clipboard item' : 'Pin clipboard item')
               }
               .width(40)
               .height(40)
@@ -2212,6 +2310,7 @@ struct Index {
               Column() {
                 Text('🗑️')
                   .fontSize(16)
+                  .accessibilityText('Delete clipboard item')
               }
               .width(40)
               .height(40)
@@ -2229,6 +2328,7 @@ struct Index {
             .backgroundColor(OpenBoardTheme.surface)
             .borderRadius(OpenBoardTheme.radiusMedium)
             .shadow(OpenBoardTheme.shadowKey)
+            .accessibilityGroup(true)  // Group entire item for accessibility
           }, (item: ClipboardItem) => item.id)
 
           // Empty state
@@ -2287,6 +2387,47 @@ struct Index {
     }
   }
 
+  // Helper method to generate accessibility text for keys
+  private getKeyAccessibilityText(key: KeyData): string {
+    switch (key.action) {
+      case KeyAction.Char:
+        return key.mainValue;
+      case KeyAction.Space:
+        return 'Space';
+      case KeyAction.Enter:
+        return this.enterKeyLabel;
+      case KeyAction.Backspace:
+        return 'Backspace';
+      case KeyAction.Shift:
+        return this.shiftState !== ShiftState.Off ? 'Shift locked' : 'Shift';
+      case KeyAction.SwitchAlphabet:
+        return 'Switch to symbols';
+      case KeyAction.SwitchSymbols:
+        return 'Switch to letters';
+      case KeyAction.SwitchSymbolsAlt:
+        return 'Switch to more symbols';
+      case KeyAction.EMOJI_PANEL:
+        return 'Emoji';
+      default:
+        return key.mainValue;
+    }
+  }
+
+  // Helper method to describe clipboard types for accessibility
+  private getClipboardTypeDescription(type: ClipboardItemType): string {
+    switch (type) {
+      case ClipboardItemType.URL:
+        return 'Link';
+      case ClipboardItemType.Email:
+        return 'Email address';
+      case ClipboardItemType.Phone:
+        return 'Phone number';
+      case ClipboardItemType.Text:
+      default:
+        return 'Text';
+    }
+  }
+
   @Builder
   buildClipboardToolbar() {
     Row({ space: 3 }) {
@@ -2296,6 +2437,7 @@ struct Index {
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Return to keyboard')
       }
       .width(34)
       .height(34)
@@ -2316,6 +2458,7 @@ struct Index {
           .placeholderColor(OpenBoardTheme.secondaryText)
           .backgroundColor('transparent')
           .border({ width: 0 })
+          .accessibilityText('Search clipboard items')
           .onChange((value: string) => {
             this.clipboardSearchQuery = value;
           })
@@ -2328,6 +2471,7 @@ struct Index {
           .fontSize(12)
           .fontWeight(500)
           .fontColor(OpenBoardTheme.primaryText)
+          .accessibilityText('Clear all clipboard items')
       }
       .width(50)
       .height(34)
@@ -2342,14 +2486,16 @@ struct Index {
     }
   }
 
+
   build() {
     Stack() {
       Column() {}
       .width('100%')
       .height('100%')
       .hitTestBehavior(HitTestMode.None)
-      .backgroundColor(OpenBoardTheme.background)
+      .backgroundColor(OpenBoardTheme.keyboardBackground)
       .animation({ duration: 200 })
+      .accessibilityText('Background layer')  // Accessibility text for background
 
       Column() {
         // MAIN TOOLBAR - CONDITIONAL RENDERING
@@ -2374,9 +2520,10 @@ struct Index {
         .width('100%')
         .height(46)
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-        .backgroundColor(OpenBoardTheme.surface)
+        .backgroundColor(OpenBoardTheme.keyboardBackgroundSemi)
         .borderRadius(OpenBoardTheme.radiusMedium)
         .shadow(OpenBoardTheme.shadowPanel)
+        .accessibilityText('Input method toolbar')  // Accessibility text for toolbar
 
         // MAIN CONTENT
         if (this.showClipboardPanel) {
@@ -2425,21 +2572,25 @@ struct Index {
                         ignoreEventsUntil: this.ignoreKeysUntilTs
                       })
                         .layoutWeight(key.flex)
+                        .accessibilityText(this.getKeyAccessibilityText(key))  // Add accessibility text for the key
                     }
                   })
                 }
                 .width('100%')
                 .layoutWeight(1)
+                .accessibilityGroup(true)  // Group keys in each row for accessibility
               })
             }
             .width('100%')
             .height('100%')
+            .accessibilityText('Keyboard layout')  // Accessibility text for keyboard area
 
             Flex()
               .width('100%')
               .height('100%')
               .backgroundColor('transparent')
               .hitTestBehavior(HitTestMode.Transparent)
+              .accessibilityText('Swipe gesture area')  // Accessibility text for swipe area
               .onTouch((event) => {
                 const touch = event.touches[0];
                 if (!touch) return;
@@ -2481,10 +2632,12 @@ struct Index {
                     .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
                     .borderRadius(OpenBoardTheme.radiusMedium)
                     .shadow(this.emojiCategory === cat ? OpenBoardTheme.shadowKey : { radius: 0 })
+                    .accessibilityText(`Select ${cat} category`)
                     .onClick(() => { this.emojiCategory = cat; })
                 })
               }
               .padding({ left: 8, right: 8 })
+              .accessibilityText('Emoji categories')  // Accessibility text for categories
             }
 
             // Emoji
@@ -2496,6 +2649,7 @@ struct Index {
                     .textAlign(TextAlign.Center)
                     .width('11%')
                     .height(46)
+                    .accessibilityText(`Insert ${emoji}`)
                     .onClick(async () => {
                       keyboardController.insertText(emoji);
                       // Emoji is a boundary - don't add to currentWord
@@ -2506,6 +2660,7 @@ struct Index {
               }
               .width('100%')
               .padding({ left: 8, right: 8 })
+              .accessibilityText('Emoji selection')  // Accessibility text for emoji grid
             }
             .scrollable(ScrollDirection.Vertical)
             .scrollBar(BarState.On)
@@ -2515,22 +2670,25 @@ struct Index {
           }
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
+          .accessibilityText('Emoji panel')  // Accessibility text for emoji panel
         }
       }
       .alignSelf(ItemAlign.End)
-      .backgroundColor(OpenBoardTheme.background)
+      .backgroundColor(OpenBoardTheme.keyboardBackground)
 
       // Popups
       if (this.longPressInfo) {
         KeyPopup({ info: this.longPressInfo, hoveredChar: this.hoveredChar, keyWidth: this.popupKeyWidth })
           .position({ x: this.popupPosition.x, y: this.popupPosition.y })
           .zIndex(200)
+          .accessibilityText('Character alternatives')  // Accessibility text for key popup
       }
 
       if (this.singleCharPopupInfo) {
         SingleKeyPopup({ char: this.singleCharPopupInfo.char })
           .position({ x: this.singleCharPopupInfo.position.x - 25, y: this.singleCharPopupInfo.position.y - 70 })
           .zIndex(150)
+          .accessibilityText(`Preview character: ${this.singleCharPopupInfo.char}`)  // Accessibility text for single char popup
       }
 
       if (this.languageIndicatorOpacity > 0) {
@@ -2538,6 +2696,7 @@ struct Index {
           .opacity(this.languageIndicatorOpacity)
           .position({ x: (this.getScreenWidthVp() / 2) - 100, y: 150 })
           .zIndex(250)
+          .accessibilityText(`Current language: ${getLanguageName(this.currentLanguage)}`)  // Accessibility text for language indicator
       }
 
       // Voice interruption popup
@@ -2547,6 +2706,7 @@ struct Index {
           popupPosition: this.interruptionPopupPosition
         })
           .zIndex(300)
+          .accessibilityText(this.interruptionMessage)  // Accessibility text for interruption popup
       }
 
       // Swipe typing trail visualization (iOS-style: only trail, no text)
@@ -2554,6 +2714,7 @@ struct Index {
         Canvas(this.trailCanvasContext)
           .width('100%')
           .height('100%')
+          .accessibilityText('Swipe gesture trail')  // Accessibility text for swipe trail
           .onReady(() => {
             this.renderTrailPath();
           })

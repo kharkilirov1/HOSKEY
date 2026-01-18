@@ -5,14 +5,14 @@ import { resourceManager } from '@kit.LocalizationKit';
 import { util } from '@kit.ArkTS';
 import { BaseLexicon } from './BaseLexicon';
 import { Logger } from '../utils/logger';
-
+import nativeDictionary, { SuggestResult } from './NativeDictionary';
 
 // Debug mode flag - set to false for production
 const DEBUG_MODE = false; // Disabled for performance
 
 function debugLog(...args: string[]): void {
   if (DEBUG_MODE) {
-    console.info('[PredictionModel]', ...args);
+    console.info('[OptimizedPredictionModel]', ...args);
   }
 }
 
@@ -175,7 +175,11 @@ function generateRussianVerbForms(lemma: string): string[] {
   return [];
 }
 
-class PredictionModel {
+/**
+ * Optimized prediction model with BaseLexicon (50k words) + user learned words
+ * Supports intelligent learning, morphology, and context-aware predictions
+ */
+export class OptimizedPredictionModel {
   private models: Map<string, LangModel>; // User-learned models (mutable)
   private baseLexicons: Map<string, BaseLexicon>; // Base lexicons (50k words with binary search)
   private context: common.Context | null = null;
@@ -190,6 +194,9 @@ class PredictionModel {
 
   setContext(ctx: common.Context): void {
     this.context = ctx;
+
+    // Initialize native dictionary (C++ high-performance engine)
+    nativeDictionary.setContext(ctx);
 
     // Initialize base lexicons for languages that have lexicon files
     // BaseLexicon is OPTIONAL - predictions work without it via user model + pending words
@@ -242,8 +249,8 @@ class PredictionModel {
         debugLog(`BaseLexicon for '${lang}' loaded, words: ${stats.words}, cached: ${stats.cached}`);
       } catch (err) {
         const error = err as BusinessError;
-        console.error(`[PredictionModel] FAILED to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
-        console.warn(`PredictionModel: Continuing without BaseLexicon for '${lang}'. Predictions will use user model only.`);
+        console.error(`[OptimizedPredictionModel] FAILED to load BaseLexicon for '${lang}'. Code: ${error.code}, Msg: ${error.message}`);
+        console.warn(`OptimizedPredictionModel: Continuing without BaseLexicon for '${lang}'. Predictions will use user model only.`);
         // Don't throw - graceful fallback to user model only
       }
     }
@@ -263,7 +270,7 @@ class PredictionModel {
     });
 
     toUnload.forEach(lang => {
-      console.info(`PredictionModel: Unloading BaseLexicon for unused language '${lang}'`);
+      console.info(`OptimizedPredictionModel: Unloading BaseLexicon for unused language '${lang}'`);
       // Replace with fresh unloaded instance
       const lexicon = new BaseLexicon();
       if (this.context) {
@@ -273,31 +280,90 @@ class PredictionModel {
     });
 
     if (toUnload.length > 0) {
-      console.info(`PredictionModel: Unloaded ${toUnload.length} unused language(s)`);
+      console.info(`OptimizedPredictionModel: Unloaded ${toUnload.length} unused language(s)`);
     }
   }
 
   /**
-   * Preload/warmup BaseLexicon for active language
+   * Preload/warmup BaseLexicon and NativeDictionary for active language
    * Call this when keyboard starts or language switches to avoid delays during typing
    */
   async warmup(lang: string): Promise<void> {
+    // Load BaseLexicon (50k words, text-based)
     await this.ensureBaseLexiconLoaded(lang);
-    console.info(`PredictionModel: Warmup complete for language '${lang}'`);
+
+    // Initialize NativeDictionary (C++ high-performance, OpenBoard .dict format)
+    if (nativeDictionary.isNativeAvailable()) {
+      try {
+        const nativeLoaded = await nativeDictionary.initialize(lang);
+        if (nativeLoaded) {
+          const stats = nativeDictionary.getStats();
+          console.info(`OptimizedPredictionModel: NativeDictionary loaded for '${lang}', words: ${stats.wordCount}`);
+        } else {
+          console.warn(`OptimizedPredictionModel: NativeDictionary not available for '${lang}'`);
+        }
+      } catch (err) {
+        console.warn(`OptimizedPredictionModel: Failed to initialize NativeDictionary for '${lang}':`, err);
+      }
+    }
+
+    console.info(`OptimizedPredictionModel: Warmup complete for language '${lang}'`);
+  }
+
+  /**
+   * Check if word exists in base lexicon or native dictionary
+   * Returns false if neither is loaded yet (safe for sync calls from recordWord)
+   */
+  private isBaseWord(lang: string, word: string): boolean {
+    // Check BaseLexicon (50k words)
+    const lexicon = this.getBaseLexicon(lang);
+    if (lexicon && lexicon.isLoaded() && lexicon.contains(word)) {
+      return true;
+    }
+
+    // Check NativeDictionary (full .dict file, 200k+ words)
+    if (nativeDictionary.isDictionaryLoaded() && nativeDictionary.contains(word)) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
    * Check if word exists in base lexicon
-   * Returns false if BaseLexicon is not loaded yet (safe for sync calls from recordWord)
    */
-  private isBaseWord(lang: string, word: string): boolean {
+  private isInLexicon(lang: string, word: string): boolean {
+    return this.isBaseWord(lang, word);
+  }
+
+  /**
+   * Get frequency of a word from base lexicon or native dictionary
+   */
+  private getWordFrequency(lang: string, word: string): number {
+    // Try BaseLexicon first
     const lexicon = this.getBaseLexicon(lang);
-    if (!lexicon || !lexicon.isLoaded()) {
-      // BaseLexicon not loaded yet - treat word as unknown
-      // This is safe: warmup() should be called before user starts typing
-      return false;
+    if (lexicon && lexicon.isLoaded()) {
+      const freq = lexicon.getFrequency(word);
+      if (freq > 0) return freq;
     }
-    return lexicon.contains(word);
+
+    // Fallback to NativeDictionary
+    if (nativeDictionary.isDictionaryLoaded()) {
+      return nativeDictionary.getFrequency(word);
+    }
+
+    return 0;
+  }
+
+  /**
+   * Get words with prefix from base lexicon
+   */
+  private getWordsWithPrefix(lang: string, prefix: string, maxResults: number = 10): string[] {
+    const lexicon = this.getBaseLexicon(lang);
+    if (lexicon && lexicon.isLoaded()) {
+      return lexicon.findByPrefix(prefix, maxResults).map(entry => entry.word);
+    }
+    return [];
   }
 
   private ensure(lang: string): LangModel {
@@ -519,19 +585,16 @@ class PredictionModel {
       }
     });
 
-    // Check BaseLexicon (OPTIMIZED - limited pool, not full scan)
+    // Check base lexicon
     const baseLexicon = this.getBaseLexicon(lang);
-    if (baseLexicon && baseLexicon.isLoaded() && word.length > 0) {
-      // Strategy: Check words starting with same first letter (typically 1000-3000 words)
-      // Much faster than checking all 50k words
-      const candidatePool = baseLexicon.getWordsByFirstLetter(word[0]);
-
-      for (const baseWord of candidatePool) {
-        if (baseWord === word || baseLexicon.isBlocked(baseWord) || m.blockedWords.has(baseWord)) continue;
+    if (baseLexicon && baseLexicon.isLoaded()) {
+      const candidateWords = this.getWordsWithPrefix(lang, word[0]?.toLowerCase() || '', 1000);
+      for (const baseWord of candidateWords) {
+        if (baseWord === word) continue;
         if (Math.abs(baseWord.length - word.length) > threshold) continue;
 
         const distance = this.levenshteinDistance(word, baseWord, threshold);
-        const rank = baseLexicon.getFrequency(baseWord);
+        const rank = this.getWordFrequency(lang, baseWord);
 
         if (distance < bestDistance || (distance === bestDistance && rank > bestRank)) {
           bestDistance = distance;
@@ -935,7 +998,7 @@ class PredictionModel {
     return sentenceEnders.includes(prevWord);
   }
 
-  // Find best autocorrection candidate (optimized for 50k base lexicon)
+  // Find best autocorrection candidate (optimized for large dictionaries)
   async findAutocorrection(lang: string, word: string): Promise<string | null> {
     if (!word || word.length < 2) return null;
 
@@ -946,10 +1009,10 @@ class PredictionModel {
     await this.ensureBaseLexiconLoaded(lang);
     const baseLexicon = this.getBaseLexicon(lang);
 
-    // Don't autocorrect if word is already learned OR in base dictionary
-    if (this.isWordLearned(m, wordLower) || this.isBaseWord(lang, wordLower)) return null;
+    // Don't autocorrect if word is already learned OR in base lexicon
+    if (this.isWordLearned(m, wordLower) || this.isInLexicon(lang, wordLower)) return null;
 
-    // Find similar word from user learned words OR base lexicon
+    // Find similar word from user learned words OR base dictionary
     const threshold = Math.min(2, Math.floor(word.length * 0.3));
     let bestMatch: string | null = null;
     let bestDistance = threshold + 1;
@@ -972,7 +1035,7 @@ class PredictionModel {
       }
     });
 
-    // Priority 2: Check BaseLexicon (OPTIMIZED - limited pool, not O(50k))
+    // Priority 2: Check base lexicon
     if (baseLexicon && baseLexicon.isLoaded()) {
       // Strategy: Only check top 2000 frequent words to avoid O(50k) Levenshtein
       // This covers 95%+ of real-world autocorrect cases with 25x speedup
@@ -994,6 +1057,22 @@ class PredictionModel {
       }
     }
 
+    // Priority 3: Use NativeDictionary autocorrection (C++ with proximity awareness)
+    if (!bestMatch && nativeDictionary.isDictionaryLoaded()) {
+      try {
+        const nativeCorrection = nativeDictionary.findAutocorrection(wordLower);
+        if (nativeCorrection && nativeCorrection.score > 0.185) {
+          // Native found a good correction
+          bestMatch = nativeCorrection.word;
+          bestRank = nativeCorrection.score * 100; // Normalize score
+          bestDistance = 1; // Native corrections are usually within 1-2 edits
+          debugLog(`NativeDictionary autocorrection: "${wordLower}" -> "${nativeCorrection.word}" (score: ${nativeCorrection.score})`);
+        }
+      } catch (err) {
+        debugLog(`NativeDictionary autocorrection error: ${err}`);
+      }
+    }
+
     // Only return correction if it's a common word (rank > 5)
     if (bestMatch && bestDistance <= threshold && bestRank > 5) {
       // Apply original capitalization to the correction
@@ -1005,6 +1084,7 @@ class PredictionModel {
 
   /**
    * IMPROVED PREDICTION ENGINE
+   * - Optimized dictionary support for 9.5M wordforms
    * - BaseLexicon optional (works without it)
    * - Pending words support with smart thresholds
    * - Preserved Russian morphology expansion
@@ -1012,7 +1092,7 @@ class PredictionModel {
    * - Anti-garbage filtering
    */
   async predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): Promise<string[]> {
-    debugLog(`=== PREDICT START ===`);
+    debugLog(`=== OPTIMIZED PREDICT START ===`);
     debugLog(`Lang: ${lang}, Prefix: "${prefix}", Prev: "${prev}", Prev2: "${prev2}", k: ${k}`);
 
     const m = this.ensure(lang);
@@ -1105,7 +1185,7 @@ class PredictionModel {
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
             const isPending = !m.uni.has(word) && m.pendingWords.has(word);
-            const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+            const baseFreq = this.getWordFrequency(lang, word) || (baseLexicon?.getFrequency(word) ?? 0);
 
             // For context: allow pending >= PENDING_CONTEXT_THRESHOLD
             if (!isPending || (m.pendingWords.get(word) ?? 0) >= PredictionConfig.PENDING_CONTEXT_THRESHOLD) {
@@ -1138,7 +1218,7 @@ class PredictionModel {
           if (matchesPrefix(word)) {
             const wordCount = m.uni.get(word) ?? m.pendingWords.get(word) ?? 0;
             const isPending = !m.uni.has(word) && m.pendingWords.has(word);
-            const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+            const baseFreq = this.getWordFrequency(lang, word) || (baseLexicon?.getFrequency(word) ?? 0);
 
             // For context: allow pending >= PENDING_CONTEXT_THRESHOLD
             if (!isPending || (m.pendingWords.get(word) ?? 0) >= PredictionConfig.PENDING_CONTEXT_THRESHOLD) {
@@ -1167,7 +1247,7 @@ class PredictionModel {
       const count = entry[1];
 
       if (count >= PredictionConfig.LEARN_THRESHOLD && matchesPrefix(word)) {
-        const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+        const baseFreq = this.getWordFrequency(lang, word) || (baseLexicon?.getFrequency(word) ?? 0);
         const score = calculateScore(word, 0, count, false, baseFreq);
         addCandidate(word, count, score);
         source3Count++;
@@ -1195,7 +1275,7 @@ class PredictionModel {
           : PredictionConfig.PENDING_CONTEXT_THRESHOLD;
 
         if (count >= threshold) {
-          const baseFreq = baseLexicon?.getFrequency(word) ?? 0;
+          const baseFreq = this.getWordFrequency(lang, word) || (baseLexicon?.getFrequency(word) ?? 0);
           const score = calculateScore(word, 0, count, true, baseFreq);
           addCandidate(word, count, score);
           source4Count++;
@@ -1204,10 +1284,10 @@ class PredictionModel {
     }
     debugLog(`SOURCE 4: Added ${source4Count} candidates (checked ${source4Checked}). Total: ${candidates.size}`);
 
-    // SOURCE 5: BaseLexicon (if available) - skip if we already have enough high-quality candidates
-    debugLog(`SOURCE 5: BaseLexicon`);
+    // SOURCE 5: Base lexicon
+    debugLog(`SOURCE 5: Base lexicon`);
     let source5Count = 0;
-    const enoughCandidates = candidates.size >= k * 3; // Early exit: skip BaseLexicon if we have 3x needed candidates
+    const enoughCandidates = candidates.size >= k * 3; // Early exit: skip if we have 3x needed candidates
     if (!enoughCandidates && baseLexicon && baseLexicon.isLoaded()) {
       if (hasPrefix) {
         // Prefix search (fast O(log n))
@@ -1229,34 +1309,33 @@ class PredictionModel {
           source5Count++;
         }
       }
-    } else {
-      debugLog(`  BaseLexicon not available or not loaded`);
     }
     debugLog(`SOURCE 5: Added ${source5Count} candidates. Total: ${candidates.size}`);
 
-    // SOURCE 5.5: Generate Russian verb forms from BaseLexicon lemmas (morphological expansion)
+    // SOURCE 5.5: Generate Russian verb forms from base lexicon lemmas (morphological expansion)
     // Only when we have prefix and need more candidates
     debugLog(`SOURCE 5.5: Russian verb forms generation`);
     let source5_5Count = 0;
     if (lang === 'ru' && hasPrefix && candidates.size < k * 2 && baseLexicon && baseLexicon.isLoaded()) {
       // Get broader lemma pool using shorter prefix for better coverage
       const searchPrefix = prefixLower.substring(0, Math.min(3, prefixLower.length));
-      const lemmaPool = baseLexicon.findByPrefix(searchPrefix, 200); // Limit to 200 lemmas
-      debugLog(`  Checking ${lemmaPool.length} lemmas from BaseLexicon with prefix "${searchPrefix}"`);
+
+      // Get lemmas from base lexicon
+      const lemmaPool = baseLexicon.findByPrefix(searchPrefix, 200).map(entry => entry.word);
+
+      debugLog(`  Checking ${lemmaPool.length} lemmas from base lexicon with prefix "${searchPrefix}"`);
 
       const generatedWords = new Set<string>(); // Track generated words to avoid duplicates
       let lemmasProcessed = 0;
       const MAX_LEMMAS_TO_PROCESS = 200;
       const MAX_FORMS_PER_LEMMA = 6;
 
-      for (const entry of lemmaPool) {
+      for (const lemma of lemmaPool) {
         if (lemmasProcessed >= MAX_LEMMAS_TO_PROCESS) break;
         lemmasProcessed++;
 
-        const lemma = entry.word;
-
         // Skip if lemma is blocked
-        if (baseLexicon.isBlocked(lemma) || m.blockedWords.has(lemma)) {
+        if ((baseLexicon && baseLexicon.isBlocked(lemma)) || m.blockedWords.has(lemma)) {
           continue;
         }
 
@@ -1271,9 +1350,9 @@ class PredictionModel {
           // Only add forms that match the full prefix and aren't already candidates
           if (form.startsWith(prefixLower) && !candidates.has(form) && !generatedWords.has(form)) {
             // Check if form is not blocked
-            if (!baseLexicon.isBlocked(form) && !m.blockedWords.has(form)) {
+            if (!((baseLexicon && baseLexicon.isBlocked(form)) && !m.blockedWords.has(form))) {
               // Score: use lemma frequency * 0.7 to make them competitive but not dominant
-              const lemmaFreq = entry.freq;
+              const lemmaFreq = this.getWordFrequency(lang, lemma) || (baseLexicon?.getFrequency(lemma) ?? 0);
               const score = calculateScore(form, 0, 0, false, lemmaFreq) * 0.7;
 
               addCandidate(form, 0, score);
@@ -1291,6 +1370,37 @@ class PredictionModel {
     } else {
       debugLog(`  Skipping verb generation: lang=${lang}, hasPrefix=${hasPrefix}, candidates=${candidates.size}`);
     }
+
+    // SOURCE 6: NativeDictionary (C++ high-performance, OpenBoard .dict format)
+    // Provides 200k+ words with proximity-aware suggestions
+    debugLog(`SOURCE 6: NativeDictionary`);
+    let source6Count = 0;
+    const needMoreCandidates = candidates.size < k * 3;
+    if (needMoreCandidates && nativeDictionary.isDictionaryLoaded() && hasPrefix) {
+      try {
+        // Get suggestions from native C++ engine
+        const nativeSuggestions = nativeDictionary.getSuggestions(prefixLower, k * 3);
+        debugLog(`  NativeDictionary returned ${nativeSuggestions.length} suggestions for "${prefixLower}"`);
+
+        for (const suggestion of nativeSuggestions) {
+          if (!candidates.has(suggestion.word)) {
+            // Native score is normalized, multiply by BASE_WEIGHT for consistency
+            const nativeScore = suggestion.score * PredictionConfig.SCORE_BASE_WEIGHT;
+            const prefixBoost = PredictionConfig.calculatePrefixBoost(suggestion.word, prefixLower);
+            const totalScore = nativeScore + prefixBoost;
+
+            addCandidate(suggestion.word, 0, totalScore);
+            source6Count++;
+            debugLog(`    Native: "${suggestion.word}" (nativeScore: ${suggestion.score.toFixed(1)}, total: ${totalScore.toFixed(1)})`);
+          }
+        }
+      } catch (err) {
+        debugLog(`  NativeDictionary error: ${err}`);
+      }
+    } else if (!nativeDictionary.isDictionaryLoaded()) {
+      debugLog(`  NativeDictionary not loaded, skipping`);
+    }
+    debugLog(`SOURCE 6: Added ${source6Count} candidates. Total: ${candidates.size}`);
 
     // Convert to array for sorting
     let list: RankedWord[] = Array.from(candidates.values());
@@ -1319,7 +1429,7 @@ class PredictionModel {
               if (matchesPrefix(form) && !expandedWords.has(form)) {
                 const formCount = m.uni.get(form) ?? 0;
                 if (formCount >= PredictionConfig.LEARN_THRESHOLD) {
-                  const baseFreq = baseLexicon?.getFrequency(form) ?? 0;
+                  const baseFreq = this.getWordFrequency(lang, form) || (baseLexicon?.getFrequency(form) ?? 0);
                   const morphScore = calculateScore(form, 0, formCount, false, baseFreq) * PredictionConfig.SCORE_MORPHOLOGY_WEIGHT;
                   expandedList.push({ w: form, c: formCount, score: morphScore });
                   expandedWords.add(form); // Add to Set for O(1) duplicate checking
@@ -1372,7 +1482,7 @@ class PredictionModel {
       out.push('');
     }
 
-    debugLog(`=== PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
+    debugLog(`=== OPTIMIZED PREDICT END === Result: [${out.map(x => `"${x}"`).join(', ')}]`);
     return out;
   }
 
@@ -1696,9 +1806,6 @@ class PredictionModel {
   }
 }
 
-// Export the class itself for type annotations
-export { PredictionModel };
-
 // Export default instance
-const predictionModel = new PredictionModel();
-export default predictionModel;
+const optimizedPredictionModel = new OptimizedPredictionModel();
+export default optimizedPredictionModel;

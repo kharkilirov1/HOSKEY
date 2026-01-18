@@ -29,6 +29,9 @@ export class HarmonyTextClientAdapter implements ITextClientAdapter {
   /**
    * Insert text at cursor - FAST PATH
    */
+  /**
+   * @throws
+   */
   insertText(text: string): void {
     if (!this.client) {
       return;
@@ -42,6 +45,9 @@ export class HarmonyTextClientAdapter implements ITextClientAdapter {
 
   /**
    * Delete N characters backward - FAST PATH
+   */
+  /**
+   * @throws
    */
   deleteBackward(count: number = 1): void {
     if (!this.client) {
@@ -58,12 +64,16 @@ export class HarmonyTextClientAdapter implements ITextClientAdapter {
   /**
    * Send Enter key - FAST PATH
    */
+  /**
+   * @throws
+   */
   sendEnter(): void {
     if (!this.client) {
       return;
     }
     try {
-      this.client.sendKeyFunction(inputMethodEngine.KeyboardKeyFunction.ENTER_KEY);
+      this.client.sendKeyFunction(17); // 17 is the key code for ENTER
+
     } catch {
       // Silent catch for ArkTS compliance - hot path optimization
     }

@@ -1,4 +1,4 @@
-import { display } from '@kit.ArkUI';
+ import { display } from '@kit.ArkUI';
 import { inputMethodEngine, InputMethodExtensionContext } from '@kit.IMEKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -115,13 +115,13 @@ export class KeyboardController {
 
   public deleteBeforeCursor(length: number = 1): void {
     if (length <= 0) return;
-    // HarmonyOS: deleteForward removes text before cursor.
+    // HarmonyOS: deleteForward removes text BEFORE cursor (opposite naming!)
     this.deleteForward(length);
   }
 
   public deleteAfterCursor(length: number = 1): void {
     if (length <= 0) return;
-    // HarmonyOS: deleteBackward removes text after cursor.
+    // HarmonyOS: deleteBackward removes text AFTER cursor (opposite naming!)
     this.deleteBackward(length);
   }
 
@@ -182,11 +182,11 @@ export class KeyboardController {
   }
 
   private updateCacheOnDeleteForward(length: number): void {
-    this.updateCacheOnDeleteBeforeCursor(length);
+    this.updateCacheOnDeleteAfterCursor(length);
   }
 
   private updateCacheOnDeleteBackward(length: number): void {
-    this.updateCacheOnDeleteAfterCursor(length);
+    this.updateCacheOnDeleteBeforeCursor(length);
   }
 
   private updateCacheOnDeleteBeforeCursor(length: number): void {

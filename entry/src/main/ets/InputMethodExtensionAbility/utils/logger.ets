@@ -1,21 +1,31 @@
+import { ILogger } from './ILogger';
+
 /**
  * Centralized logging utility with debug flag control
  * Use this instead of console.info for non-critical logs
+ * ArkTS-compliant implementation
  */
 
 // Set to true for verbose debug logging, false for production
-const DEBUG = false;
+const DEBUG: boolean = false;
 
 /**
- * Logger class for conditional logging
+ * Logger class for conditional logging with prefix support
  */
-class LoggerImpl {
+export class Logger implements ILogger {
+  private prefix: string;
+
+  constructor(prefix: string = '') {
+    this.prefix = prefix;
+  }
+
   /**
    * Auto-capitalization debug logs (only when DEBUG=true)
    */
   autocap(message: string, ...args: string[]): void {
     if (DEBUG) {
-      console.info('[AutoCap]', message, ...args);
+      const fullMessage: string = this.prefix ? `[${this.prefix}][AutoCap] ${message}` : `[AutoCap] ${message}`;
+      console.info(fullMessage, ...args);
     }
   }
 
@@ -24,7 +34,8 @@ class LoggerImpl {
    */
   prediction(message: string): void {
     if (DEBUG) {
-      console.info('[Prediction]', message);
+      const fullMessage: string = this.prefix ? `[${this.prefix}][Prediction] ${message}` : `[Prediction] ${message}`;
+      console.info(fullMessage);
     }
   }
 
@@ -32,31 +43,32 @@ class LoggerImpl {
    * General info logs - use sparingly, only for important events
    */
   info(message: string): void {
-    console.info(message);
+    const fullMessage: string = this.prefix ? `[${this.prefix}] ${message}` : message;
+    console.info(fullMessage);
   }
 
   /**
    * Warning logs - always shown
    */
-  warn(message: string, error?: Error | Object): void {
+  warn(message: string, error?: Error): void {
+    const fullMessage: string = this.prefix ? `[${this.prefix}] ${message}` : message;
     if (error) {
-      console.warn(message, error);
+      console.warn(fullMessage, error);
     } else {
-      console.warn(message);
+      console.warn(fullMessage);
     }
   }
 
   /**
    * Error logs - always shown
    */
-  error(message: string, error?: Error | Object): void {
+  error(message: string, error?: Error): void {
+    const fullMessage: string = this.prefix ? `[${this.prefix}] ${message}` : message;
     if (error) {
-      console.error(message, error);
+      console.error(fullMessage, error);
     } else {
-      console.error(message);
+      console.error(fullMessage);
     }
   }
 }
-
-export const Logger = new LoggerImpl();
 

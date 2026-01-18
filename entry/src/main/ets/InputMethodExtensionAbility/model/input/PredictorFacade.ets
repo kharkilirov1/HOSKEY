@@ -14,7 +14,9 @@
  */
 
 import { IPredictor } from './InputTypes';
-import { PredictionModel } from '../PredictionModel';
+import { PredictionModel } from '../PredictionModel';  // Named import for the class type
+
+
 import { SwipeEngine } from '../SwipeEngine';
 import { LRUCache } from '../LRUCache';
 
@@ -26,13 +28,18 @@ function makeCacheKey(lang: string, prevWord: string, token: string): string {
   return `${lang}:${prevWord}:${token}`;
 }
 
+interface GeneratedTypeLiteralInterface_1 {
+  size: number;
+  hits: number;
+  misses: number;
+  hitRate: number;
+}
+
 export class PredictorFacade implements IPredictor {
   private predictionModel: PredictionModel;
   private swipeEngine: SwipeEngine;
-
   // LRU cache for predictions: key → string[]
   private predictionCache: LRUCache<string, string[]>;
-
   // Performance tracking
   private cacheHits: number = 0;
   private cacheMisses: number = 0;
@@ -72,36 +79,28 @@ export class PredictorFacade implements IPredictor {
 
     if (cached !== undefined) {
       this.cacheHits++;
-      return cached;
+      return cached || [];
     }
 
     this.cacheMisses++;
 
-    // Cache miss - compute predictions
-    // Wrap synchronous predict() in Promise to make it async
-    return new Promise<string[]>((resolve) => {
-      try {
-        // Call existing PredictionModel.predict()
-        // NOTE: This is currently synchronous but we're wrapping it to:
-        // 1. Match IPredictor interface
-        // 2. Allow future optimization to move to worker thread
-        // 3. Enable async caching layer
-        const predictions = this.predictionModel.predict(
-          lang,
-          normalizedPrev,
-          normalizedToken,
-          maxResults
-        );
+    try {
+      // Call existing PredictionModel.predict() - it returns a Promise<string[]>
+      const predictions: string[] = await this.predictionModel.predict(
+        lang,
+        normalizedPrev,
+        normalizedToken,
+        maxResults
+      );
 
-        // Store in cache
-        this.predictionCache.set(cacheKey, predictions);
+      // Store in cache
+      this.predictionCache.set(cacheKey, predictions);
 
-        resolve(predictions);
-      } catch (err) {
-        console.error('[PredictorFacade] Prediction error:', err);
-        resolve([]);
-      }
-    });
+      return predictions;
+    } catch (err) {
+      console.error('[PredictorFacade] Prediction error:', err);
+      return [];
+    }
   }
 
   /**
@@ -117,22 +116,20 @@ export class PredictorFacade implements IPredictor {
     keyPath: string[],
     prevWord: string
   ): Promise<string[]> {
-    return new Promise<string[]>((resolve) => {
-      try {
-        // For now, use basic decoding without context
-        // TODO: Add prevWord bigram boost in ranking
+    try {
+      // For now, use basic decoding without context
+      // TODO: Add prevWord bigram boost in ranking
 
-        // Use existing SwipeEngine.getCandidates equivalent
-        // Or BaseLexicon prefix search + filtering
+      // Use existing SwipeEngine.getCandidates equivalent
+      // Or BaseLexicon prefix search + filtering
 
-        // Placeholder: Return empty until SwipeEngine integration complete
-        // This will be implemented in next commit
-        resolve([]);
-      } catch (err) {
-        console.error('[PredictorFacade] Swipe decode error:', err);
-        resolve([]);
-      }
-    });
+      // Placeholder: Return empty until SwipeEngine integration complete
+      // This will be implemented in next commit
+      return [];
+    } catch (err) {
+      console.error('[PredictorFacade] Swipe decode error:', err);
+      return [];
+    }
   }
 
   /**
@@ -147,17 +144,13 @@ export class PredictorFacade implements IPredictor {
   /**
    * Get cache statistics (for debugging/monitoring)
    */
-  getCacheStats(): {
-    size: number;
-    hits: number;
-    misses: number;
-    hitRate: number;
-  } {
+  getCacheStats(): GeneratedTypeLiteralInterface_1 {
     const totalRequests = this.cacheHits + this.cacheMisses;
     const hitRate = totalRequests > 0 ? this.cacheHits / totalRequests : 0;
 
     return {
-      size: this.predictionCache.size(),
+      size: this.predictionCache.getSize(),
+
       hits: this.cacheHits,
       misses: this.cacheMisses,
       hitRate: Math.round(hitRate * 100) / 100

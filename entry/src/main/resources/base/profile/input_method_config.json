@@ -1,0 +1,16 @@
+{
+  "subtypes": [
+    {
+      "label": "$string:russian_keyboard",
+      "locale": "ru-RU",
+      "mode": "upper",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:english_keyboard",
+      "locale": "en-US",
+      "mode": "upper",
+      "icon": "$media:layered_image"
+    }
+  ]
+}
