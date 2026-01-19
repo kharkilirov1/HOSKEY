@@ -17,11 +17,13 @@
 #include "dictionary/suggest_engine.h"
 #include "scoring/scoring_params.h"
 #include "proximity/proximity_info.h"
+#include "swipe/swipe_engine.h"
 
 // Global instances
 static std::unique_ptr<hoskey::Trie> g_trie;
 static std::unique_ptr<hoskey::SuggestEngine> g_suggestEngine;
 static std::unique_ptr<hoskey::ProximityInfo> g_proximityInfo;
+static std::unique_ptr<hoskey::SwipeEngine> g_swipeEngine;
 
 // Helper: Convert napi_value string to std::string
 static std::string NapiValueToString(napi_env env, napi_value value) {
@@ -260,10 +262,179 @@ static napi_value GetStats(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * setSwipeKeyboardLayout(keys: Array<{key: string, centerX: number, centerY: number, width: number, height: number}>): boolean
+ * Set keyboard layout for swipe recognition
+ */
+static napi_value SetSwipeKeyboardLayout(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    // Initialize swipe engine if needed
+    if (!g_swipeEngine) {
+        g_swipeEngine = std::make_unique<hoskey::SwipeEngine>();
+        if (g_trie) {
+            g_swipeEngine->setDictionary(g_trie.get());
+        }
+        if (g_proximityInfo) {
+            g_swipeEngine->setProximityInfo(g_proximityInfo.get());
+        }
+    }
+
+    // Parse array of key bounds
+    bool isArray = false;
+    napi_is_array(env, args[0], &isArray);
+
+    if (!isArray) {
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    uint32_t length = 0;
+    napi_get_array_length(env, args[0], &length);
+
+    std::vector<hoskey::KeyBounds> layout;
+    layout.reserve(length);
+
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value element;
+        napi_get_element(env, args[0], i, &element);
+
+        // Get properties
+        napi_value keyValue, centerXValue, centerYValue, widthValue, heightValue;
+
+        napi_get_named_property(env, element, "key", &keyValue);
+        napi_get_named_property(env, element, "centerX", &centerXValue);
+        napi_get_named_property(env, element, "centerY", &centerYValue);
+        napi_get_named_property(env, element, "width", &widthValue);
+        napi_get_named_property(env, element, "height", &heightValue);
+
+        // Extract values
+        std::string key = NapiValueToString(env, keyValue);
+        double centerX = 0, centerY = 0, width = 0, height = 0;
+
+        napi_get_value_double(env, centerXValue, &centerX);
+        napi_get_value_double(env, centerYValue, &centerY);
+        napi_get_value_double(env, widthValue, &width);
+        napi_get_value_double(env, heightValue, &height);
+
+        if (!key.empty()) {
+            hoskey::KeyBounds bounds(key[0], centerX, centerY, width, height);
+            layout.push_back(bounds);
+        }
+    }
+
+    g_swipeEngine->setKeyboardLayout(layout);
+
+    napi_value result;
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+/**
+ * processSwipePath(points: Array<{x: number, y: number, timestamp: number}>): {bestWord: string, alternatives: string[], confidence: number, rawSequence: string} | null
+ * Process swipe path and return recognized word
+ */
+static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1 || !g_swipeEngine) {
+        napi_value result;
+        napi_get_null(env, &result);
+        return result;
+    }
+
+    // Parse array of points
+    bool isArray = false;
+    napi_is_array(env, args[0], &isArray);
+
+    if (!isArray) {
+        napi_value result;
+        napi_get_null(env, &result);
+        return result;
+    }
+
+    uint32_t length = 0;
+    napi_get_array_length(env, args[0], &length);
+
+    std::vector<hoskey::SwipePoint> path;
+    path.reserve(length);
+
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value element;
+        napi_get_element(env, args[0], i, &element);
+
+        // Get properties
+        napi_value xValue, yValue, tsValue;
+
+        napi_get_named_property(env, element, "x", &xValue);
+        napi_get_named_property(env, element, "y", &yValue);
+        napi_get_named_property(env, element, "timestamp", &tsValue);
+
+        // Extract values
+        double x = 0, y = 0;
+        int64_t ts = 0;
+
+        napi_get_value_double(env, xValue, &x);
+        napi_get_value_double(env, yValue, &y);
+        napi_get_value_int64(env, tsValue, &ts);
+
+        path.emplace_back(x, y, ts);
+    }
+
+    // Process swipe
+    hoskey::SwipeResult result = g_swipeEngine->processSwipe(path);
+
+    if (result.bestWord.empty()) {
+        napi_value nullResult;
+        napi_get_null(env, &nullResult);
+        return nullResult;
+    }
+
+    // Build result object
+    napi_value obj;
+    napi_create_object(env, &obj);
+
+    // bestWord
+    napi_value bestWordValue = StringToNapiValue(env, result.bestWord);
+    napi_set_named_property(env, obj, "bestWord", bestWordValue);
+
+    // alternatives
+    napi_value alternatives;
+    napi_create_array_with_length(env, result.alternatives.size(), &alternatives);
+    for (size_t i = 0; i < result.alternatives.size(); i++) {
+        napi_value alt = StringToNapiValue(env, result.alternatives[i]);
+        napi_set_element(env, alternatives, i, alt);
+    }
+    napi_set_named_property(env, obj, "alternatives", alternatives);
+
+    // confidence
+    napi_value confidenceValue;
+    napi_create_double(env, result.confidence, &confidenceValue);
+    napi_set_named_property(env, obj, "confidence", confidenceValue);
+
+    // rawSequence
+    napi_value rawSeqValue = StringToNapiValue(env, result.rawSequence);
+    napi_set_named_property(env, obj, "rawSequence", rawSeqValue);
+
+    return obj;
+}
+
+/**
  * unload(): void
  * Unload dictionary and free memory
  */
 static napi_value Unload(napi_env env, napi_callback_info info) {
+    g_swipeEngine.reset();
     g_suggestEngine.reset();
     g_trie.reset();
     g_proximityInfo.reset();
@@ -284,6 +455,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         { "findAutocorrection", nullptr, FindAutocorrection, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setProximityInfo", nullptr, SetProximityInfo, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setSwipeKeyboardLayout", nullptr, SetSwipeKeyboardLayout, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "processSwipePath", nullptr, ProcessSwipePath, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "unload", nullptr, Unload, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
 

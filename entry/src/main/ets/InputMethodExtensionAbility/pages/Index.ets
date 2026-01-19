@@ -15,6 +15,7 @@ import {
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import optimizedPredictionModel from '../model/OptimizedPredictionModel';
+import nativeDictionary from '../model/NativeDictionary';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
@@ -901,7 +902,25 @@ struct Index {
 
   private updateSwipeEngineLayout(): void {
     const keyBounds = Array.from(this.keyBoundsMap.values());
+
+    // Update ETS swipe engine (fallback)
     swipeEngine.setKeyboardLayout(keyBounds);
+
+    // Update native swipe engine if available
+    if (nativeDictionary.isNativeAvailable()) {
+      try {
+        const nativeBounds = keyBounds.map(kb => ({
+          key: kb.key,
+          centerX: kb.centerX,
+          centerY: kb.centerY,
+          width: kb.width,
+          height: kb.height
+        }));
+        nativeDictionary.setSwipeKeyboardLayout(nativeBounds);
+      } catch (err) {
+        console.error('[Swipe] Failed to set native keyboard layout:', err);
+      }
+    }
   }
 
   private isSwipeLayoutReady(): boolean {
@@ -1093,7 +1112,40 @@ struct Index {
     }
 
     this.updateSwipeEngineLayout();
-    const result = swipeEngine.processSwipe(this.swipePath);
+
+    // Try native swipe engine first, fallback to ETS if unavailable
+    let result: SwipeResult | null = null;
+
+    if (nativeDictionary.isNativeAvailable() && nativeDictionary.isDictionaryLoaded()) {
+      try {
+        const nativePoints = this.swipePath.map(p => ({
+          x: p.x,
+          y: p.y,
+          timestamp: p.timestamp
+        }));
+
+        const nativeResult = nativeDictionary.processSwipePath(nativePoints);
+
+        if (nativeResult) {
+          // Convert native result to SwipeResult format
+          result = {
+            bestWord: nativeResult.bestWord,
+            alternatives: nativeResult.alternatives,
+            confidence: nativeResult.confidence,
+            rawSequence: nativeResult.rawSequence
+          };
+          console.info('[Swipe] Native swipe processed:', result.bestWord);
+        }
+      } catch (err) {
+        console.error('[Swipe] Native swipe failed, falling back to ETS:', err);
+      }
+    }
+
+    // Fallback to ETS swipe engine if native failed or unavailable
+    if (!result) {
+      result = swipeEngine.processSwipe(this.swipePath);
+      console.info('[Swipe] ETS swipe processed:', result?.bestWord || 'null');
+    }
 
     if (result && result.bestWord) {
       let word = result.bestWord;

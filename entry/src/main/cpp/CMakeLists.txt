@@ -17,6 +17,7 @@ include_directories(
     ${NATIVE_ROOT_PATH}/dictionary
     ${NATIVE_ROOT_PATH}/scoring
     ${NATIVE_ROOT_PATH}/proximity
+    ${NATIVE_ROOT_PATH}/swipe
 )
 
 # Source files - Dictionary Engine
@@ -40,6 +41,11 @@ set(PROXIMITY_SOURCES
     proximity/keyboard_layout.cpp
 )
 
+# Source files - Swipe Engine
+set(SWIPE_SOURCES
+    swipe/swipe_engine.cpp
+)
+
 # Main NAPI entry
 set(NAPI_SOURCES
     napi_init.cpp
@@ -51,6 +57,7 @@ add_library(native_dict SHARED
     ${DICTIONARY_SOURCES}
     ${SCORING_SOURCES}
     ${PROXIMITY_SOURCES}
+    ${SWIPE_SOURCES}
 )
 
 # Link with HarmonyOS NAPI - using the correct library name

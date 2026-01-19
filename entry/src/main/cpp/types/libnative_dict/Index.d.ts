@@ -90,3 +90,32 @@ export function getStats(): DictStats;
  * Unload dictionary and free memory
  */
 export function unload(): void;
+
+/**
+ * Set keyboard layout for swipe recognition
+ * @param keys - Array of key bounds {key: string, centerX: number, centerY: number, width: number, height: number}
+ * @returns true if set successfully
+ */
+export function setSwipeKeyboardLayout(keys: Array<{
+  key: string;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+}>): boolean;
+
+/**
+ * Process swipe path and return recognized word
+ * @param points - Array of touch points {x: number, y: number, timestamp: number}
+ * @returns Swipe result or null if invalid
+ */
+export function processSwipePath(points: Array<{
+  x: number;
+  y: number;
+  timestamp: number;
+}>): {
+  bestWord: string;
+  alternatives: string[];
+  confidence: number;
+  rawSequence: string;
+} | null;
