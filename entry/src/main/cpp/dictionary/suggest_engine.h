@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 #include "trie.h"
-#include "../scoring/scoring_params.h"
+#include "scoring_params.h"
 
 namespace hoskey {
 

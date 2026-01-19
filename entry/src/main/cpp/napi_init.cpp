@@ -20,15 +20,6 @@
 #include "dictionary/trie.h"
 #include "dictionary/suggest_engine.h"
 
-// OpenBoard suggest engine
-#include "suggest/core/suggest.h"
-#include "suggest/core/suggest_options.h"
-#include "suggest/core/session/dic_traverse_session.h"
-#include "suggest/core/layout/proximity_info.h"
-#include "suggest/core/result/suggestion_results.h"
-#include "suggest/policyimpl/gesture/gesture_suggest_policy_factory.h"
-#include "dictionary_openboard/interface/dictionary_structure_with_buffer_policy.h"
-
 // Keyboard layout for NAPI swipe
 struct KeyBounds {
     std::string key;
@@ -41,11 +32,6 @@ static std::vector<KeyBounds> g_keyboardLayout;
 // Global instances
 static std::unique_ptr<hoskey::Trie> g_trie;
 static std::unique_ptr<hoskey::SuggestEngine> g_suggestEngine;
-
-// OpenBoard suggest engine instances (TODO: full JNI-free integration)
-static std::unique_ptr<latinime::Suggest> g_openboardSuggest;
-static std::unique_ptr<latinime::DicTraverseSession> g_traverseSession;
-static std::unique_ptr<latinime::ProximityInfo> g_proximityInfo;
 
 // Helper: Convert napi_value string to std::string
 static std::string NapiValueToString(napi_env env, napi_value value) {
@@ -566,11 +552,6 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
 static napi_value Unload(napi_env env, napi_callback_info info) {
     // Clean up keyboard layout
     g_keyboardLayout.clear();
-
-    // Clean up OpenBoard instances
-    g_openboardSuggest.reset();
-    g_traverseSession.reset();
-    g_proximityInfo.reset();
 
     // Clean up dictionary instances
     g_suggestEngine.reset();
