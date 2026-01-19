@@ -15,6 +15,7 @@ set(NATIVE_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(
     ${NATIVE_ROOT_PATH}
     ${NATIVE_ROOT_PATH}/dictionary
+    ${NATIVE_ROOT_PATH}/dictionary_openboard
     ${NATIVE_ROOT_PATH}/suggest/core
     ${NATIVE_ROOT_PATH}/suggest/policyimpl
     ${NATIVE_ROOT_PATH}/utils
