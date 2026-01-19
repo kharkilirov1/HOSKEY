@@ -14,7 +14,6 @@ import {
   russianLayout
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
-import predictionModel from '../model/PredictionModel';
 import optimizedPredictionModel from '../model/OptimizedPredictionModel';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import feedbackController, { FeedbackType } from '../model/FeedbackController';
@@ -424,7 +423,6 @@ struct KeyView {
             const deltaX = currentPosition.x - this.touchStartX;
             const deltaY = currentPosition.y - this.touchStartY;
             const distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
-            const SWIPE_ACTIVATION_THRESHOLD = 16;
 
             if (distance > SWIPE_ACTIVATION_THRESHOLD) {
               clearTimeout(this.longPressTimer);
@@ -609,7 +607,6 @@ struct Index {
 
   @State private isRecording: boolean = false;
   @State private isProcessingVoiceToggle: boolean = false;
-  @State private languageIndicatorOpacity: number = 0;
 
   // Speech recognition states
   @State private recognizedText: string = '';
@@ -871,17 +868,13 @@ struct Index {
     this.enableAutoCapitalization();
 
     // Warmup BaseLexicon for current language (background loading for instant predictions)
-    // Warmup both regular and optimized prediction models
-    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
-      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
+      const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
-    });
-    
-    // Also warmup optimized prediction model if available
-    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+    }).catch((err: Error) => {
       console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
     });
   }
@@ -1641,17 +1634,14 @@ struct Index {
     this.currentLayoutId = `${this.currentLanguage}_alphabet`;
 
     // Warmup BaseLexicon for new language
-    predictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('OpenBoard: Failed to warmup language:', err);
     }).then(() => {
       // Update SwipeEngine with new language lexicon
-      const baseLexicon = predictionModel.getBaseLexicon(this.currentLanguage);
+      const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
-    });
-    
-    // Also warmup optimized prediction model if available
-    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
+    }).catch((err: Error) => {
+      console.warn('OpenBoard: Failed to complete language warmup:', err);
     });
   }
 
@@ -1771,7 +1761,7 @@ struct Index {
     if (this.currentWord) {
       // Check for autocorrection on space
       if (ch === ' ') {
-        const correction = await predictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
+        const correction = await optimizedPredictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
         if (correction && correction !== this.currentWord) {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
@@ -2689,14 +2679,6 @@ struct Index {
           .position({ x: this.singleCharPopupInfo.position.x - 25, y: this.singleCharPopupInfo.position.y - 70 })
           .zIndex(150)
           .accessibilityText(`Preview character: ${this.singleCharPopupInfo.char}`)  // Accessibility text for single char popup
-      }
-
-      if (this.languageIndicatorOpacity > 0) {
-        LanguageIndicator({ languageName: getLanguageName(this.currentLanguage) })
-          .opacity(this.languageIndicatorOpacity)
-          .position({ x: (this.getScreenWidthVp() / 2) - 100, y: 150 })
-          .zIndex(250)
-          .accessibilityText(`Current language: ${getLanguageName(this.currentLanguage)}`)  // Accessibility text for language indicator
       }
 
       // Voice interruption popup
