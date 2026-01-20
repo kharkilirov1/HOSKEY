@@ -15,7 +15,7 @@ struct DicTraverseSessionWrapper {
     DicTraverseSession* session;
     ~DicTraverseSessionWrapper() {
         if (session) {
-            delete session;
+            DicTraverseSession::releaseSessionInstance(session);
         }
     }
 };
@@ -35,9 +35,9 @@ static napi_value NewDicTraverseSession(napi_env env, napi_callback_info info) {
     napi_get_value_external(env, args[0], &dictPolicyPtr);
     
     // Create a new DicTraverseSession instance
-    // Since we can't directly access the dictionary structure policy from NAPI,
-    // we'll create a session with default parameters
-    DicTraverseSession *session = new DicTraverseSession();
+    // Using the factory method with default parameters
+    DicTraverseSession *session = 
+        static_cast<DicTraverseSession*>(DicTraverseSession::getSessionInstance("en_US", 1024));
 
     // Wrap in external value
     DicTraverseSessionWrapper* wrapper = new DicTraverseSessionWrapper{session};
@@ -66,7 +66,7 @@ static napi_value ReleaseDicTraverseSession(napi_env env, napi_callback_info inf
     napi_get_value_external(env, args[0], reinterpret_cast<void**>(&wrapper));
     if (wrapper) {
         if (wrapper->session) {
-            delete wrapper->session;
+            DicTraverseSession::releaseSessionInstance(wrapper->session);
             wrapper->session = nullptr;
         }
     }
