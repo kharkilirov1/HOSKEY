@@ -18,15 +18,15 @@
 #define LATINIME_LOG_UTILS_H
 
 #include "defines.h"
-#include "jni.h"
 
 namespace latinime {
 
 class LogUtils {
  public:
-    static void logToJava(JNIEnv *const env, const char *const format, ...)
+    // HarmonyOS port: Removed JNI dependency, now uses simple printf logging
+    static void logInfo(const char *const format, ...)
 #ifdef __GNUC__
-        __attribute__ ((format (printf, 2, 3)))
+        __attribute__ ((format (printf, 1, 2)))
 #endif // __GNUC__
         ;
 

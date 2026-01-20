@@ -20,7 +20,6 @@
 #include <memory>
 
 #include "defines.h"
-#include "jni.h"
 #include "dictionary/interface/dictionary_header_structure_policy.h"
 #include "dictionary/interface/dictionary_structure_with_buffer_policy.h"
 #include "dictionary/interface/ngram_listener.h"
@@ -62,7 +61,8 @@ class Dictionary {
     static const int KIND_FLAG_EXACT_MATCH_WITH_INTENTIONAL_OMISSION = 0x20000000;
     static const int KIND_FLAG_APPROPRIATE_FOR_AUTOCORRECTION = 0x10000000;
 
-    Dictionary(JNIEnv *env, DictionaryStructureWithBufferPolicy::StructurePolicyPtr
+    // HarmonyOS port: Removed JNI parameter
+    Dictionary(DictionaryStructureWithBufferPolicy::StructurePolicyPtr
             dictionaryStructureWithBufferPolicy);
 
     void getSuggestions(ProximityInfo *proximityInfo, DicTraverseSession *traverseSession,
@@ -144,7 +144,7 @@ class Dictionary {
     const SuggestInterfacePtr mGestureSuggest;
     const SuggestInterfacePtr mTypingSuggest;
 
-    void logDictionaryInfo(JNIEnv *const env) const;
+    void logDictionaryInfo() const;
 };
 } // namespace latinime
 #endif // LATINIME_DICTIONARY_H

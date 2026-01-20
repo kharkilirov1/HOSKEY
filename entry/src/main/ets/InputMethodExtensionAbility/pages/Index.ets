@@ -909,13 +909,13 @@ struct Index {
     // Update native swipe engine if available
     if (nativeDictionary.isNativeAvailable()) {
       try {
-        const nativeBounds = keyBounds.map(kb => ({
+        const nativeBounds: KeyBounds[] = keyBounds.map(kb => ({
           key: kb.key,
           centerX: kb.centerX,
           centerY: kb.centerY,
           width: kb.width,
           height: kb.height
-        }));
+        } as KeyBounds));
         nativeDictionary.setSwipeKeyboardLayout(nativeBounds);
       } catch (err) {
         console.error('[Swipe] Failed to set native keyboard layout:', err);
@@ -1118,11 +1118,11 @@ struct Index {
 
     if (nativeDictionary.isNativeAvailable() && nativeDictionary.isDictionaryLoaded()) {
       try {
-        const nativePoints = this.swipePath.map(p => ({
+        const nativePoints: SwipePoint[] = this.swipePath.map(p => ({
           x: p.x,
           y: p.y,
           timestamp: p.timestamp
-        }));
+        } as SwipePoint));
 
         const nativeResult = nativeDictionary.processSwipePath(nativePoints);
 

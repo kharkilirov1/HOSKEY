@@ -14,12 +14,46 @@
 #include <string>
 #include <vector>
 #include "trie.h"
-#include "scoring_params.h"
 
 namespace hoskey {
 
-// Forward declaration
-class ProximityInfo;
+/**
+ * Error types for correction detection
+ */
+enum class ErrorType {
+    NOT_AN_ERROR,
+    PROXIMITY_CORRECTION,      // Key near the intended key
+    SUBSTITUTION_CORRECTION,   // Wrong character
+    OMISSION_CORRECTION,       // Missing character
+    INSERTION_CORRECTION,      // Extra character
+    TRANSPOSITION_CORRECTION   // Swapped characters
+};
+
+/**
+ * Scoring parameters for suggestion ranking
+ */
+struct ScoringParams {
+    static constexpr float AUTOCORRECTION_THRESHOLD = 0.185f;
+    static constexpr float PLAUSIBILITY_THRESHOLD = 0.15f;
+    static constexpr int THRESHOLD_SHORT_WORD_LENGTH = 3;
+    static constexpr float TRANSPOSITION_COST = 0.1f;
+    static constexpr float FIRST_CHAR_PROXIMITY_COST = 0.2f;
+    static constexpr float PROXIMITY_COST = 0.1f;
+    static constexpr float INSERTION_COST = 0.15f;
+    static constexpr float OMISSION_COST = 0.15f;
+    static constexpr float SUBSTITUTION_COST = 0.2f;
+    static constexpr float EXACT_MATCH_PROMOTION = 1.2f;
+    static constexpr float PERFECT_MATCH_PROMOTION = 1.1f;
+    static constexpr float DISTANCE_WEIGHT_LENGTH = 0.1f;
+};
+
+/**
+ * Simple proximity info for keyboard-aware correction
+ */
+class ProximityInfo {
+public:
+    bool areProximate(char a, char b) const;
+};
 
 /**
  * Result from suggestion engine

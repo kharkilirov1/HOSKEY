@@ -17,8 +17,17 @@
 #include <algorithm>
 #include <limits>
 
-#include "dictionary/trie.h"
-#include "dictionary/suggest_engine.h"
+#include "dictionary_hoskey/trie.h"
+#include "dictionary_hoskey/suggest_engine.h"
+
+// OpenBoard suggest engine
+#include "suggest/core/suggest.h"
+#include "suggest/core/suggest_options.h"
+#include "suggest/core/session/dic_traverse_session.h"
+#include "suggest/core/layout/proximity_info.h"
+#include "suggest/core/result/suggestion_results.h"
+#include "suggest/policyimpl/gesture/gesture_suggest_policy_factory.h"
+#include "dictionary/interface/dictionary_structure_with_buffer_policy.h"
 
 // Keyboard layout for NAPI swipe
 struct KeyBounds {

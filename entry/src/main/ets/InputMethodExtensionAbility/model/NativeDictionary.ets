@@ -7,12 +7,10 @@
  * - Weighted autocorrection (<5ms)
  * - Proximity-aware suggestions
  */
-
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
-
+import { BusinessError } from '@kit.BasicServicesKit';
 // Import native C++ module
-// @ts-ignore
 import nativeDict from 'libnative_dict.so';
 
 /**
@@ -37,15 +35,52 @@ export interface SuggestResult {
   score: number;
   errorType: ErrorType;
 }
+/**
+ * Dictionary statistics (native module returns only wordCount and memoryUsage)
+ */
+interface NativeDictStats {
+  wordCount: number;
+  memoryUsage: number;
+}
 
 /**
- * Dictionary statistics
+ * Dictionary statistics (extended with runtime info)
  */
 export interface DictStats {
   wordCount: number;
   memoryUsage: number;
   isLoaded: boolean;
   language: string;
+}
+
+/**
+ * Key bounds for swipe recognition
+ */
+export interface KeyBounds {
+  key: string;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Touch point for swipe recognition
+ */
+export interface TouchPoint {
+  x: number;
+  y: number;
+  timestamp: number;
+}
+
+/**
+ * Swipe recognition result
+ */
+export interface SwipeResult {
+  bestWord: string;
+  alternatives: string[];
+  confidence: number;
+  rawSequence: string;
 }
 
 /**
@@ -69,8 +104,9 @@ class NativeDictionary {
         console.warn('[NativeDictionary] Native module not available - using BaseLexicon fallback');
       }
     } catch (err) {
+      const error = err as BusinessError;
       this.nativeAvailable = false;
-      console.error('[NativeDictionary] Failed to load native module:', err);
+      console.error('[NativeDictionary] Failed to load native module:', error);
     }
   }
 
@@ -110,21 +146,19 @@ class NativeDictionary {
         const stat = fileIo.statSync(dictPath);
         console.info(`[NativeDictionary] Dictionary file size: ${stat.size} bytes`);
       } catch (err) {
-        console.error(`[NativeDictionary] Dictionary file not found: ${dictPath}`);
+        console.error(`[NativeDictionary] Dictionary file not found: ${dictPath}`, err);
         return false;
       }
-
       // Load dictionary via NAPI
-      const loaded = nativeDict.loadDictionary(dictPath);
+      const loaded: boolean = nativeDict.loadDictionary(dictPath);
 
       if (!loaded) {
         console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
         return false;
       }
-
       // Set proximity info for autocorrection
       const layoutName = lang === 'ru' ? 'ru' : 'qwerty';
-      const proximitySet = nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
+      const proximitySet: boolean = nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
 
       if (!proximitySet) {
         console.warn('[NativeDictionary] Failed to set proximity info, autocorrection may be less accurate');
@@ -132,14 +166,14 @@ class NativeDictionary {
 
       this.isLoaded = true;
       this.currentLanguage = lang;
-
       // Get and log stats
-      const stats = nativeDict.getStats();
-      console.info(`[NativeDictionary] Loaded ${stats.wordCount} words for '${lang}', memory: ${stats.memoryUsage} bytes`);
+      const nativeStats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
+      console.info(`[NativeDictionary] Loaded ${nativeStats.wordCount} words for '${lang}', memory: ${nativeStats.memoryUsage} bytes`);
 
       return true;
     } catch (err) {
-      console.error(`[NativeDictionary] Error initializing for '${lang}':`, err);
+      const error = err as BusinessError;
+      console.error(`[NativeDictionary] Error initializing for '${lang}':`, error);
       this.isLoaded = false;
       return false;
     }
@@ -150,11 +184,11 @@ class NativeDictionary {
    */
   contains(word: string): boolean {
     if (!this.nativeAvailable || !this.isLoaded) return false;
-
     try {
       return nativeDict.contains(word.toLowerCase());
     } catch (err) {
-      console.error('[NativeDictionary] Error in contains:', err);
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in contains:', error);
       return false;
     }
   }
@@ -168,7 +202,8 @@ class NativeDictionary {
     try {
       return nativeDict.getFrequency(word.toLowerCase());
     } catch (err) {
-      console.error('[NativeDictionary] Error in getFrequency:', err);
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in getFrequency:', error);
       return 0;
     }
   }
@@ -180,12 +215,12 @@ class NativeDictionary {
    */
   getSuggestions(prefix: string, limit: number = 10): SuggestResult[] {
     if (!this.nativeAvailable || !this.isLoaded) return [];
-
     try {
-      const results = nativeDict.getSuggestions(prefix.toLowerCase(), limit);
+      const results = nativeDict.getSuggestions(prefix.toLowerCase(), limit) as SuggestResult[];
       return results || [];
     } catch (err) {
-      console.error('[NativeDictionary] Error in getSuggestions:', err);
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in getSuggestions:', error);
       return [];
     }
   }
@@ -197,12 +232,12 @@ class NativeDictionary {
    */
   findAutocorrection(word: string, threshold: number = 0.185): SuggestResult | null {
     if (!this.nativeAvailable || !this.isLoaded) return null;
-
     try {
-      const result = nativeDict.findAutocorrection(word.toLowerCase(), threshold);
+      const result = nativeDict.findAutocorrection(word.toLowerCase(), threshold) as SuggestResult | null;
       return result;
     } catch (err) {
-      console.error('[NativeDictionary] Error in findAutocorrection:', err);
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in findAutocorrection:', error);
       return null;
     }
   }
@@ -212,30 +247,34 @@ class NativeDictionary {
    */
   getStats(): DictStats {
     if (!this.nativeAvailable || !this.isLoaded) {
-      return {
+      const emptyStats: DictStats = {
         wordCount: 0,
         memoryUsage: 0,
         isLoaded: false,
         language: ''
       };
+      return emptyStats;
     }
 
     try {
-      const stats = nativeDict.getStats();
-      return {
-        wordCount: stats.wordCount,
-        memoryUsage: stats.memoryUsage,
+      const nativeStats = nativeDict.getStats() as NativeDictStats;
+      const result: DictStats = {
+        wordCount: nativeStats.wordCount,
+        memoryUsage: nativeStats.memoryUsage,
         isLoaded: this.isLoaded,
         language: this.currentLanguage
       };
+      return result;
     } catch (err) {
-      console.error('[NativeDictionary] Error in getStats:', err);
-      return {
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in getStats:', error);
+      const errorStats: DictStats = {
         wordCount: 0,
         memoryUsage: 0,
         isLoaded: false,
         language: ''
       };
+      return errorStats;
     }
   }
 
@@ -248,7 +287,8 @@ class NativeDictionary {
         nativeDict.unload();
         console.info('[NativeDictionary] Unloaded dictionary for language:', this.currentLanguage);
       } catch (err) {
-        console.error('[NativeDictionary] Error unloading:', err);
+        const error = err as BusinessError;
+        console.error('[NativeDictionary] Error unloading:', error);
       }
     }
 
@@ -269,12 +309,11 @@ class NativeDictionary {
   isDictionaryLoaded(): boolean {
     return this.isLoaded;
   }
-
   /**
    * Set keyboard layout for swipe recognition
    * @param keys - Array of key bounds
    */
-  setSwipeKeyboardLayout(keys: Array<{ key: string; centerX: number; centerY: number; width: number; height: number; }>): boolean {
+  setSwipeKeyboardLayout(keys: Array<KeyBounds>): boolean {
     if (!this.nativeAvailable) return false;
 
     try {
@@ -284,16 +323,16 @@ class NativeDictionary {
       return false;
     }
   }
-
   /**
    * Process swipe path and return recognized word
    * @param points - Array of touch points
    */
-  processSwipePath(points: Array<{ x: number; y: number; timestamp: number; }>): { bestWord: string; alternatives: string[]; confidence: number; rawSequence: string; } | null {
+  processSwipePath(points: Array<TouchPoint>): SwipeResult | null {
     if (!this.nativeAvailable) return null;
 
     try {
-      return nativeDict.processSwipePath(points);
+      const result = nativeDict.processSwipePath(points) as SwipeResult | null;
+      return result;
     } catch (err) {
       console.error('[NativeDictionary] Error in processSwipePath:', err);
       return null;

@@ -4,11 +4,50 @@
  */
 
 #include "suggest_engine.h"
-#include "../proximity/proximity_info.h"
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace hoskey {
+
+// QWERTY keyboard proximity map
+static const std::unordered_map<char, std::unordered_set<char>> kProximityMap = {
+    {'q', {'w', 'a', 's'}},
+    {'w', {'q', 'e', 'a', 's', 'd'}},
+    {'e', {'w', 'r', 's', 'd', 'f'}},
+    {'r', {'e', 't', 'd', 'f', 'g'}},
+    {'t', {'r', 'y', 'f', 'g', 'h'}},
+    {'y', {'t', 'u', 'g', 'h', 'j'}},
+    {'u', {'y', 'i', 'h', 'j', 'k'}},
+    {'i', {'u', 'o', 'j', 'k', 'l'}},
+    {'o', {'i', 'p', 'k', 'l'}},
+    {'p', {'o', 'l'}},
+    {'a', {'q', 'w', 's', 'z', 'x'}},
+    {'s', {'q', 'w', 'e', 'a', 'd', 'z', 'x', 'c'}},
+    {'d', {'w', 'e', 'r', 's', 'f', 'x', 'c', 'v'}},
+    {'f', {'e', 'r', 't', 'd', 'g', 'c', 'v', 'b'}},
+    {'g', {'r', 't', 'y', 'f', 'h', 'v', 'b', 'n'}},
+    {'h', {'t', 'y', 'u', 'g', 'j', 'b', 'n', 'm'}},
+    {'j', {'y', 'u', 'i', 'h', 'k', 'n', 'm'}},
+    {'k', {'u', 'i', 'o', 'j', 'l', 'm'}},
+    {'l', {'i', 'o', 'p', 'k'}},
+    {'z', {'a', 's', 'x'}},
+    {'x', {'a', 's', 'd', 'z', 'c'}},
+    {'c', {'s', 'd', 'f', 'x', 'v'}},
+    {'v', {'d', 'f', 'g', 'c', 'b'}},
+    {'b', {'f', 'g', 'h', 'v', 'n'}},
+    {'n', {'g', 'h', 'j', 'b', 'm'}},
+    {'m', {'h', 'j', 'k', 'n'}}
+};
+
+bool ProximityInfo::areProximate(char a, char b) const {
+    auto it = kProximityMap.find(a);
+    if (it != kProximityMap.end()) {
+        return it->second.count(b) > 0;
+    }
+    return false;
+}
 
 SuggestEngine::SuggestEngine(Trie* trie) : trie_(trie), proximityInfo_(nullptr) {}
 

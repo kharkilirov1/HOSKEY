@@ -22,8 +22,8 @@
 #include <cstring>
 #include <cmath>
 
-#include "defines.h"
-#include "jni.h"
+#include "napi/native_api.h"
+#include "napi_helpers.h"
 #include "suggest/core/layout/additional_proximity_chars.h"
 #include "suggest/core/layout/geometry_utils.h"
 #include "suggest/core/layout/proximity_info_params.h"
@@ -31,31 +31,45 @@
 
 namespace latinime {
 
-static AK_FORCE_INLINE void safeGetOrFillZeroIntArrayRegion(JNIEnv *env, jintArray jArray,
-        jsize len, jint *buffer) {
-    if (jArray && buffer) {
-        env->GetIntArrayRegion(jArray, 0, len, buffer);
-    } else if (buffer) {
-        memset(buffer, 0, len * sizeof(buffer[0]));
+static AK_FORCE_INLINE void safeGetOrFillZeroIntArrayRegion(napi_env env, napi_value jArray,
+        uint32_t len, int32_t *buffer) {
+    if (buffer) {
+        bool isNull = false;
+        napi_valuetype type;
+        napi_typeof(env, jArray, &type);
+        isNull = (type == napi_null || type == napi_undefined);
+        
+        if (!isNull) {
+            hoskey::napiGetIntArrayRegion(env, jArray, 0, len, buffer);
+        } else {
+            memset(buffer, 0, len * sizeof(buffer[0]));
+        }
     }
 }
 
-static AK_FORCE_INLINE void safeGetOrFillZeroFloatArrayRegion(JNIEnv *env, jfloatArray jArray,
-        jsize len, jfloat *buffer) {
-    if (jArray && buffer) {
-        env->GetFloatArrayRegion(jArray, 0, len, buffer);
-    } else if (buffer) {
-        memset(buffer, 0, len * sizeof(buffer[0]));
+static AK_FORCE_INLINE void safeGetOrFillZeroFloatArrayRegion(napi_env env, napi_value jArray,
+        uint32_t len, float *buffer) {
+    if (buffer) {
+        bool isNull = false;
+        napi_valuetype type;
+        napi_typeof(env, jArray, &type);
+        isNull = (type == napi_null || type == napi_undefined);
+        
+        if (!isNull) {
+            hoskey::napiGetFloatArrayRegion(env, jArray, 0, len, buffer);
+        } else {
+            memset(buffer, 0, len * sizeof(buffer[0]));
+        }
     }
 }
 
-ProximityInfo::ProximityInfo(JNIEnv *env, const int keyboardWidth, const int keyboardHeight,
+ProximityInfo::ProximityInfo(napi_env env, const int keyboardWidth, const int keyboardHeight,
         const int gridWidth, const int gridHeight, const int mostCommonKeyWidth,
-        const int mostCommonKeyHeight, const jintArray proximityChars, const int keyCount,
-        const jintArray keyXCoordinates, const jintArray keyYCoordinates,
-        const jintArray keyWidths, const jintArray keyHeights, const jintArray keyCharCodes,
-        const jfloatArray sweetSpotCenterXs, const jfloatArray sweetSpotCenterYs,
-        const jfloatArray sweetSpotRadii)
+        const int mostCommonKeyHeight, napi_value proximityChars, const int keyCount,
+        napi_value keyXCoordinates, napi_value keyYCoordinates,
+        napi_value keyWidths, napi_value keyHeights, napi_value keyCharCodes,
+        napi_value sweetSpotCenterXs, napi_value sweetSpotCenterYs,
+        napi_value sweetSpotRadii)
         : GRID_WIDTH(gridWidth), GRID_HEIGHT(gridHeight), MOST_COMMON_KEY_WIDTH(mostCommonKeyWidth),
           MOST_COMMON_KEY_WIDTH_SQUARE(mostCommonKeyWidth * mostCommonKeyWidth),
           NORMALIZED_SQUARED_MOST_COMMON_KEY_HYPOTENUSE(1.0f +
@@ -73,7 +87,8 @@ ProximityInfo::ProximityInfo(JNIEnv *env, const int keyboardWidth, const int key
                   /* proximityCharsLength */]),
           mLowerCodePointToKeyMap() {
     /* Let's check the input array length here to make sure */
-    const jsize proximityCharsLength = env->GetArrayLength(proximityChars);
+    uint32_t proximityCharsLength = 0;
+    napi_get_array_length(env, proximityChars, &proximityCharsLength);
     if (proximityCharsLength != GRID_WIDTH * GRID_HEIGHT * MAX_PROXIMITY_CHARS_SIZE) {
         AKLOGE("Invalid proximityCharsLength: %d", proximityCharsLength);
         ASSERT(false);

@@ -18,10 +18,10 @@
 #define LATINIME_DIC_TRAVERSE_SESSION_H
 
 #include <vector>
+#include <cstdint>
 
 #include "defines.h"
 #include "dictionary/utils/multi_bigram_map.h"
-#include "jni.h"
 #include "suggest/core/dicnode/dic_nodes_cache.h"
 #include "suggest/core/layout/proximity_info_state.h"
 #include "utils/int_array_view.h"
@@ -38,11 +38,11 @@ class DicTraverseSession {
  public:
 
     // A factory method for DicTraverseSession
-    static AK_FORCE_INLINE void *getSessionInstance(JNIEnv *env, jstring localeStr,
-            jlong dictSize) {
+    // HarmonyOS port: Removed JNI parameters, using int64_t for dictSize
+    static AK_FORCE_INLINE void *getSessionInstance(const char *locale, int64_t dictSize) {
         // To deal with the trade-off between accuracy and memory space, large cache is used for
         // dictionaries larger that the threshold
-        return new DicTraverseSession(env, localeStr,
+        return new DicTraverseSession(locale,
                 dictSize >= DICTIONARY_SIZE_THRESHOLD_TO_USE_LARGE_CACHE_FOR_SUGGESTION);
     }
 
@@ -50,12 +50,15 @@ class DicTraverseSession {
         delete traverseSession;
     }
 
-    AK_FORCE_INLINE DicTraverseSession(JNIEnv *env, jstring localeStr, bool usesLargeCache)
+    // HarmonyOS port: Removed JNI parameters
+    AK_FORCE_INLINE DicTraverseSession(const char *locale, bool usesLargeCache)
             : mPrevWordIdCount(0), mProximityInfo(nullptr), mDictionary(nullptr),
               mSuggestOptions(nullptr), mDicNodesCache(usesLargeCache), mMultiBigramMap(),
               mInputSize(0), mMaxPointerCount(1), mMultiWordCostMultiplier(1.0f) {
         // NOTE: mProximityInfoStates is an array of instances.
         // No need to initialize it explicitly here.
+        // locale parameter reserved for future locale-specific initialization
+        (void)locale; // Suppress unused parameter warning
     }
 
     // Non virtual inline destructor -- never inherit this class

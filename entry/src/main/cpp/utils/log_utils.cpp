@@ -21,52 +21,42 @@
 
 #include "defines.h"
 
+// HarmonyOS hilog support (optional)
+#ifdef __OHOS__
+#include <hilog/log.h>
+#define LOG_DOMAIN 0x0000
+#define LOG_TAG "LatinIME"
+#endif
+
 namespace latinime {
-    /* static */ void LogUtils::logToJava(JNIEnv *const env, const char *const format, ...) {
-        static const char *TAG = "LatinIME:LogUtils";
-        const jclass androidUtilLogClass = env->FindClass("android/util/Log");
-        if (!androidUtilLogClass) {
-            // If we can't find the class, we are probably in off-device testing, and
-            // it's expected. Regardless, logging is not essential to functionality, so
-            // we should just return. However, FindClass has thrown an exception behind
-            // our back and there is no way to prevent it from doing that, so we clear
-            // the exception before we return.
-            env->ExceptionClear();
-            return;
-        }
-        const jmethodID logDotIMethodId = env->GetStaticMethodID(androidUtilLogClass, "i",
-                "(Ljava/lang/String;Ljava/lang/String;)I");
-        if (!logDotIMethodId) {
-            env->ExceptionClear();
-            if (androidUtilLogClass) env->DeleteLocalRef(androidUtilLogClass);
-            return;
-        }
-        const jstring javaTag = env->NewStringUTF(TAG);
 
-        static const int DEFAULT_LINE_SIZE = 128;
-        char fixedSizeCString[DEFAULT_LINE_SIZE];
-        va_list argList;
+/* static */ void LogUtils::logInfo(const char *const format, ...) {
+    static const int DEFAULT_LINE_SIZE = 256;
+    char buffer[DEFAULT_LINE_SIZE];
+
+    va_list argList;
+    va_start(argList, format);
+    const int size = vsnprintf(buffer, DEFAULT_LINE_SIZE, format, argList);
+    va_end(argList);
+
+    if (size >= DEFAULT_LINE_SIZE) {
+        // Buffer was too small, allocate larger
         va_start(argList, format);
-        // Get the necessary size. Add 1 for the 0 terminator.
-        const int size = vsnprintf(fixedSizeCString, DEFAULT_LINE_SIZE, format, argList) + 1;
+        char largeBuffer[size + 1];
+        vsnprintf(largeBuffer, size + 1, format, argList);
         va_end(argList);
-
-        jstring javaString;
-        if (size <= DEFAULT_LINE_SIZE) {
-            // The buffer was large enough.
-            javaString = env->NewStringUTF(fixedSizeCString);
-        } else {
-            // The buffer was not large enough.
-            va_start(argList, format);
-            char variableSizeCString[size];
-            vsnprintf(variableSizeCString, size, format, argList);
-            va_end(argList);
-            javaString = env->NewStringUTF(variableSizeCString);
-        }
-
-        env->CallStaticIntMethod(androidUtilLogClass, logDotIMethodId, javaTag, javaString);
-        if (javaString) env->DeleteLocalRef(javaString);
-        if (javaTag) env->DeleteLocalRef(javaTag);
-        if (androidUtilLogClass) env->DeleteLocalRef(androidUtilLogClass);
+#ifdef __OHOS__
+        OH_LOG_INFO(LOG_APP, "%{public}s", largeBuffer);
+#else
+        printf("[LatinIME] %s\n", largeBuffer);
+#endif
+    } else {
+#ifdef __OHOS__
+        OH_LOG_INFO(LOG_APP, "%{public}s", buffer);
+#else
+        printf("[LatinIME] %s\n", buffer);
+#endif
     }
 }
+
+} // namespace latinime

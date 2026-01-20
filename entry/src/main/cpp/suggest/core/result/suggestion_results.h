@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "defines.h"
-#include "jni.h"
+#include "napi/native_api.h"
 #include "suggest/core/result/suggested_word.h"
 
 namespace latinime {
@@ -33,15 +33,19 @@ class SuggestionResults {
               mWeightOfLangModelVsSpatialModel(NOT_A_WEIGHT_OF_LANG_MODEL_VS_SPATIAL_MODEL),
               mSuggestedWords() {}
 
-    // Returns suggestion count.
-    void outputSuggestions(JNIEnv *env, jintArray outSuggestionCount, jintArray outCodePointsArray,
-            jintArray outScoresArray, jintArray outSpaceIndicesArray, jintArray outTypesArray,
-            jintArray outAutoCommitFirstWordConfidenceArray,
-            jfloatArray outWeightOfLangModelVsSpatialModel);
+    // Returns suggestion count - NAPI version
+    void outputSuggestions(napi_env env, napi_value outSuggestionCount,
+            napi_value outCodePointsArray, napi_value outScoresArray,
+            napi_value outSpaceIndicesArray, napi_value outTypesArray,
+            napi_value outAutoCommitFirstWordConfidenceArray,
+            napi_value outWeightOfLangModelVsSpatialModel);
+
     void addPrediction(const int *const codePoints, const int codePointCount, const int score);
+
     void addSuggestion(const int *const codePoints, const int codePointCount,
             const int score, const int type, const int indexToPartialCommit,
-            const int autocimmitFirstWordConfindence);
+            const int autoCommitFirstWordConfidence);
+
     void getSortedScores(int *const outScores) const;
     void dumpSuggestions() const;
 
@@ -54,7 +58,7 @@ class SuggestionResults {
     }
 
  private:
-    DISALLOW_IMPLICIT_CONSTRUCTORS(SuggestionResults);
+    DISALLOW_COPY_AND_ASSIGN(SuggestionResults);
 
     const int mMaxSuggestionCount;
     float mWeightOfLangModelVsSpatialModel;

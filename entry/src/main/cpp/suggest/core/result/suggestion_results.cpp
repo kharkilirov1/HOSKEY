@@ -16,35 +16,71 @@
 
 #include "suggest/core/result/suggestion_results.h"
 
-#include "utils/jni_data_utils.h"
+#include <algorithm>
+#include <vector>
+
+#include "napi_helpers.h"
+#include "suggest/core/dictionary/dictionary.h"
 
 namespace latinime {
 
-void SuggestionResults::outputSuggestions(JNIEnv *env, jintArray outSuggestionCount,
-        jintArray outputCodePointsArray, jintArray outScoresArray, jintArray outSpaceIndicesArray,
-        jintArray outTypesArray, jintArray outAutoCommitFirstWordConfidenceArray,
-        jfloatArray outWeightOfLangModelVsSpatialModel) {
+// Helper functions for NAPI (equivalent to JniDataUtils)
+namespace {
+
+void outputCodePoints(napi_env env, napi_value outputArray, const int start,
+        const int maxLength, const int *const codePoints, const int codePointCount,
+        const bool needsNullTermination) {
+    const int codePointsToWrite = std::min(maxLength, codePointCount);
+    for (int i = 0; i < codePointsToWrite; ++i) {
+        napi_value val;
+        napi_create_int32(env, codePoints[i], &val);
+        napi_set_element(env, outputArray, start + i, val);
+    }
+    if (needsNullTermination && codePointsToWrite < maxLength) {
+        napi_value nullVal;
+        napi_create_int32(env, 0, &nullVal);
+        napi_set_element(env, outputArray, start + codePointsToWrite, nullVal);
+    }
+}
+
+void putIntToArray(napi_env env, napi_value array, const int index, const int value) {
+    napi_value val;
+    napi_create_int32(env, value, &val);
+    napi_set_element(env, array, index, val);
+}
+
+void putFloatToArray(napi_env env, napi_value array, const int index, const float value) {
+    napi_value val;
+    napi_create_double(env, static_cast<double>(value), &val);
+    napi_set_element(env, array, index, val);
+}
+
+} // anonymous namespace
+
+void SuggestionResults::outputSuggestions(napi_env env, napi_value outSuggestionCount,
+        napi_value outputCodePointsArray, napi_value outScoresArray, napi_value outSpaceIndicesArray,
+        napi_value outTypesArray, napi_value outAutoCommitFirstWordConfidenceArray,
+        napi_value outWeightOfLangModelVsSpatialModel) {
     int outputIndex = 0;
     while (!mSuggestedWords.empty()) {
         const SuggestedWord &suggestedWord = mSuggestedWords.top();
-        suggestedWord.getCodePointCount();
         const int start = outputIndex * MAX_WORD_LENGTH;
-        JniDataUtils::outputCodePoints(env, outputCodePointsArray, start,
+        outputCodePoints(env, outputCodePointsArray, start,
                 MAX_WORD_LENGTH /* maxLength */, suggestedWord.getCodePoint(),
                 suggestedWord.getCodePointCount(), true /* needsNullTermination */);
-        JniDataUtils::putIntToArray(env, outScoresArray, outputIndex, suggestedWord.getScore());
-        JniDataUtils::putIntToArray(env, outSpaceIndicesArray, outputIndex,
+        putIntToArray(env, outScoresArray, outputIndex, suggestedWord.getScore());
+        putIntToArray(env, outSpaceIndicesArray, outputIndex,
                 suggestedWord.getIndexToPartialCommit());
-        JniDataUtils::putIntToArray(env, outTypesArray, outputIndex, suggestedWord.getType());
+        putIntToArray(env, outTypesArray, outputIndex, suggestedWord.getType());
         if (mSuggestedWords.size() == 1) {
-            JniDataUtils::putIntToArray(env, outAutoCommitFirstWordConfidenceArray, 0 /* index */,
+            putIntToArray(env, outAutoCommitFirstWordConfidenceArray, 0 /* index */,
                     suggestedWord.getAutoCommitFirstWordConfidence());
         }
         ++outputIndex;
         mSuggestedWords.pop();
     }
-    JniDataUtils::putIntToArray(env, outSuggestionCount, 0 /* index */, outputIndex);
-    JniDataUtils::putFloatToArray(env, outWeightOfLangModelVsSpatialModel, 0 /* index */,
+    putIntToArray(env, outSuggestionCount, 0 /* index */, outputIndex);
+    putFloatToArray(env, outWeightOfLangModelVsSpatialModel, 0 /* index */,
             mWeightOfLangModelVsSpatialModel);
 }
 
@@ -60,7 +96,7 @@ void SuggestionResults::addPrediction(const int *const codePoints, const int cod
 
 void SuggestionResults::addSuggestion(const int *const codePoints, const int codePointCount,
         const int score, const int type, const int indexToPartialCommit,
-        const int autocimmitFirstWordConfindence) {
+        const int autoCommitFirstWordConfidence) {
     if (codePointCount <= 0 || codePointCount > MAX_WORD_LENGTH) {
         // Invalid word.
         AKLOGE("Invalid word is added to the suggestion results. codePointCount: %d",
@@ -77,7 +113,7 @@ void SuggestionResults::addSuggestion(const int *const codePoints, const int cod
         }
     }
     mSuggestedWords.push(SuggestedWord(codePoints, codePointCount, score, type,
-            indexToPartialCommit, autocimmitFirstWordConfindence));
+            indexToPartialCommit, autoCommitFirstWordConfidence));
 }
 
 void SuggestionResults::getSortedScores(int *const outScores) const {

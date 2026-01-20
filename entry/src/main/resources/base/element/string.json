@@ -35,6 +35,22 @@
     {
       "name": "english_keyboard",
       "value": "English Keyboard"
+    },
+    {
+      "name": "polish_keyboard",
+      "value": "Polish Keyboard"
+    },
+    {
+      "name": "italian_keyboard",
+      "value": "Italian Keyboard"
+    },
+    {
+      "name": "persian_keyboard",
+      "value": "Persian Keyboard"
+    },
+    {
+      "name": "arabic_keyboard",
+      "value": "Arabic Keyboard"
     }
   ]
 }

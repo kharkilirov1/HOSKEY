@@ -21,20 +21,20 @@
 #include <vector>
 
 #include "defines.h"
-#include "jni.h"
+#include "napi/native_api.h"
 #include "suggest/core/layout/proximity_info_utils.h"
 
 namespace latinime {
 
 class ProximityInfo {
  public:
-    ProximityInfo(JNIEnv *env, const int keyboardWidth, const int keyboardHeight,
+    ProximityInfo(napi_env env, const int keyboardWidth, const int keyboardHeight,
             const int gridWidth, const int gridHeight,
             const int mostCommonKeyWidth, const int mostCommonKeyHeight,
-            const jintArray proximityChars, const int keyCount, const jintArray keyXCoordinates,
-            const jintArray keyYCoordinates, const jintArray keyWidths, const jintArray keyHeights,
-            const jintArray keyCharCodes, const jfloatArray sweetSpotCenterXs,
-            const jfloatArray sweetSpotCenterYs, const jfloatArray sweetSpotRadii);
+            napi_value proximityChars, const int keyCount, napi_value keyXCoordinates,
+            napi_value keyYCoordinates, napi_value keyWidths, napi_value keyHeights,
+            napi_value keyCharCodes, napi_value sweetSpotCenterXs,
+            napi_value sweetSpotCenterYs, napi_value sweetSpotRadii);
     ~ProximityInfo();
     bool hasSpaceProximity(const int x, const int y) const;
     float getNormalizedSquaredDistanceFromCenterFloatG(

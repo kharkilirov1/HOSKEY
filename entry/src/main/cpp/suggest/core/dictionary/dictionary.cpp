@@ -36,12 +36,13 @@ namespace latinime {
 
 const int Dictionary::HEADER_ATTRIBUTE_BUFFER_SIZE = 32;
 
-Dictionary::Dictionary(JNIEnv *env, DictionaryStructureWithBufferPolicy::StructurePolicyPtr
+// HarmonyOS port: Removed JNI parameter
+Dictionary::Dictionary(DictionaryStructureWithBufferPolicy::StructurePolicyPtr
         dictionaryStructureWithBufferPolicy)
         : mDictionaryStructureWithBufferPolicy(std::move(dictionaryStructureWithBufferPolicy)),
           mGestureSuggest(new Suggest(GestureSuggestPolicyFactory::getGestureSuggestPolicy())),
           mTypingSuggest(new Suggest(TypingSuggestPolicyFactory::getTypingSuggestPolicy())) {
-    logDictionaryInfo(env);
+    logDictionaryInfo();
 }
 
 void Dictionary::getSuggestions(ProximityInfo *proximityInfo, DicTraverseSession *traverseSession,
@@ -196,7 +197,8 @@ int Dictionary::getNextWordAndNextToken(const int token, int *const outCodePoint
             token, outCodePoints, outCodePointCount);
 }
 
-void Dictionary::logDictionaryInfo(JNIEnv *const env) const {
+// HarmonyOS port: Removed JNI parameter, using LogUtils::logInfo instead
+void Dictionary::logDictionaryInfo() const {
     int dictionaryIdCodePointBuffer[HEADER_ATTRIBUTE_BUFFER_SIZE];
     int versionStringCodePointBuffer[HEADER_ATTRIBUTE_BUFFER_SIZE];
     int dateStringCodePointBuffer[HEADER_ATTRIBUTE_BUFFER_SIZE];
@@ -219,8 +221,7 @@ void Dictionary::logDictionaryInfo(JNIEnv *const env) const {
     intArrayToCharArray(dateStringCodePointBuffer, HEADER_ATTRIBUTE_BUFFER_SIZE,
             dateStringCharBuffer, HEADER_ATTRIBUTE_BUFFER_SIZE);
 
-    LogUtils::logToJava(env,
-            "Dictionary info: dictionary = %s ; version = %s ; date = %s",
+    LogUtils::logInfo("Dictionary info: dictionary = %s ; version = %s ; date = %s",
             dictionaryIdCharBuffer, versionStringCharBuffer, dateStringCharBuffer);
 }
 
