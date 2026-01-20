@@ -75,8 +75,8 @@ static napi_value Open(napi_env env, napi_callback_info info) {
         return result;
     }
 
-    // Create dictionary instance (null context for NAPI)
-    Dictionary *const dictionary = new Dictionary(nullptr, std::move(dictionaryStructureWithBufferPolicy));
+    // Create dictionary instance
+    Dictionary *const dictionary = new Dictionary(std::move(dictionaryStructureWithBufferPolicy));
 
     // Wrap in external value
     DictionaryWrapper* wrapper = new DictionaryWrapper{dictionary};
@@ -121,8 +121,8 @@ static napi_value CreateOnMemory(napi_env env, napi_callback_info info) {
         return result;
     }
 
-    // Create dictionary instance (null context for NAPI)
-    Dictionary *const dictionary = new Dictionary(nullptr, std::move(dictionaryStructureWithBufferPolicy));
+    // Create dictionary instance
+    Dictionary *const dictionary = new Dictionary(std::move(dictionaryStructureWithBufferPolicy));
 
     // Wrap in external value
     DictionaryWrapper* wrapper = new DictionaryWrapper{dictionary};
@@ -429,7 +429,7 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
     
     // Add suggestion count
     napi_value suggestionCount;
-    napi_create_int32(env, suggestionResults.getOutputSuggestionCount(), &suggestionCount);
+    napi_create_int32(env, suggestionResults.getSuggestionCount(), &suggestionCount);
     napi_set_named_property(env, result, "suggestionCount", suggestionCount);
     
     // Add suggestions array

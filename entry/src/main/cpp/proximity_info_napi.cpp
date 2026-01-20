@@ -1,6 +1,7 @@
 #include "napi/native_api.h"
 #include <vector>
 #include <memory>
+#include <string>
 
 #include "suggest/core/layout/proximity_info.h"
 #include "napi_helpers.h"
@@ -66,17 +67,6 @@ static napi_value SetProximityInfo(napi_env env, napi_callback_info info) {
             delete static_cast<ProximityInfoWrapper*>(data);
         }, 
         nullptr, &result);
-
-    // Clean up temporary arrays
-    delete[] proximityChars;
-    delete[] keyXCoordinates;
-    delete[] keyYCoordinates;
-    delete[] keyWidths;
-    delete[] keyHeights;
-    delete[] keyCharCodes;
-    delete[] sweetSpotCenterXs;
-    delete[] sweetSpotCenterYs;
-    delete[] sweetSpotRadii;
 
     return result;
 }
