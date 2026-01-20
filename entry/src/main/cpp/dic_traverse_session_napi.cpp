@@ -1,6 +1,7 @@
 #include "napi/native_api.h"
 #include <vector>
 #include <memory>
+#include <string>
 
 #include "suggest/core/session/dic_traverse_session.h"
 #include "napi_helpers.h"
@@ -21,23 +22,28 @@ struct DicTraverseSessionWrapper {
 };
 
 static napi_value NewDicTraverseSession(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;  // Now 2 arguments: locale and dictSize
+    napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    if (argc < 1) {
-        napi_throw_error(env, nullptr, "Wrong number of arguments");
+    if (argc < 2) {
+        napi_throw_error(env, nullptr, "Wrong number of arguments: expected locale and dictSize");
         return nullptr;
     }
 
-    // Get the dictionary structure policy (external object)
-    void* dictPolicyPtr;
-    napi_get_value_external(env, args[0], &dictPolicyPtr);
+    // Get locale string
+    size_t localeLen = 0;
+    napi_get_value_string_utf8(env, args[0], nullptr, 0, &localeLen);
+    std::string locale(localeLen, '\0');
+    napi_get_value_string_utf8(env, args[0], &locale[0], localeLen + 1, &localeLen);
     
-    // Create a new DicTraverseSession instance
-    // Using the factory method with default parameters
-    DicTraverseSession *session = 
-        static_cast<DicTraverseSession*>(DicTraverseSession::getSessionInstance("en_US", 1024));
+    // Get dictSize
+    int64_t dictSize;
+    napi_get_value_int64(env, args[1], &dictSize);
+    
+    // Use factory method
+    DicTraverseSession *session = static_cast<DicTraverseSession*>(
+        DicTraverseSession::getSessionInstance(locale.c_str(), dictSize));
 
     // Wrap in external value
     DicTraverseSessionWrapper* wrapper = new DicTraverseSessionWrapper{session};
