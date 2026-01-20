@@ -5,6 +5,8 @@
   "main": "",
   "author": "OpenTech",
   "license": "",
-  "dependencies": {}
+  "dependencies": {
+    "libnative_dict.so": "file:./src/main/cpp/types/libnative_dict"
+  }
 }
 

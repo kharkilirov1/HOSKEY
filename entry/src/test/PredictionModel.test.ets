@@ -1,8 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
-import predictionModel from '../main/ets/InputMethodExtensionAbility/model/PredictionModel';
+import predictionModel from '../main/ets/InputMethodExtensionAbility/model/OptimizedPredictionModel';
 
 export default function predictionModelTest() {
-  describe('PredictionModel', () => {
+  describe('OptimizedPredictionModel', () => {
     it('predicts bigram next words (async)', 0, async () => {
       const lang = 'test-en-1';
       await predictionModel.recordWord(lang, null, 'hello');
