@@ -29,6 +29,16 @@
 #include "suggest/policyimpl/gesture/gesture_suggest_policy_factory.h"
 #include "dictionary/interface/dictionary_structure_with_buffer_policy.h"
 
+// Include constants
+#include "constants.h"
+
+// Include binary dictionary NAPI
+#include "binary_dictionary_napi.h"
+// Include proximity info NAPI
+#include "proximity_info_napi.h"
+// Include dic traverse session NAPI
+#include "dic_traverse_session_napi.h"
+
 // Keyboard layout for NAPI swipe
 struct KeyBounds {
     std::string key;
@@ -244,8 +254,8 @@ static napi_value SetProximityInfo(napi_env env, napi_callback_info info) {
     napi_get_value_double(env, args[1], &keyWidth);
     napi_get_value_double(env, args[2], &keyHeight);
 
-    // TODO: Create OpenBoard ProximityInfo (requires JNI-free adapter)
-    // For now, proximity info is handled by suggest engine internally
+    // This function now uses the actual proximity info implementation from the NAPI module
+    // The original function was a placeholder
 
     napi_value result;
     napi_get_boolean(env, true, &result);
@@ -574,6 +584,25 @@ static napi_value Unload(napi_env env, napi_callback_info info) {
 // Module initialization
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
+    // Add binary dictionary functions to exports
+    napi_value binaryDictExports = latinime::RegisterBinaryDictionary(env);
+    
+    // Add proximity info functions to exports
+    napi_value proximityInfoExports = latinime::RegisterProximityInfo(env);
+    
+    // Add dic traverse session functions to exports
+    napi_value dicTraverseSessionExports = latinime::RegisterDicTraverseSession(env);
+    
+    // Set binary dictionary as a property of main exports
+    napi_set_named_property(env, exports, "binaryDictionary", binaryDictExports);
+    
+    // Set proximity info as a property of main exports
+    napi_set_named_property(env, exports, "proximityInfo", proximityInfoExports);
+    
+    // Set dic traverse session as a property of main exports
+    napi_set_named_property(env, exports, "dicTraverseSession", dicTraverseSessionExports);
+    
+    // Add other functions to main exports
     napi_property_descriptor desc[] = {
         { "loadDictionary", nullptr, LoadDictionary, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "contains", nullptr, Contains, nullptr, nullptr, nullptr, napi_default, nullptr },

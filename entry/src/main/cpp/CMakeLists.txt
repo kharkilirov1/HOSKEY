@@ -21,6 +21,9 @@ include_directories(
     ${NATIVE_ROOT_PATH}/utils
 )
 
+# Add the current directory for constants.h
+include_directories(${NATIVE_ROOT_PATH})
+
 # Source files - HOSKEY Dictionary Engine
 set(DICTIONARY_HOSKEY_SOURCES
     dictionary_hoskey/trie.cpp
@@ -133,10 +136,28 @@ set(NAPI_HELPER_SOURCES
     napi_helpers.cpp
 )
 
+# Binary Dictionary NAPI
+set(BINARY_DICTIONARY_NAPI_SOURCES
+    binary_dictionary_napi.cpp
+)
+
+# Proximity Info NAPI
+set(PROXIMITY_INFO_NAPI_SOURCES
+    proximity_info_napi.cpp
+)
+
+# Dic Traverse Session NAPI
+set(DIC_TRAVERSE_SESSION_NAPI_SOURCES
+    dic_traverse_session_napi.cpp
+)
+
 # Create shared library
 add_library(native_dict SHARED
     ${NAPI_SOURCES}
     ${NAPI_HELPER_SOURCES}
+    ${BINARY_DICTIONARY_NAPI_SOURCES}
+    ${PROXIMITY_INFO_NAPI_SOURCES}
+    ${DIC_TRAVERSE_SESSION_NAPI_SOURCES}
     ${DICTIONARY_HOSKEY_SOURCES}
     ${DICTIONARY_OPENBOARD_SOURCES}
     ${SUGGEST_SOURCES}
