@@ -2,7 +2,11 @@ import { Want } from '@kit.AbilityKit';
 import keyboardController from './model/KeyboardController';
 import optimizedPredictionModel from './model/OptimizedPredictionModel';
 import clipboardHistory from './model/ClipboardHistory';
+import nativeDictionary from './model/NativeDictionary';
 import { InputMethodExtensionAbility } from '@kit.IMEKit';
+
+// Debug flag - set to true to run self-tests on startup
+const DEBUG_SELF_TEST = false;
 
 export default class HoskeyInputMethod extends InputMethodExtensionAbility {
   onCreate(want: Want): void {
@@ -31,6 +35,22 @@ export default class HoskeyInputMethod extends InputMethodExtensionAbility {
     }).catch((err: Error) => {
       console.error('OpenBoard: Failed to initialize clipboard history', err);
     });
+
+    // Run self-test in debug mode
+    if (DEBUG_SELF_TEST) {
+      nativeDictionary.setContext(this.context);
+      nativeDictionary.initialize('ru').then((loaded) => {
+        if (loaded) {
+          return nativeDictionary.runSelfTest();
+        }
+        console.warn('[HOSKEY IME] Self-test skipped: dictionary not loaded');
+        return false;
+      }).then((passed) => {
+        console.info(`[HOSKEY IME] Self-test result: ${passed ? 'PASSED' : 'FAILED'}`);
+      }).catch((err: Error) => {
+        console.error('[HOSKEY IME] Self-test error:', err);
+      });
+    }
   }
 
   async onDestroy(): Promise<void> {

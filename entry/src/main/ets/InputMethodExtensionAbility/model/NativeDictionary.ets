@@ -338,6 +338,79 @@ class NativeDictionary {
       return null;
     }
   }
+
+  /**
+   * Self-test: Verify NAPI contract is working correctly
+   * Call this in debug mode to validate native module integration
+   * @returns true if all tests pass
+   */
+  async runSelfTest(): Promise<boolean> {
+    console.info('[NativeDictionary] Starting self-test...');
+
+    // Test 1: Check native availability
+    if (!this.nativeAvailable) {
+      console.warn('[NativeDictionary] Self-test: Native module not available');
+      return false;
+    }
+    console.info('[NativeDictionary] Self-test: Native module available ✓');
+
+    // Test 2: Check dictionary loaded
+    if (!this.isLoaded) {
+      console.warn('[NativeDictionary] Self-test: Dictionary not loaded, attempting to test without data');
+    }
+
+    // Test 3: getSuggestions with prefix
+    try {
+      const testPrefix = 'пр';
+      const suggestions = this.getSuggestions(testPrefix, 5);
+      console.info(`[NativeDictionary] Self-test: getSuggestions("${testPrefix}", 5) returned ${suggestions.length} results`);
+      if (suggestions.length > 0) {
+        const first = suggestions[0];
+        if (first) {
+          console.info(`[NativeDictionary] Self-test: First suggestion: "${first.word}" (score: ${first.score}, errorType: ${first.errorType})`);
+        }
+      }
+    } catch (err) {
+      console.error('[NativeDictionary] Self-test: getSuggestions failed:', err);
+      return false;
+    }
+    console.info('[NativeDictionary] Self-test: getSuggestions ✓');
+
+    // Test 4: contains
+    try {
+      const testWord = 'привет';
+      const exists = this.contains(testWord);
+      console.info(`[NativeDictionary] Self-test: contains("${testWord}") = ${exists}`);
+    } catch (err) {
+      console.error('[NativeDictionary] Self-test: contains failed:', err);
+      return false;
+    }
+    console.info('[NativeDictionary] Self-test: contains ✓');
+
+    // Test 5: getFrequency
+    try {
+      const testWord = 'привет';
+      const freq = this.getFrequency(testWord);
+      console.info(`[NativeDictionary] Self-test: getFrequency("${testWord}") = ${freq}`);
+    } catch (err) {
+      console.error('[NativeDictionary] Self-test: getFrequency failed:', err);
+      return false;
+    }
+    console.info('[NativeDictionary] Self-test: getFrequency ✓');
+
+    // Test 6: getStats
+    try {
+      const stats = this.getStats();
+      console.info(`[NativeDictionary] Self-test: getStats() = { wordCount: ${stats.wordCount}, memoryUsage: ${stats.memoryUsage}, isLoaded: ${stats.isLoaded} }`);
+    } catch (err) {
+      console.error('[NativeDictionary] Self-test: getStats failed:', err);
+      return false;
+    }
+    console.info('[NativeDictionary] Self-test: getStats ✓');
+
+    console.info('[NativeDictionary] Self-test: All tests passed ✓');
+    return true;
+  }
 }
 
 // Export singleton instance
