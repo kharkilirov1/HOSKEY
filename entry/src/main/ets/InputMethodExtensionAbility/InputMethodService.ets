@@ -4,8 +4,11 @@ import optimizedPredictionModel from './model/OptimizedPredictionModel';
 import clipboardHistory from './model/ClipboardHistory';
 import { InputMethodExtensionAbility } from '@kit.IMEKit';
 
-export default class InputDemoService extends InputMethodExtensionAbility {
+export default class HoskeyInputMethod extends InputMethodExtensionAbility {
   onCreate(want: Want): void {
+    console.info('[HOSKEY IME] onCreate called, want action:', want.action ?? 'none');
+    console.info('[HOSKEY IME] Context bundleName:', this.context.extensionAbilityInfo.bundleName);
+
     keyboardController.onCreate(this.context);
 
     // Initialize optimized prediction model with context and load saved data
@@ -31,7 +34,7 @@ export default class InputDemoService extends InputMethodExtensionAbility {
   }
 
   async onDestroy(): Promise<void> {
-    console.info("onDestroy.");
+    console.info('[HOSKEY IME] onDestroy called');
 
     // Save prediction model before destroying (with await to ensure completion)
     try {

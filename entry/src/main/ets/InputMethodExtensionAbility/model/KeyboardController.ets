@@ -15,7 +15,8 @@ export class KeyboardController {
   constructor() {}
 
   public onCreate(context: InputMethodExtensionContext): void {
-    console.info('OpenBoard Keyboard: KeyboardController onCreate called');
+    console.info('[HOSKEY IME] KeyboardController.onCreate called');
+    console.info('[HOSKEY IME] Context abilityName:', context.extensionAbilityInfo.name);
     this.mContext = context;
     this.initWindow();
     this.registerListener();
@@ -269,26 +270,32 @@ export class KeyboardController {
       flag: inputMethodEngine.PanelFlag.FLG_FIXED
     };
 
+    console.info('[HOSKEY IME] Creating panel with type SOFT_KEYBOARD, flag FLG_FIXED');
     inputMethodAbility.createPanel(this.mContext, panelInfo).then(async (inputPanel: inputMethodEngine.Panel) => {
+      console.info('[HOSKEY IME] Panel created successfully');
       try {
         this.panel = inputPanel;
         if (this.panel) {
           try {
             await this.panel.resize(dWidth, keyHeight);
+            console.info(`[HOSKEY IME] Panel resized to ${dWidth}x${keyHeight}`);
             await this.panel.moveTo(0, nonBarPosition);
-            await this.panel.setUiContent('InputMethodExtensionAbility/pages/Index');
-            console.info(`OpenBoard Keyboard: Panel initialized with fixed height ${keyHeight}px`);
+            console.info(`[HOSKEY IME] Panel moved to (0, ${nonBarPosition})`);
+            const uiContentPath = 'InputMethodExtensionAbility/pages/Index';
+            await this.panel.setUiContent(uiContentPath);
+            console.info(`[HOSKEY IME] UI content set: ${uiContentPath}`);
+            console.info(`[HOSKEY IME] Panel initialization complete`);
           } catch (resizeErr) {
             const error = resizeErr as BusinessError;
-            console.error(`OpenBoard Keyboard: Failed to resize/move panel. Code: ${error.code}, Msg: ${error.message}`);
+            console.error(`[HOSKEY IME] Failed to configure panel. Code: ${error.code}, Msg: ${error.message}`);
           }
         }
       } catch (err) {
         const error = err as BusinessError;
-        console.error(`OpenBoard Keyboard: Failed to initialize panel UI. Code: ${error.code}, Msg: ${error.message}`);
+        console.error(`[HOSKEY IME] Failed to initialize panel UI. Code: ${error.code}, Msg: ${error.message}`);
       }
     }).catch((err: BusinessError) => {
-      console.error(`Failed to createPanel, code: ${err.code}, message: ${err.message}`);
+      console.error(`[HOSKEY IME] Failed to createPanel. Code: ${err.code}, Msg: ${err.message}`);
     });
   }
 

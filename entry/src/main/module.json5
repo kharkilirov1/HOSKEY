@@ -17,7 +17,7 @@
         "reason": "$string:clipboard_permission_reason",
         "usedScene": {
           "abilities": [
-            "InputMethodExtensionAbility"
+            "HoskeyInputMethod"
           ],
           "when": "inuse"
         }
@@ -27,7 +27,7 @@
         "reason": "$string:vibrate_permission_reason",
         "usedScene": {
           "abilities": [
-            "InputMethodExtensionAbility"
+            "HoskeyInputMethod"
           ],
           "when": "inuse"
         }
@@ -70,11 +70,12 @@
         ]
       },
       {
-        "description": "inputMethod",
-        "name": "InputMethodExtensionAbility",
-        "icon": "$media:layered_image",
+        "name": "HoskeyInputMethod",
         "srcEntry": "./ets/InputMethodExtensionAbility/InputMethodService.ets",
         "type": "inputMethod",
+        "description": "$string:HoskeyInputMethod_desc",
+        "label": "$string:HoskeyInputMethod_label",
+        "icon": "$media:layered_image",
         "exported": true,
         "metadata": [
           {

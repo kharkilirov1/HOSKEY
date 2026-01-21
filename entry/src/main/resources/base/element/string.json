@@ -21,12 +21,12 @@
       "value": "Allow keyboard to provide haptic feedback when typing"
     },
     {
-      "name": "InputMethodExtensionAbility_desc",
-      "value": "OpenBoard Keyboard Input Method"
+      "name": "HoskeyInputMethod_desc",
+      "value": "HOSKEY - OpenBoard Keyboard for HarmonyOS"
     },
     {
-      "name": "InputMethodExtensionAbility_label",
-      "value": "OpenBoard Keyboard"
+      "name": "HoskeyInputMethod_label",
+      "value": "HOSKEY Keyboard"
     },
     {
       "name": "russian_keyboard",
