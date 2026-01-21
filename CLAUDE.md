@@ -20,16 +20,27 @@
 ```
 
 ## Session Instructions
-<!-- Add session-specific instructions below -->
+
+### Rules (STRICT)
+1. **No guessing** - каждое изменение обосновано ссылкой на файл/строки
+2. **Root cause first** - сначала причина, потом правка
+3. **Verify changes** - шаги воспроизведения до/после, тест или лог
+4. **API sync** - при изменении NAPI сигнатур синхронизировать ArkTS типы и d.ts
+5. **Small commits** - 1 логическая правка = 1 коммит
+
+### Goals
+- A) Клавиатура в настройках IME и активируема
+- B) NAPI без UB, корректная валидация аргументов
+- C) ArkTS корректно обрабатывает ошибки, не ломает lifecycle IME
 
 ### Active Tasks
-<!-- Track current tasks here -->
-
-### Rules & Constraints
-<!-- Add project-specific rules here -->
+- [ ] Построить карту соответствий проекта
+- [ ] Проверить module.json5 конфигурацию IME
+- [ ] Проверить NAPI экспорты и ArkTS типы
+- [ ] Исправить найденные проблемы
 
 ### Notes
-<!-- Add important notes for context preservation -->
+<!-- Runtime notes -->
 
 ---
 *Last updated: 2026-01-21*
