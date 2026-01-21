@@ -213,20 +213,23 @@ export class InputPipeline {
     this.predictionDebouncer.cancel();
   }
 
-  // === SWIPE HANDLERS (will be implemented next) ===
+  // === SWIPE HANDLERS ===
+  // NOTE: Swipe typing via InputPipeline is DEFERRED.
+  // SwipeEngine core algorithm is implemented in SwipeEngine.ets
+  // Integration with InputPipeline pending (requires SwipeTraceBuffer)
 
   private handleSwipeStart(x: number, y: number, timestamp: number): void {
     this.isSwipeActive = true;
     this.swipeStartTime = timestamp;
     this.currentMode = InputMode.Swipe;
-    // TODO: Initialize SwipeTraceBuffer
+    // DEFERRED: Initialize SwipeTraceBuffer and connect to SwipeEngine
   }
 
   private handleSwipeMove(x: number, y: number, timestamp: number): void {
     if (!this.isSwipeActive) {
       return;
     }
-    // TODO: Add point to SwipeTraceBuffer
+    // DEFERRED: Add point to SwipeTraceBuffer
   }
 
   private handleSwipeEnd(x: number, y: number, timestamp: number): void {
@@ -237,7 +240,7 @@ export class InputPipeline {
     this.isSwipeActive = false;
     this.currentMode = InputMode.Tap;
 
-    // TODO: Process swipe trace → decode → insert word
+    // DEFERRED: Process swipe trace → decode via SwipeEngine → insert word
   }
 
   // === PREDICTION (SLOW PATH) ===

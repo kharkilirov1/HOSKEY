@@ -10,7 +10,7 @@
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HOSKEY_BINARY_DICT"
+#define LOG_TAG "HOSKEY-NATIVE"
 
 #include "constants.h"
 

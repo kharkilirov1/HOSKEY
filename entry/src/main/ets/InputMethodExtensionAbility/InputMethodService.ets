@@ -18,22 +18,22 @@ export default class HoskeyInputMethod extends InputMethodExtensionAbility {
     // Initialize optimized prediction model with context and load saved data
     optimizedPredictionModel.setContext(this.context);
     optimizedPredictionModel.load().then(() => {
-      console.info('OpenBoard: Prediction model loaded successfully');
+      console.info('[HOSKEY] Prediction model loaded successfully');
 
       // Warmup optimized model for default language (ru)
       return optimizedPredictionModel.warmup('ru');
     }).then(() => {
-      console.info('OpenBoard: Prediction model warmed up for default language');
+      console.info('[HOSKEY] Prediction model warmed up for default language');
     }).catch((err: Error) => {
-      console.error('OpenBoard: Failed to initialize prediction model', err);
+      console.error('[HOSKEY] Failed to initialize prediction model', err);
     });
 
     // Initialize clipboard history
     clipboardHistory.setContext(this.context);
     clipboardHistory.load().then(() => {
-      console.info('OpenBoard: Clipboard history loaded successfully');
+      console.info('[HOSKEY] Clipboard history loaded successfully');
     }).catch((err: Error) => {
-      console.error('OpenBoard: Failed to initialize clipboard history', err);
+      console.error('[HOSKEY] Failed to initialize clipboard history', err);
     });
 
     // Run self-test in debug mode
@@ -59,9 +59,9 @@ export default class HoskeyInputMethod extends InputMethodExtensionAbility {
     // Save prediction model before destroying (with await to ensure completion)
     try {
       await optimizedPredictionModel.save();
-      console.info('OpenBoard: Prediction model saved successfully');
+      console.info('[HOSKEY] Prediction model saved successfully');
     } catch (err) {
-      console.error('OpenBoard: Failed to save prediction model', err);
+      console.error('[HOSKEY] Failed to save prediction model', err);
     }
 
     keyboardController.onDestroy();

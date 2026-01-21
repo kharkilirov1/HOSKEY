@@ -21,11 +21,11 @@
 // HarmonyOS logging
 #include <hilog/log.h>
 
-// Log domain and tag for HOSKEY
+// Log domain and tag for HOSKEY native layer
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HOSKEY_NAPI"
+#define LOG_TAG "HOSKEY-NATIVE"
 
 #include "dictionary_hoskey/trie.h"
 #include "dictionary_hoskey/suggest_engine.h"

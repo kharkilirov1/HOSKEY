@@ -788,12 +788,12 @@ struct Index {
 
       if (text && text.length > 0 && text !== this.lastClipboardText) {
         // New clipboard content detected
-        console.info('OpenBoard: New clipboard content detected');
+        console.info('[HOSKEY] New clipboard content detected');
         clipboardHistory.addItem(text);
         this.lastClipboardText = text;
       }
     } catch (e) {
-      console.error('OpenBoard: Clipboard monitoring failed', e);
+      console.error('[HOSKEY] Clipboard monitoring failed', e);
     }
   }
 
@@ -810,14 +810,14 @@ struct Index {
       this.monitorClipboard();
     }, 2000);
 
-    console.info('OpenBoard: Clipboard monitoring started');
+    console.info('[HOSKEY] Clipboard monitoring started');
   }
 
   private stopClipboardMonitoring(): void {
     if (this.clipboardMonitorTimer !== -1) {
       clearInterval(this.clipboardMonitorTimer);
       this.clipboardMonitorTimer = -1;
-      console.info('OpenBoard: Clipboard monitoring stopped');
+      console.info('[HOSKEY] Clipboard monitoring stopped');
     }
   }
 
@@ -858,7 +858,7 @@ struct Index {
   }
 
   onPageShow(): void {
-    console.info('OpenBoard Keyboard: UI onPageShow called');
+    console.info('[HOSKEY] UI onPageShow called');
     this.availableLanguages = ALLOWED_LANGUAGES.map((c: string) => c as LanguageCode);
     if (!this.availableLanguages.includes(this.currentLanguage)) {
       this.currentLanguage = this.availableLanguages[0];
@@ -870,13 +870,13 @@ struct Index {
 
     // Warmup BaseLexicon for current language (background loading for instant predictions)
     optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-      console.error('OpenBoard: Failed to warmup language on start:', err);
+      console.error('[HOSKEY] Failed to warmup language on start:', err);
     }).then(() => {
       // Set BaseLexicon for SwipeEngine after warmup
       const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     }).catch((err: Error) => {
-      console.warn('OpenBoard: Failed to warmup optimized prediction model:', err);
+      console.warn('[HOSKEY] Failed to warmup optimized prediction model:', err);
     });
   }
 
@@ -1316,7 +1316,7 @@ struct Index {
   // === END SWIPE TYPING METHODS ===
 
   aboutToAppear(): void {
-    console.info('OpenBoard Keyboard: UI aboutToAppear called');
+    console.info('[HOSKEY] UI aboutToAppear called');
     keyboardController.setEnterKeyTypeCallback((enterKeyType: number) => {
       this.updateEnterKeyLabel(enterKeyType);
     });
@@ -1657,7 +1657,7 @@ struct Index {
     if (item.text && item.text.length > 0) {
       keyboardController.insertText(item.text);
       this.onTextTyped(item.text);
-      console.info('OpenBoard: Pasted clipboard item:', item.id);
+      console.info('[HOSKEY] Pasted clipboard item:', item.id);
 
       // Close clipboard panel after pasting
       this.showClipboardPanel = false;
@@ -1666,7 +1666,7 @@ struct Index {
 
   handleSwipe(direction: LayoutSwipeDirection): void {
     if (this.availableLanguages.length <= 1) {
-      console.warn('OpenBoard Keyboard: Only one language enabled, cannot switch.');
+      console.warn('[HOSKEY] Only one language enabled, cannot switch.');
       return;
     }
 
@@ -1679,7 +1679,7 @@ struct Index {
     }
 
     this.currentLanguage = this.availableLanguages[currentIndex];
-    console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
+    console.info('[HOSKEY] Switched to language:', this.currentLanguage);
 
     // Clear keyBoundsMap on language change (iOS-style)
     this.keyBoundsMap.clear();
@@ -1687,13 +1687,13 @@ struct Index {
 
     // Warmup BaseLexicon for new language
     optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-      console.error('OpenBoard: Failed to warmup language:', err);
+      console.error('[HOSKEY] Failed to warmup language:', err);
     }).then(() => {
       // Update SwipeEngine with new language lexicon
       const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
       swipeEngine.setBaseLexicon(baseLexicon);
     }).catch((err: Error) => {
-      console.warn('OpenBoard: Failed to complete language warmup:', err);
+      console.warn('[HOSKEY] Failed to complete language warmup:', err);
     });
   }
 

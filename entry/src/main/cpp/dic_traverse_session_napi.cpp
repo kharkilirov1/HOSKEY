@@ -9,7 +9,7 @@
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HOSKEY_DIC_TRAVERSE"
+#define LOG_TAG "HOSKEY-NATIVE"
 
 #include "suggest/core/session/dic_traverse_session.h"
 #include "napi_helpers.h"

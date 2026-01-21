@@ -631,7 +631,7 @@ export class OptimizedPredictionModel {
 
   // Prune model to keep it within size limits
   private pruneModel(m: LangModel): void {
-    console.info(`OpenBoard: Model size limit reached (${m.uni.size} words), pruning...`);
+    console.info(`[HOSKEY] Model size limit reached (${m.uni.size} words), pruning...`);
 
     // Remove bottom 10% of least frequently used words
     const wordsToRemove = Math.floor(m.uni.size * 0.1);
@@ -679,7 +679,7 @@ export class OptimizedPredictionModel {
       }
     });
 
-    console.info(`OpenBoard: Pruned ${wordsToRemove} words, new size: ${m.uni.size}`);
+    console.info(`[HOSKEY] Pruned ${wordsToRemove} words, new size: ${m.uni.size}`);
   }
 
   /**
@@ -690,7 +690,7 @@ export class OptimizedPredictionModel {
     const excess = m.pendingWords.size - PredictionConfig.MAX_PENDING_PER_LANGUAGE;
     if (excess <= 0) return;
 
-    console.info(`OpenBoard: Pending words limit reached (${m.pendingWords.size}), pruning ${excess}...`);
+    console.info(`[HOSKEY] Pending words limit reached (${m.pendingWords.size}), pruning ${excess}...`);
 
     // Sort pending words by count (ascending), remove lowest count words
     const sorted = Array.from(m.pendingWords.entries())
@@ -705,7 +705,7 @@ export class OptimizedPredictionModel {
       m.lastUsed.delete(word);
     });
 
-    console.info(`OpenBoard: Pruned ${excess} pending words, new size: ${m.pendingWords.size}`);
+    console.info(`[HOSKEY] Pruned ${excess} pending words, new size: ${m.pendingWords.size}`);
   }
 
   recordWord(lang: string, prev: string | null, word: string, prev2: string | null = null): void {
@@ -1509,7 +1509,7 @@ export class OptimizedPredictionModel {
     // Remove from pending
     m.pendingWords.delete(w);
 
-    console.info(`OpenBoard: Deleted word "${w}" from model`);
+    console.info(`[HOSKEY] Deleted word "${w}" from model`);
 
     // Auto-save after deletion (debounced)
     this.debouncedSave();
@@ -1526,7 +1526,7 @@ export class OptimizedPredictionModel {
     // Also delete the word if it's already learned
     this.deleteWord(lang, word);
 
-    console.info(`OpenBoard: Blocked word "${w}" from being learned`);
+    console.info(`[HOSKEY] Blocked word "${w}" from being learned`);
 
     // Auto-save after blocking (debounced)
     this.debouncedSave();
@@ -1538,7 +1538,7 @@ export class OptimizedPredictionModel {
     const w = word.toLowerCase();
     m.blockedWords.delete(w);
 
-    console.info(`OpenBoard: Unblocked word "${w}"`);
+    console.info(`[HOSKEY] Unblocked word "${w}"`);
 
     // Auto-save after unblocking (debounced)
     this.debouncedSave();
@@ -1724,10 +1724,10 @@ export class OptimizedPredictionModel {
 
       await pref.put('models', JSON.stringify(allModels));
       await pref.flush();
-      console.info('OpenBoard: Prediction data saved successfully');
+      console.info('[HOSKEY] Prediction data saved successfully');
     } catch (err) {
       const error = err as BusinessError;
-      console.error(`OpenBoard: Failed to save prediction data. Code: ${error.code}, Msg: ${error.message}`);
+      console.error(`[HOSKEY] Failed to save prediction data. Code: ${error.code}, Msg: ${error.message}`);
       // Don't throw - just log the error
     } finally {
       this.isSaving = false;
@@ -1746,7 +1746,7 @@ export class OptimizedPredictionModel {
       const data = await pref.get('models', '');
 
       if (!data || typeof data !== 'string' || data.length === 0) {
-        console.info('OpenBoard: No saved prediction data found');
+        console.info('[HOSKEY] No saved prediction data found');
         return;
       }
 
@@ -1772,15 +1772,15 @@ export class OptimizedPredictionModel {
           this.importModel(lang, model as SerializedModel);
           loadedCount++;
         } else {
-          console.warn(`OpenBoard: Skipping invalid model data for language '${lang}'`);
+          console.warn(`[HOSKEY] Skipping invalid model data for language '${lang}'`);
           skippedCount++;
         }
       });
 
-      console.info(`OpenBoard: Loaded ${loadedCount} language(s), skipped ${skippedCount} invalid`);
+      console.info(`[HOSKEY] Loaded ${loadedCount} language(s), skipped ${skippedCount} invalid`);
     } catch (err) {
       const error = err as BusinessError;
-      console.error(`OpenBoard: Failed to load prediction data. Code: ${error.code}, Msg: ${error.message}`);
+      console.error(`[HOSKEY] Failed to load prediction data. Code: ${error.code}, Msg: ${error.message}`);
       // Don't throw - just continue with empty model
     }
   }
@@ -1801,8 +1801,8 @@ export class OptimizedPredictionModel {
    * BaseLexicon will be loaded lazily via warmup() or first predict()/autocorrect() call
    */
   async loadDictionaries(): Promise<void> {
-    console.info('OpenBoard: BaseLexicon will be loaded on-demand via warmup() or first use');
-    console.info('OpenBoard: Call warmup(lang) after keyboard initialization to preload lexicon');
+    console.info('[HOSKEY] BaseLexicon will be loaded on-demand via warmup() or first use');
+    console.info('[HOSKEY] Call warmup(lang) after keyboard initialization to preload lexicon');
   }
 }
 

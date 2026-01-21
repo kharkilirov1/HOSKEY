@@ -117,14 +117,10 @@ export class PredictorFacade implements IPredictor {
     prevWord: string
   ): Promise<string[]> {
     try {
-      // For now, use basic decoding without context
-      // TODO: Add prevWord bigram boost in ranking
-
-      // Use existing SwipeEngine.getCandidates equivalent
-      // Or BaseLexicon prefix search + filtering
-
-      // Placeholder: Return empty until SwipeEngine integration complete
-      // This will be implemented in next commit
+      // DEFERRED: Swipe decoding via PredictorFacade
+      // SwipeEngine.processSwipe() is implemented in SwipeEngine.ets
+      // This method will integrate with it when InputPipeline swipe handlers are complete
+      // For now, swipe typing is handled directly in Index.ets via swipeEngine.processSwipe()
       return [];
     } catch (err) {
       console.error('[PredictorFacade] Swipe decode error:', err);

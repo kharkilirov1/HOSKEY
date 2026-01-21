@@ -9,7 +9,7 @@
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HOSKEY_PROXIMITY"
+#define LOG_TAG "HOSKEY-NATIVE"
 
 #include "suggest/core/layout/proximity_info.h"
 #include "napi_helpers.h"
