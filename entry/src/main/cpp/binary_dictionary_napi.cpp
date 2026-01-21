@@ -4,6 +4,14 @@
 #include <vector>
 #include <string>
 
+// HarmonyOS logging
+#include <hilog/log.h>
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "HOSKEY_BINARY_DICT"
+
 #include "constants.h"
 
 #include "defines.h"
@@ -36,13 +44,44 @@ struct DictionaryWrapper {
     }
 };
 
-// Helper function to convert NAPI string to std::string
+/**
+ * Safely convert NAPI string to std::string
+ * - Checks napi_status at each step
+ * - Handles empty strings correctly
+ * - Properly sizes buffer with +1 for null terminator
+ * @returns empty string on any error
+ */
 static std::string NapiStringToString(napi_env env, napi_value strValue) {
-    size_t length = 0;
-    napi_get_value_string_utf8(env, strValue, nullptr, 0, &length);
-    std::string result(length, '\0');
-    napi_get_value_string_utf8(env, strValue, &result[0], length + 1, &length);
-    return result;
+    if (env == nullptr || strValue == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: null env or value");
+        return "";
+    }
+
+    // Step 1: Get required buffer length
+    size_t requiredLength = 0;
+    napi_status status = napi_get_value_string_utf8(env, strValue, nullptr, 0, &requiredLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: failed to get length, status=%d", status);
+        return "";
+    }
+
+    // Handle empty string
+    if (requiredLength == 0) {
+        return "";
+    }
+
+    // Step 2: Allocate buffer with space for null terminator
+    std::vector<char> buffer(requiredLength + 1, '\0');
+
+    // Step 3: Copy string data
+    size_t copiedLength = 0;
+    status = napi_get_value_string_utf8(env, strValue, buffer.data(), buffer.size(), &copiedLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: failed to copy, status=%d", status);
+        return "";
+    }
+
+    return std::string(buffer.data(), copiedLength);
 }
 
 static napi_value Open(napi_env env, napi_callback_info info) {

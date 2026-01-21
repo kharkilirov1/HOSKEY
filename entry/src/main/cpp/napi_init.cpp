@@ -16,6 +16,16 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <cstdio>
+
+// HarmonyOS logging
+#include <hilog/log.h>
+
+// Log domain and tag for HOSKEY
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "HOSKEY_NAPI"
 
 #include "dictionary_hoskey/trie.h"
 #include "dictionary_hoskey/suggest_engine.h"
@@ -52,20 +62,69 @@ static std::vector<KeyBounds> g_keyboardLayout;
 static std::unique_ptr<hoskey::Trie> g_trie;
 static std::unique_ptr<hoskey::SuggestEngine> g_suggestEngine;
 
-// Helper: Convert napi_value string to std::string
-static std::string NapiValueToString(napi_env env, napi_value value) {
-    size_t length = 0;
-    napi_get_value_string_utf8(env, value, nullptr, 0, &length);
+// ============================================================================
+// Safe String Conversion Helpers - No UB, proper buffer handling
+// ============================================================================
 
-    std::string result(length, '\0');
-    napi_get_value_string_utf8(env, value, &result[0], length + 1, &length);
-    return result;
+/**
+ * Safely convert napi_value string to std::string
+ * - Checks napi_status at each step
+ * - Handles empty strings correctly
+ * - Properly sizes buffer with +1 for null terminator
+ * - Resizes result to actual copied length
+ * @returns empty string on any error
+ */
+static std::string NapiValueToString(napi_env env, napi_value value) {
+    if (env == nullptr || value == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "NapiValueToString: null env or value");
+        return "";
+    }
+
+    // Step 1: Get required buffer length (excluding null terminator)
+    size_t requiredLength = 0;
+    napi_status status = napi_get_value_string_utf8(env, value, nullptr, 0, &requiredLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiValueToString: failed to get string length, status=%d", status);
+        return "";
+    }
+
+    // Handle empty string case
+    if (requiredLength == 0) {
+        return "";
+    }
+
+    // Step 2: Allocate buffer with space for null terminator
+    // Use vector for exception-safe memory management
+    std::vector<char> buffer(requiredLength + 1, '\0');
+
+    // Step 3: Copy string data
+    size_t copiedLength = 0;
+    status = napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &copiedLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiValueToString: failed to copy string, status=%d", status);
+        return "";
+    }
+
+    // Step 4: Create string from buffer with actual copied length
+    return std::string(buffer.data(), copiedLength);
 }
 
-// Helper: Create napi_value string from std::string
+/**
+ * Safely create napi_value string from std::string
+ * - Checks napi_status
+ * - Returns nullptr on error (caller must handle)
+ */
 static napi_value StringToNapiValue(napi_env env, const std::string& str) {
-    napi_value result;
-    napi_create_string_utf8(env, str.c_str(), str.length(), &result);
+    if (env == nullptr) {
+        return nullptr;
+    }
+
+    napi_value result = nullptr;
+    napi_status status = napi_create_string_utf8(env, str.c_str(), str.length(), &result);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "StringToNapiValue: failed to create string, status=%d", status);
+        return nullptr;
+    }
     return result;
 }
 
@@ -153,17 +212,25 @@ static napi_value LoadDictionary(napi_env env, napi_callback_info info) {
     }
 
     std::string path = NapiValueToString(env, args[0]);
+    OH_LOG_INFO(LOG_APP, "loadDictionary: loading from path=%{public}s", path.c_str());
 
     // Initialize trie if needed
     if (!g_trie) {
+        OH_LOG_DEBUG(LOG_APP, "loadDictionary: creating new Trie instance");
         g_trie = std::make_unique<hoskey::Trie>();
     }
 
     bool success = g_trie->loadFromFile(path);
 
-    // Initialize suggest engine with loaded trie
-    if (success && !g_suggestEngine) {
-        g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
+    if (success) {
+        OH_LOG_INFO(LOG_APP, "loadDictionary: SUCCESS - loaded %d words", g_trie->getWordCount());
+        // Initialize suggest engine with loaded trie
+        if (!g_suggestEngine) {
+            OH_LOG_DEBUG(LOG_APP, "loadDictionary: creating SuggestEngine");
+            g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
+        }
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadDictionary: FAILED to load from %{public}s", path.c_str());
     }
 
     napi_value result;
@@ -238,21 +305,58 @@ static napi_value GetFrequency(napi_env env, napi_callback_info info) {
 /**
  * SuggestResult interface:
  * { word: string, score: number, errorType: number }
+ * Creates a JavaScript object from C++ SuggestResult
+ * Returns nullptr on error (caller must handle)
  */
 static napi_value CreateSuggestResult(napi_env env, const hoskey::SuggestResult& sr) {
-    napi_value obj;
-    napi_create_object(env, &obj);
+    if (env == nullptr) {
+        return nullptr;
+    }
 
+    napi_value obj = nullptr;
+    napi_status status = napi_create_object(env, &obj);
+    if (status != napi_ok || obj == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to create object");
+        return nullptr;
+    }
+
+    // Set word property
     napi_value word = StringToNapiValue(env, sr.word);
-    napi_set_named_property(env, obj, "word", word);
+    if (word == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to create word string");
+        return nullptr;
+    }
+    status = napi_set_named_property(env, obj, "word", word);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to set word property");
+        return nullptr;
+    }
 
-    napi_value score;
-    napi_create_double(env, sr.score, &score);
-    napi_set_named_property(env, obj, "score", score);
+    // Set score property
+    napi_value score = nullptr;
+    status = napi_create_double(env, sr.score, &score);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to create score");
+        return nullptr;
+    }
+    status = napi_set_named_property(env, obj, "score", score);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to set score property");
+        return nullptr;
+    }
 
-    napi_value errorType;
-    napi_create_int32(env, static_cast<int>(sr.errorType), &errorType);
-    napi_set_named_property(env, obj, "errorType", errorType);
+    // Set errorType property
+    napi_value errorType = nullptr;
+    status = napi_create_int32(env, static_cast<int>(sr.errorType), &errorType);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to create errorType");
+        return nullptr;
+    }
+    status = napi_set_named_property(env, obj, "errorType", errorType);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "CreateSuggestResult: failed to set errorType property");
+        return nullptr;
+    }
 
     return obj;
 }
@@ -277,10 +381,11 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // Return empty array if engine not initialized
+    // GUARDRAIL: Return empty array if engine not initialized (safe, no crash)
     napi_value result;
     napi_create_array(env, &result);
     if (!g_suggestEngine) {
+        OH_LOG_WARN(LOG_APP, "getSuggestions: called but dictionary not loaded - returning empty array");
         return result;
     }
 
@@ -294,9 +399,16 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
 
     auto suggestions = g_suggestEngine->getSuggestions(prefix, limit);
 
+    // Safely add each suggestion to result array
+    uint32_t addedCount = 0;
     for (size_t i = 0; i < suggestions.size(); i++) {
         napi_value item = CreateSuggestResult(env, suggestions[i]);
-        napi_set_element(env, result, i, item);
+        if (item != nullptr) {
+            napi_status status = napi_set_element(env, result, addedCount, item);
+            if (status == napi_ok) {
+                addedCount++;
+            }
+        }
     }
 
     return result;
@@ -684,15 +796,32 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
 
 /**
  * unload(): void
- * Unload dictionary and free memory
+ * Unload dictionary and free memory safely
+ * - Uses smart pointer reset() which handles nullptr safely
+ * - Clears keyboard layout
+ * - No double-free possible due to unique_ptr semantics
  */
 static napi_value Unload(napi_env env, napi_callback_info info) {
-    // Clean up keyboard layout
+    OH_LOG_INFO(LOG_APP, "unload: releasing resources");
+
+    // Clean up keyboard layout (vector::clear is safe even if empty)
+    size_t layoutSize = g_keyboardLayout.size();
     g_keyboardLayout.clear();
+    OH_LOG_DEBUG(LOG_APP, "unload: cleared keyboard layout (%zu keys)", layoutSize);
 
     // Clean up dictionary instances
-    g_suggestEngine.reset();
-    g_trie.reset();
+    // unique_ptr::reset() is safe even if already null (no double-free)
+    if (g_suggestEngine) {
+        OH_LOG_DEBUG(LOG_APP, "unload: releasing SuggestEngine");
+        g_suggestEngine.reset();  // Safely deletes and sets to nullptr
+    }
+
+    if (g_trie) {
+        OH_LOG_DEBUG(LOG_APP, "unload: releasing Trie");
+        g_trie.reset();  // Safely deletes and sets to nullptr
+    }
+
+    OH_LOG_INFO(LOG_APP, "unload: complete");
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);

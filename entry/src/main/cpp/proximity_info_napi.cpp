@@ -3,6 +3,14 @@
 #include <memory>
 #include <string>
 
+// HarmonyOS logging
+#include <hilog/log.h>
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "HOSKEY_PROXIMITY"
+
 #include "suggest/core/layout/proximity_info.h"
 #include "napi_helpers.h"
 #include "constants.h"
@@ -17,17 +25,43 @@ struct ProximityInfoWrapper {
     ~ProximityInfoWrapper() {
         if (proximityInfo) {
             delete proximityInfo;
+            proximityInfo = nullptr;  // Prevent dangling pointer
         }
     }
 };
 
-// Helper function to convert NAPI string to std::string
+/**
+ * Safely convert NAPI string to std::string
+ * - Checks napi_status at each step
+ * - Handles empty strings correctly
+ * @returns empty string on any error
+ */
 static std::string NapiStringToString(napi_env env, napi_value strValue) {
-    size_t length = 0;
-    napi_get_value_string_utf8(env, strValue, nullptr, 0, &length);
-    std::string result(length, '\0');
-    napi_get_value_string_utf8(env, strValue, &result[0], length + 1, &length);
-    return result;
+    if (env == nullptr || strValue == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: null env or value");
+        return "";
+    }
+
+    size_t requiredLength = 0;
+    napi_status status = napi_get_value_string_utf8(env, strValue, nullptr, 0, &requiredLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: failed to get length, status=%d", status);
+        return "";
+    }
+
+    if (requiredLength == 0) {
+        return "";
+    }
+
+    std::vector<char> buffer(requiredLength + 1, '\0');
+    size_t copiedLength = 0;
+    status = napi_get_value_string_utf8(env, strValue, buffer.data(), buffer.size(), &copiedLength);
+    if (status != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "NapiStringToString: failed to copy, status=%d", status);
+        return "";
+    }
+
+    return std::string(buffer.data(), copiedLength);
 }
 
 static napi_value SetProximityInfo(napi_env env, napi_callback_info info) {
@@ -81,16 +115,26 @@ static napi_value ReleaseProximityInfo(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // Get proximity info wrapper
-    ProximityInfoWrapper* wrapper;
-    napi_get_value_external(env, args[0], reinterpret_cast<void**>(&wrapper));
-    if (wrapper) {
-        if (wrapper->proximityInfo) {
-            delete wrapper->proximityInfo;
-            wrapper->proximityInfo = nullptr;
-        }
-        // Note: We don't delete the wrapper here because the external reference handles that
+    // Get proximity info wrapper - safely handle null/invalid
+    ProximityInfoWrapper* wrapper = nullptr;
+    napi_status status = napi_get_value_external(env, args[0], reinterpret_cast<void**>(&wrapper));
+
+    if (status != napi_ok || wrapper == nullptr) {
+        OH_LOG_WARN(LOG_APP, "ReleaseProximityInfo: invalid or null wrapper");
+        napi_value result;
+        napi_get_undefined(env, &result);
+        return result;
     }
+
+    // Safely release proximity info (destructor handles null check)
+    if (wrapper->proximityInfo != nullptr) {
+        OH_LOG_INFO(LOG_APP, "ReleaseProximityInfo: releasing proximity info");
+        delete wrapper->proximityInfo;
+        wrapper->proximityInfo = nullptr;
+    } else {
+        OH_LOG_WARN(LOG_APP, "ReleaseProximityInfo: already released (no double-free)");
+    }
+    // Note: wrapper itself is freed by NAPI finalizer callback
 
     napi_value result;
     napi_get_undefined(env, &result);
