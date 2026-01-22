@@ -1785,7 +1785,9 @@ struct Index {
       return;
     }
     if (this.isBoundaryChar(text)) {
-      await this.onBoundaryTyped(text);
+      // For boundary chars from KeyAction.Char, the char was already inserted
+      // by handleKeyPress, so we call onBoundaryTyped with shouldInsert=false
+      await this.onBoundaryTyped(text, false);
       return;
     }
     this.currentWord = this.currentWord + text;
@@ -1793,7 +1795,12 @@ struct Index {
     this.resetInactivityTimer();
   }
 
-  private async onBoundaryTyped(ch: string): Promise<void> {
+  /**
+   * Handle boundary character (space, punctuation, etc.)
+   * @param ch - the boundary character
+   * @param shouldInsert - whether to insert the char (false if already inserted by handleKeyPress)
+   */
+  private async onBoundaryTyped(ch: string, shouldInsert: boolean = true): Promise<void> {
     if (this.currentWord) {
       // Check for autocorrection on space
       if (ch === ' ') {
@@ -1843,13 +1850,10 @@ struct Index {
       this.currentWord = '';
     }
 
-    // Insert the boundary character that was typed
-    // For space, it's already handled in the autocorrection flow above
-    if (ch !== ' ') {
+    // Insert the boundary character if needed
+    // (shouldInsert=false when char was already inserted by handleKeyPress for KeyAction.Char)
+    if (shouldInsert) {
       keyboardController.insertText(ch);
-    } else {
-      // For space character, insert it after potential autocorrection
-      keyboardController.insertText(' ');
     }
 
     this.debouncedUpdateSuggestions(); // Debounced to reduce load
