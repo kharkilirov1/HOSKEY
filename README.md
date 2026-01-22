@@ -1,145 +1,102 @@
-<img src="https://github.com/Open-Tech-Project/OpenTube_readme/blob/main/Group%20335.png" align="left" width="60" height="60" alt="Project Logo">
-# OpenBoard
+# HOSKEY
 
-[![HarmonyOS](https://img.shields.io/badge/HarmonyOS-6.0-red)](https://consumer.huawei.com/cn/harmonyos-6/)
-[![ArkTS](https://img.shields.io/badge/ArkTS-Language-blue)](https://developer.harmonyos.com/en/docs/documentation/doc-guides/arkts-get-started-0000001774119986)
-[![AppGallery](https://img.shields.io/badge/Available%20on-AppGallery-orange)](https://appgallery.huawei.com/app/detail?id=com.huawei.hmsapp.appgallery&channelId=SHARE&source=appshare)
-[![License](https://img.shields.io/badge/License-Open%20Source-green)](#-license)
+[![HarmonyOS](https://img.shields.io/badge/HarmonyOS-5.0+-red)](https://developer.huawei.com/consumer/en/harmonyos/)
+[![ArkTS](https://img.shields.io/badge/ArkTS-5.0-blue)](https://developer.huawei.com/consumer/en/arkts/)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-green)](#лицензия)
 
-OpenBoard is a modern, open-source keyboard application designed specifically for **HarmonyOS 6.0**. Built with ArkTS, OpenBoard delivers a seamless typing experience with advanced features and multi-language support, available exclusively on Huawei AppGallery.
+**HOSKEY** — клавиатура для HarmonyOS с нативным движком предсказаний на C++.
 
-## 🌟 Features
+## Возможности
 
-- **Multi-Language Support**: Full keyboard layouts for Polish, English, Italian, and Persian
-- **Smart Word Prediction**: Context-aware suggestions in all supported languages
-- **Voice Typing**: Speech-to-text functionality across all languages
-- **Clipboard Integration**: Quick access to paste recently copied items
-- **Emoji Panel**: Extensive emoji collection with categorized browsing
-- **Smart Toolbars**: Context-aware interface that adapts to your typing needs
-- **Gesture Support**: Swipe gestures for language switching and navigation
-- **Customizable Themes**: Beautiful, responsive design with theme support
+- **Нативный движок предсказаний** — C++ Trie с OpenBoard словарями (200k+ слов)
+- **20 языков** — словари для bg, bn, da, de, el, en, eo, es, fr, hu, hy, it, nl, pl, pt_br, pt_pt, ro, ru, sv, tr
+- **6 раскладок** — English, Русский, Polski, Italiano, العربية, فارسی
+- **Голосовой ввод** — распознавание речи
+- **Буфер обмена** — быстрая вставка
+- **Эмодзи** — панель с категориями
 
-## 📱 Supported Languages
+## Установка
 
-| Language | Status | Layout | Prediction |
-|----------|--------|--------|------------|
-| English | ✅ Full Support | QWERTY | ✅ Available |
-| Polish | ✅ Full Support | QWERTY | ✅ Available |
-| Italian | ✅ Full Support | QWERTY | ✅ Available |
-| Persian | ✅ Full Support | فارسی | ✅ Available |
-## 🚀 Quick Start
+### Требования
+- HarmonyOS 5.0+
+- DevEco Studio 5.0+ (для разработки)
 
-### Prerequisites
-
-- **HarmonyOS 6.0** or later
-- **DevEco Studio 6.0.1 or later** (for development)
-- **ArkTS** development language
-
-### Installation
-
-1. **Download from AppGallery**
-   - [Visit Huawei Harmony os AppGallery](https://appgallery.huawei.com/app/detail?id=com.huawei.hmsapp.appgallery&channelId=SHARE&source=appshare)
-   - Search for "OpenBoard"
-   - Install the application
-
-2. **Enable OpenBoard as Default Keyboard**
-   - Go to **Settings** > **System & updates** > **Language & input** > **Virtual keyboard**
-   - Select **OpenBoard** as your default keyboard
-   - Grant necessary permissions for voice typing and clipboard access
-
-## 🛠️ Architecture
-
-OpenBoard is built using a modular architecture with the following key components:
-
-- **Keyboard Controller**: Service comunicating between the keyboard and system (`inputMethodService.ets`)
-- **Keyboard Controller**: Database of keyboard layouts (`keyboardKeyData.ets`)
-- **Prediction Engine**: Smart word suggestions (`predictionModel.ets`)
-- **Layout System**: Dynamic keyboard layouts for all languages
-- **UI Components**: ArkTS-based responsive interface
-- **Input Method Extension**: HarmonyOS IME integration
-
-### Key Components
-```typescript
-// Core keyboard structure
-- KeyboardKeyData (Alphabet, Symbols, special keys)
-- Multi-language layout definitions
-- Prediction model integration
+### Сборка
+```bash
+git clone https://github.com/user/HOSKEY.git
+cd HOSKEY
+# Открыть в DevEco Studio и собрать
 ```
-## 🎯 Smart Toolbars
 
-OpenBoard features intelligent toolbars that adapt to your usage context:
+### Настройка клавиатуры
 
-1. **Standard Typing Toolbar**
-   - Layout: `[Close] [Suggestion 1 | Suggestion 2 | Suggestion 3]`
-   - Active during regular typing
-   - Shows word predictions
+1. **Установите HAP** на устройство
+2. Откройте **Настройки** → **Система** → **Клавиатура**
+3. **Включите HOSKEY** в списке клавиатур
+4. **Выберите HOSKEY** как клавиатуру по умолчанию
+5. Откройте любое приложение с текстовым полем
+6. Нажмите на поле ввода — появится клавиатура
 
-1. **Pre-Typing Toolbar**
-   - Layout: `[Close] [Clipboard]`
-   - Appears after 5 seconds of inactivity
-   - Quick access to clipboard
+### Переключение языков
+- **Долгое нажатие на пробел** — меню выбора языка
+- **Свайп по пробелу** — быстрое переключение
 
-1. **Emoji Toolbar**
-   - Layout: `[⌨ Return]`
-   - Active in emoji selection mode
-   - Easy return to main keyboard
+## Архитектура
 
-1. **Voice Typing Toolbar**
-   - Layout: `[Close] [🎤 Typing with voice...]`
-   - Active during voice input sessions
-   - Shows voice recognition status
+```
+entry/src/main/
+├── ets/
+│   ├── InputMethodExtensionAbility/  # IME сервис
+│   │   ├── model/
+│   │   │   ├── NativeDictionary.ets  # NAPI обёртка для C++
+│   │   │   ├── OptimizedPredictionModel.ets  # Движок предсказаний
+│   │   │   └── KeyboardController.ets  # Контроллер панели
+│   │   └── pages/
+│   │       └── Index.ets  # UI клавиатуры
+│   └── pages/
+│       └── SetupGuidePage.ets  # Страница настройки
+├── cpp/
+│   ├── napi_init.cpp  # NAPI точка входа
+│   └── dictionary_hoskey/  # C++ Trie движок
+└── resources/
+    └── rawfile/
+        └── main_*.dict  # Бинарные словари
+```
 
-## 🤝 Contributing
+## Словари
 
-We welcome contributions from the HarmonyOS developer community! Please read our Contributing Guidelines before submitting pull requests.
+| Язык | Файл | Размер |
+|------|------|--------|
+| Русский | main_ru.dict | 2.2 MB |
+| English | main_en.dict | 2.9 MB |
+| Deutsch | main_de.dict | 1.6 MB |
+| Español | main_es.dict | 1.4 MB |
+| Français | main_fr.dict | 1.3 MB |
+| Italiano | main_it.dict | 1.1 MB |
+| Polski | main_pl.dict | 1.2 MB |
+| ... | ... | ... |
 
-### Development Setup
+**Итого:** 20 словарей, ~35 MB
 
-1. **Fork the repository**
-   ```bash
-   git clone https://github.com/Open-Tech-Project/OpenBoard.git
-   cd OpenBoard
-   ```
+## Разработка
 
-1. **Open in DevEco Studio**
-   - Import project into DevEco Studio
-   - Set up signing certificates
+### Добавление нового языка
 
-1. **Build and Test thoroughly**
-   - Connect HarmonyOS device or emulator
-   - Build project: Build > Build Project
-   - Run on target device
+1. Добавить словарь `main_XX.dict` в `resources/rawfile/`
+2. Добавить раскладку в `KeyboardKeyData.ets`
+3. Добавить код языка в `LanguageCode` тип
+4. Добавить в `ALLOWED_LANGUAGES`
 
-1. **Adding New Languages**
-   - Create layout definition in `model/KeyboardKeyData.ets`
-   - Add language code to `LanguageCode` type
-   - Implement prediction model integration
-   - Update language switching logic
+### Логи для отладки
 
-1. **Open a Pull Request**
+```bash
+hdc shell hilog | grep -E "HOSKEY|NativeDictionary"
+```
 
-## 📄 License
+## Лицензия
 
-This project is licensed under the GNU Affero General Public License, Version 3 or later (AGPLv3+).
-
-Copyright (C) 2025 The OpenBoard Project Authors
-
-Key License Points
-
-Free Software: You are free to run, study, share, and modify this software.
-
-Full Text: The complete license is included in the file LICENSE in this repository.
-
-No Warranty: This program is provided without any warranty.
-
-AGPL Requirement: If you modify and run a version of OpenBoard as a public network service, you must prominently offer all users access to the Corresponding Source Code of your modified version.
+AGPL-3.0 — см. [LICENSE.md](LICENSE.md)
 
 ---
 
-Made with ❤️ by the OpenTech community
-
-
-
-
-
-
+*HOSKEY — HarmonyOS Keyboard*
