@@ -13,6 +13,14 @@
       "value": "#00000000"
     },
     {
+      "name": "keyboard_regular_key",
+      "value": "#ff666666"
+    },
+    {
+      "name": "keyboard_special_key",
+      "value": "#ff3D3D3D"
+    },
+    {
       "name": "theme_colors_brand",
       "value": "#ff317af7"
     },
