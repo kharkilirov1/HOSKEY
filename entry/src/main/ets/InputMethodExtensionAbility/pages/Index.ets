@@ -58,11 +58,9 @@ interface SpeechRecognitionResult {
 // HELPER FUNCTIONS
 function getLanguageName(code: LanguageCode): string {
   switch (code) {
-    case 'ar': return 'Arabic';
     case 'en': return 'English';
     case 'it': return 'Italian';
     case 'pl': return 'Polish';
-    case 'fa': return 'Persian';
     case 'ru': return 'Русский';
     default: return 'English';
   }
@@ -73,8 +71,6 @@ function getVoiceDictationStatus(code: LanguageCode): string {
     case 'en': return 'Voice typing...';
     case 'pl': return 'Piszenie głosem...';
     case 'it': return 'Digitazione vocale...';
-    case 'ar': return 'الكتابة الصوتية...';
-    case 'fa': return 'تایپ صوتی...';
     case 'ru': return 'Голосовой ввод...';
     default: return 'Voice typing...';
   }
@@ -86,8 +82,6 @@ function getVoiceInterruptionMessage(code: LanguageCode): string {
     case 'en': return 'Voice input interrupted';
     case 'pl': return 'Wprowadzanie głosowe przerwane';
     case 'it': return 'Inserimento vocale interrotto';
-    case 'ar': return 'تم مقاطعة الإدخال الصوتي';
-    case 'fa': return 'ورودی صوتی قطع شد';
     case 'ru': return 'Голосовой ввод прерван';
     default: return 'Voice input interrupted';
   }
@@ -98,8 +92,6 @@ function getVoicePermissionError(code: LanguageCode): string {
     case 'en': return 'Microphone permission denied';
     case 'pl': return 'Odmowa uprawnień do mikrofonu';
     case 'it': return 'Permesso microfono negato';
-    case 'ar': return 'تم رفض إذن الميكروفون';
-    case 'fa': return 'اجازه میکروفون رد شد';
     case 'ru': return 'Доступ к микрофону запрещен';
     default: return 'Microphone permission denied';
   }
@@ -110,8 +102,6 @@ function getVoiceRecognitionError(code: LanguageCode): string {
     case 'en': return 'Speech recognition failed';
     case 'pl': return 'Rozpoznawanie mowy nie powiodło się';
     case 'it': return 'Riconoscimento vocale fallito';
-    case 'ar': return 'فشل التعرف على الكلام';
-    case 'fa': return 'تشخیص گفتار ناموفق بود';
     case 'ru': return 'Распознавание речи не удалось';
     default: return 'Speech recognition failed';
   }
@@ -253,7 +243,7 @@ struct KeyView {
       }
       return this.enterKeyLabel;
     }
-    if (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)) {
+    if (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock) {
       return this.keyData.shiftValue ?? this.keyData.mainValue;
     }
     if (this.keyData.action === KeyAction.Space) {
@@ -834,18 +824,14 @@ struct Index {
             (this.currentLanguage === 'en' ? 'Manual input' :
               this.currentLanguage === 'pl' ? 'Wpis ręczny' :
                 this.currentLanguage === 'it' ? 'Input manuale' :
-                  this.currentLanguage === 'ar' ? 'إدخال يدوي' :
-                    this.currentLanguage === 'fa' ? 'ورودی دستی' :
-                      this.currentLanguage === 'ru' ? 'Ручной ввод' : 'Manual input');
+                  this.currentLanguage === 'ru' ? 'Ручной ввод' : 'Manual input');
           break;
         case 'clipboard':
           message = getVoiceInterruptionMessage(this.currentLanguage) + ' - ' +
             (this.currentLanguage === 'en' ? 'Clipboard access' :
               this.currentLanguage === 'pl' ? 'Dostęp do schowka' :
                 this.currentLanguage === 'it' ? 'Accesso agli appunti' :
-                  this.currentLanguage === 'ar' ? 'الوصول إلى الحافظة' :
-                    this.currentLanguage === 'fa' ? 'دسترسی به کلیپ بورد' :
-                      this.currentLanguage === 'ru' ? 'Доступ к буферу обмена' : 'Clipboard access');
+                  this.currentLanguage === 'ru' ? 'Доступ к буферу обмена' : 'Clipboard access');
           break;
         case 'error':
           message = getVoiceRecognitionError(this.currentLanguage);
@@ -1509,8 +1495,7 @@ struct Index {
 
   private handleKeyTouchDown(key: KeyData, position: Position): void {
     // Show popup with the character that will be typed
-    const char = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' &&
-                  (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
+    const char = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
       ? (key.shiftValue ?? key.mainValue)
       : key.mainValue;
     this.singleCharPopupInfo = { char: char, position: position };
@@ -1552,7 +1537,7 @@ struct Index {
         feedbackController.provideFeedback(FeedbackType.Light);
         // Remember if shift was on BEFORE typing this character
         const wasShiftOnBeforeTyping = (this.shiftState === ShiftState.On);
-        let text = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' && (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
+        let text = (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock)
           ? key.shiftValue ?? key.mainValue
           : key.mainValue;
         if (now < this.ignoreKeysUntilTs && !this.isBoundaryChar(text)) {
@@ -1786,11 +1771,6 @@ struct Index {
 
   // Enable auto-capitalization for next character
   private enableAutoCapitalization(): void {
-    // Don't auto-capitalize for Arabic and Persian (they don't have uppercase)
-    if (this.currentLanguage === 'ar' || this.currentLanguage === 'fa') {
-      logger.autocap(`Skipping auto-cap for RTL language: ${this.currentLanguage}`);
-      return;
-    }
     // Only enable if not already in CapsLock mode
     if (this.shiftState !== ShiftState.CapsLock) {
       logger.autocap(`Enabling auto-capitalization, shift state: ${this.shiftState}`);
@@ -2810,11 +2790,9 @@ struct Index {
     switch (this.keyboardLayout) {
       case KeyboardLayout.Alphabet:
         switch (this.currentLanguage) {
-          case 'ar': return insertEmojiKey(arabicLayout);
           case 'en': return insertEmojiKey(englishLayout);
           case 'it': return insertEmojiKey(italianLayout);
           case 'pl': return insertEmojiKey(polishLayout);
-          case 'fa': return insertEmojiKey(persianLayout);
           case 'ru': return insertEmojiKey(russianLayout);
           default: return insertEmojiKey(englishLayout);
         }
