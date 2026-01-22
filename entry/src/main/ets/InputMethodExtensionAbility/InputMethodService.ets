@@ -11,7 +11,10 @@ const DEBUG_SELF_TEST = false;
 export default class HoskeyInputMethod extends InputMethodExtensionAbility {
   onCreate(want: Want): void {
     console.info('[HOSKEY IME] onCreate called, want action:', want.action ?? 'none');
-    console.info('[HOSKEY IME] Context bundleName:', this.context.extensionAbilityInfo.bundleName);
+
+    // Safe access to context info (may be undefined during early lifecycle)
+    const bundleName = this.context?.extensionAbilityInfo?.bundleName ?? 'unknown';
+    console.info('[HOSKEY IME] Context bundleName:', bundleName);
 
     keyboardController.onCreate(this.context);
 

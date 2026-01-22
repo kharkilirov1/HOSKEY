@@ -135,20 +135,41 @@ class NativeDictionary {
     }
 
     try {
-      // Construct dictionary path
-      // Dictionary files are in: entry/src/main/resources/rawfile/
-      const dictPath = `${this.context.resourceDir}/entry/resources/rawfile/main_${lang}.dict`;
+      // Get dictionary path in filesDir (writable directory)
+      // rawfile resources are not accessible via file path, so we copy them to filesDir first
+      const dictFilename = `main_${lang}.dict`;
+      const dictDir = `${this.context.filesDir}/dict`;
+      const dictPath = `${dictDir}/${dictFilename}`;
 
-      console.info(`[NativeDictionary] Loading dictionary from: ${dictPath}`);
+      console.info(`[NativeDictionary] Dictionary target path: ${dictPath}`);
 
-      // Check if file exists
+      // Ensure dict directory exists
+      try {
+        fileIo.mkdirSync(dictDir);
+      } catch (mkdirErr) {
+        // Directory may already exist - ignore error
+      }
+
+      // Check if dictionary already exists in filesDir
+      let needsCopy = true;
       try {
         const stat = fileIo.statSync(dictPath);
-        console.info(`[NativeDictionary] Dictionary file size: ${stat.size} bytes`);
-      } catch (err) {
-        console.error(`[NativeDictionary] Dictionary file not found: ${dictPath}`, err);
-        return false;
+        console.info(`[NativeDictionary] Dictionary already exists in filesDir, size: ${stat.size} bytes`);
+        needsCopy = false;
+      } catch (statErr) {
+        // File doesn't exist, need to copy
+        console.info(`[NativeDictionary] Dictionary not in filesDir, copying from rawfile...`);
       }
+
+      // Copy dictionary from rawfile to filesDir if needed
+      if (needsCopy) {
+        const copied = await this.copyDictFromRawfile(dictFilename, dictPath);
+        if (!copied) {
+          console.error(`[NativeDictionary] Failed to copy dictionary for '${lang}'`);
+          return false;
+        }
+      }
+
       // Load dictionary via NAPI
       const loaded: boolean = nativeDict.loadDictionary(dictPath);
 
@@ -156,6 +177,7 @@ class NativeDictionary {
         console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
         return false;
       }
+
       // Set proximity info for autocorrection
       const layoutName = lang === 'ru' ? 'ru' : 'qwerty';
       const proximitySet: boolean = nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
@@ -166,6 +188,7 @@ class NativeDictionary {
 
       this.isLoaded = true;
       this.currentLanguage = lang;
+
       // Get and log stats
       const nativeStats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
       console.info(`[NativeDictionary] Loaded ${nativeStats.wordCount} words for '${lang}', memory: ${nativeStats.memoryUsage} bytes`);
@@ -175,6 +198,35 @@ class NativeDictionary {
       const error = err as BusinessError;
       console.error(`[NativeDictionary] Error initializing for '${lang}':`, error);
       this.isLoaded = false;
+      return false;
+    }
+  }
+
+  /**
+   * Copy dictionary from rawfile resources to filesDir
+   * rawfile resources are packed in HAP and only accessible via resourceManager
+   */
+  private async copyDictFromRawfile(filename: string, destPath: string): Promise<boolean> {
+    if (!this.context) return false;
+
+    try {
+      // Read dictionary from rawfile using resourceManager
+      const resMgr = this.context.resourceManager;
+      const rawData = await resMgr.getRawFileContent(filename);
+
+      console.info(`[NativeDictionary] Read ${rawData.byteLength} bytes from rawfile/${filename}`);
+
+      // Write to filesDir
+      const file = fileIo.openSync(destPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      const written = fileIo.writeSync(file.fd, rawData.buffer);
+      fileIo.closeSync(file);
+
+      console.info(`[NativeDictionary] Wrote ${written} bytes to ${destPath}`);
+
+      return written > 0;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error(`[NativeDictionary] Failed to copy dictionary from rawfile:`, error);
       return false;
     }
   }

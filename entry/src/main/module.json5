@@ -77,6 +77,7 @@
         "label": "$string:HoskeyInputMethod_label",
         "icon": "$media:layered_image",
         "exported": true,
+        "visible": true,
         "metadata": [
           {
             "name": "ohos.extension.input_method",

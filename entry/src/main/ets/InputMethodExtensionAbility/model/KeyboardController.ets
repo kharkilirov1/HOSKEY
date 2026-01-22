@@ -25,8 +25,12 @@ export class KeyboardController {
 
   public onCreate(context: InputMethodExtensionContext): void {
     console.info(`${LOG_TAG} KeyboardController.onCreate called`);
-    console.info(`${LOG_TAG} Context abilityName: ${context.extensionAbilityInfo.name}`);
-    console.info(`${LOG_TAG} Context bundleName: ${context.extensionAbilityInfo.bundleName}`);
+
+    // Safe access to context info (may be undefined during early lifecycle)
+    const abilityName = context?.extensionAbilityInfo?.name ?? 'unknown';
+    const bundleName = context?.extensionAbilityInfo?.bundleName ?? 'unknown';
+    console.info(`${LOG_TAG} Context abilityName: ${abilityName}`);
+    console.info(`${LOG_TAG} Context bundleName: ${bundleName}`);
 
     this.mContext = context;
     this.panelDestroyed = false;
