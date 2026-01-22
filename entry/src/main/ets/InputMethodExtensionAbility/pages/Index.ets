@@ -868,15 +868,9 @@ struct Index {
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
 
-    // Warmup BaseLexicon for current language (background loading for instant predictions)
+    // Warmup NativeDictionary for current language
     optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('[HOSKEY] Failed to warmup language on start:', err);
-    }).then(() => {
-      // Set BaseLexicon for SwipeEngine after warmup
-      const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
-      swipeEngine.setBaseLexicon(baseLexicon);
-    }).catch((err: Error) => {
-      console.warn('[HOSKEY] Failed to warmup optimized prediction model:', err);
     });
   }
 
@@ -1685,15 +1679,9 @@ struct Index {
     this.keyBoundsMap.clear();
     this.currentLayoutId = `${this.currentLanguage}_alphabet`;
 
-    // Warmup BaseLexicon for new language
+    // Warmup NativeDictionary for new language
     optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
       console.error('[HOSKEY] Failed to warmup language:', err);
-    }).then(() => {
-      // Update SwipeEngine with new language lexicon
-      const baseLexicon = optimizedPredictionModel.getBaseLexicon(this.currentLanguage);
-      swipeEngine.setBaseLexicon(baseLexicon);
-    }).catch((err: Error) => {
-      console.warn('[HOSKEY] Failed to complete language warmup:', err);
     });
   }
 
