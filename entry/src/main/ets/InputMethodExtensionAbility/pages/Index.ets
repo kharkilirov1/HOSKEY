@@ -32,10 +32,10 @@ interface Position { x: number; y: number; }
 interface AreaWithGlobalPosition { globalPosition?: Position; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
-type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
+type LanguageCode = 'en' | 'it' | 'pl' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 enum InputMode { Tap, Swipe } // iOS-style input mode
-const ALLOWED_LANGUAGES: string[] = ['en', 'ar', 'it', 'pl', 'fa', 'ru'];
+const ALLOWED_LANGUAGES: string[] = ['en', 'it', 'pl', 'ru'];  // Only languages with native dictionaries
 const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 const DEBUG_PREDICT = false; // Disabled for performance
 const DEBUG_SWIPE = false;
