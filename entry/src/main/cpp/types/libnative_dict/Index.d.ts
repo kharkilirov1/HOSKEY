@@ -74,12 +74,12 @@ export declare interface SwipeResult {
  */
 declare interface NativeDictModule {
   /**
-   * Load binary dictionary from file path
+   * Load binary dictionary from file path asynchronously
    * @param path - Path to dictionary file (.dict or .txt)
-   * @returns true if loaded successfully
+   * @returns Promise that resolves to true if loaded successfully
    * @throws TypeError if path is not a string
    */
-  loadDictionary(path: string): boolean;
+  loadDictionary(path: string): Promise<boolean>;
 
   /**
    * Check if word exists in dictionary
@@ -161,7 +161,7 @@ declare const nativeDict: NativeDictModule;
 export default nativeDict;
 
 // Named exports for standalone function usage
-export declare function loadDictionary(path: string): boolean;
+export declare function loadDictionary(path: string): Promise<boolean>;
 export declare function contains(word: string): boolean;
 export declare function getFrequency(word: string): number;
 export declare function getSuggestions(prefix: string, limit: number): SuggestResult[];

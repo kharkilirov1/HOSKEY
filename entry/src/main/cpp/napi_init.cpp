@@ -194,9 +194,75 @@ static bool ValidateArray(napi_env env, napi_value value, const char* argName) {
     return true;
 }
 
+// ============================================================================
+// Async LoadDictionary Implementation
+// ============================================================================
+
 /**
- * loadDictionary(path: string): boolean
- * Load binary dictionary from file path
+ * Async work data for loadDictionary
+ */
+struct LoadDictionaryAsyncData {
+    napi_async_work work;
+    napi_deferred deferred;
+    std::string path;
+    bool success;
+    int wordCount;
+};
+
+/**
+ * Execute callback - runs on worker thread (thread pool)
+ * Does the actual heavy lifting of loading the dictionary
+ */
+static void LoadDictionaryExecute(napi_env env, void* data) {
+    LoadDictionaryAsyncData* asyncData = static_cast<LoadDictionaryAsyncData*>(data);
+
+    OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: loading from path=%{public}s", asyncData->path.c_str());
+
+    // Initialize trie if needed
+    if (!g_trie) {
+        OH_LOG_DEBUG(LOG_APP, "loadDictionary [ASYNC]: creating new Trie instance");
+        g_trie = std::make_unique<hoskey::Trie>();
+    }
+
+    // This is the heavy operation - now runs on background thread!
+    asyncData->success = g_trie->loadFromFile(asyncData->path);
+
+    if (asyncData->success) {
+        asyncData->wordCount = g_trie->getWordCount();
+        OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: SUCCESS - loaded %d words", asyncData->wordCount);
+
+        // Initialize suggest engine with loaded trie
+        if (!g_suggestEngine) {
+            OH_LOG_DEBUG(LOG_APP, "loadDictionary [ASYNC]: creating SuggestEngine");
+            g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
+        }
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadDictionary [ASYNC]: FAILED to load from %{public}s", asyncData->path.c_str());
+    }
+}
+
+/**
+ * Complete callback - runs on main JS thread after execute completes
+ * Resolves or rejects the promise
+ */
+static void LoadDictionaryComplete(napi_env env, napi_status status, void* data) {
+    LoadDictionaryAsyncData* asyncData = static_cast<LoadDictionaryAsyncData*>(data);
+
+    napi_value result;
+    napi_get_boolean(env, asyncData->success, &result);
+
+    // Resolve the promise with the result
+    napi_resolve_deferred(env, asyncData->deferred, result);
+
+    // Clean up async work
+    napi_delete_async_work(env, asyncData->work);
+    delete asyncData;
+}
+
+/**
+ * loadDictionary(path: string): Promise<boolean>
+ * Load binary dictionary from file path asynchronously
+ * Returns a Promise that resolves to true on success, false on failure
  */
 static napi_value LoadDictionary(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -212,30 +278,38 @@ static napi_value LoadDictionary(napi_env env, napi_callback_info info) {
     }
 
     std::string path = NapiValueToString(env, args[0]);
-    OH_LOG_INFO(LOG_APP, "loadDictionary: loading from path=%{public}s", path.c_str());
 
-    // Initialize trie if needed
-    if (!g_trie) {
-        OH_LOG_DEBUG(LOG_APP, "loadDictionary: creating new Trie instance");
-        g_trie = std::make_unique<hoskey::Trie>();
-    }
+    // Create async data
+    LoadDictionaryAsyncData* asyncData = new LoadDictionaryAsyncData();
+    asyncData->path = path;
+    asyncData->success = false;
+    asyncData->wordCount = 0;
 
-    bool success = g_trie->loadFromFile(path);
+    // Create promise
+    napi_value promise;
+    napi_create_promise(env, &asyncData->deferred, &promise);
 
-    if (success) {
-        OH_LOG_INFO(LOG_APP, "loadDictionary: SUCCESS - loaded %d words", g_trie->getWordCount());
-        // Initialize suggest engine with loaded trie
-        if (!g_suggestEngine) {
-            OH_LOG_DEBUG(LOG_APP, "loadDictionary: creating SuggestEngine");
-            g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
-        }
-    } else {
-        OH_LOG_ERROR(LOG_APP, "loadDictionary: FAILED to load from %{public}s", path.c_str());
-    }
+    // Create async work name
+    napi_value resourceName;
+    napi_create_string_utf8(env, "loadDictionary", NAPI_AUTO_LENGTH, &resourceName);
 
-    napi_value result;
-    napi_get_boolean(env, success, &result);
-    return result;
+    // Create async work
+    napi_create_async_work(
+        env,
+        nullptr,
+        resourceName,
+        LoadDictionaryExecute,
+        LoadDictionaryComplete,
+        asyncData,
+        &asyncData->work
+    );
+
+    // Queue async work
+    napi_queue_async_work(env, asyncData->work);
+
+    OH_LOG_INFO(LOG_APP, "loadDictionary: async work queued for path=%{public}s", path.c_str());
+
+    return promise;
 }
 
 /**

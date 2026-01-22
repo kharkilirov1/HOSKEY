@@ -170,8 +170,8 @@ class NativeDictionary {
         }
       }
 
-      // Load dictionary via NAPI
-      const loaded: boolean = nativeDict.loadDictionary(dictPath);
+      // Load dictionary via NAPI (async - runs on background thread)
+      const loaded: boolean = await nativeDict.loadDictionary(dictPath);
 
       if (!loaded) {
         console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
