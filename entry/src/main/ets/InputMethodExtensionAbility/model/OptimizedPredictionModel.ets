@@ -207,7 +207,8 @@ export class OptimizedPredictionModel {
     // 3. Done! No code changes needed in predict()/recordWord()
     //
     // Currently supported: 'ru' (50k words with morphology)
-    const baseLexiconLanguages = ['ru'];
+    // TEMP: Disabled BaseLexicon to test NativeDictionary
+    const baseLexiconLanguages: string[] = [];  // Was: ['ru']
     baseLexiconLanguages.forEach(lang => {
       const lexicon = new BaseLexicon();
       lexicon.setContext(ctx);
