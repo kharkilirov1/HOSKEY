@@ -1,42 +1,74 @@
 /**
  * Trie Node for Patricia Trie implementation
+ * Uses fixed array for children - stable and fast
  */
 
 #ifndef HOSKEY_TRIE_NODE_H
 #define HOSKEY_TRIE_NODE_H
 
-#include <unordered_map>
 #include <memory>
-#include <string>
+#include <cstring>
 
 namespace hoskey {
 
 /**
  * Node in Patricia Trie
- * Uses unordered_map for children (good balance of speed/memory for Cyrillic)
+ * Uses fixed array of 256 pointers for all possible byte values
+ * - No hash collisions
+ * - No rehashing
+ * - Direct O(1) access
  */
 class TrieNode {
 public:
-    TrieNode() : isEndOfWord_(false), frequency_(0), probability_(0) {}
-
-    // Children access
-    TrieNode* getChild(char c) const {
-        auto it = children_.find(c);
-        return it != children_.end() ? it->second.get() : nullptr;
+    TrieNode() : isEndOfWord_(false), frequency_(0), probability_(0), childCount_(0) {
+        // Initialize all children to nullptr
+        std::memset(children_, 0, sizeof(children_));
     }
 
-    TrieNode* getOrCreateChild(char c) {
-        auto& child = children_[c];
-        if (!child) {
-            child = std::make_unique<TrieNode>();
+    ~TrieNode() {
+        // Delete all children
+        for (int i = 0; i < 256; i++) {
+            if (children_[i]) {
+                delete children_[i];
+                children_[i] = nullptr;
+            }
         }
-        return child.get();
     }
 
-    bool hasChildren() const { return !children_.empty(); }
+    // Prevent copying (we use raw pointers)
+    TrieNode(const TrieNode&) = delete;
+    TrieNode& operator=(const TrieNode&) = delete;
 
-    const std::unordered_map<char, std::unique_ptr<TrieNode>>& getChildren() const {
-        return children_;
+    // Children access - direct array index
+    TrieNode* getChild(unsigned char c) const {
+        return children_[c];
+    }
+
+    TrieNode* getOrCreateChild(unsigned char c) {
+        if (children_[c]) {
+            return children_[c];
+        }
+
+        // Create new child
+        children_[c] = new (std::nothrow) TrieNode();
+        if (children_[c]) {
+            childCount_++;
+        }
+        return children_[c];
+    }
+
+    bool hasChildren() const { return childCount_ > 0; }
+
+    int getChildCount() const { return childCount_; }
+
+    // Iterate over children (for prefix search)
+    template<typename Func>
+    void forEachChild(Func&& func) const {
+        for (int i = 0; i < 256; i++) {
+            if (children_[i]) {
+                func(static_cast<char>(i), children_[i]);
+            }
+        }
     }
 
     // Word termination
@@ -53,20 +85,20 @@ public:
     // Memory estimation
     size_t getMemoryUsage() const {
         size_t usage = sizeof(TrieNode);
-        for (const auto& pair : children_) {
-            usage += sizeof(char) + sizeof(std::unique_ptr<TrieNode>);
-            if (pair.second) {
-                usage += pair.second->getMemoryUsage();
+        for (int i = 0; i < 256; i++) {
+            if (children_[i]) {
+                usage += children_[i]->getMemoryUsage();
             }
         }
         return usage;
     }
 
 private:
-    std::unordered_map<char, std::unique_ptr<TrieNode>> children_;
+    TrieNode* children_[256];  // Direct array - all possible byte values
     bool isEndOfWord_;
     int frequency_;
     int probability_;
+    int childCount_;
 };
 
 } // namespace hoskey

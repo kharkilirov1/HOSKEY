@@ -122,6 +122,14 @@ static int readCodePointAndAdvance(const uint8_t* buffer, int* pos, size_t size,
                            (static_cast<uint32_t>(buffer[*pos + 1]) << 8) |
                            static_cast<uint32_t>(buffer[*pos + 2]);
             *pos += 3;
+
+            // Validate code point is in valid Unicode range
+            if (codePoint < 0 || codePoint > 0x10FFFF ||
+                (codePoint >= 0xD800 && codePoint <= 0xDFFF)) {
+                *ok = false;
+                return NOT_A_CODE_POINT;
+            }
+
             *ok = true;
             return codePoint;
         }
@@ -157,12 +165,25 @@ static std::u32string readStringAndAdvance(const uint8_t* buffer, int* pos, size
     return result;
 }
 
-// Convert UTF-32 to UTF-8
+// Check if code point is valid Unicode
+static inline bool isValidCodePoint(char32_t cp) {
+    // Valid Unicode range: 0x0000-0x10FFFF, excluding surrogates 0xD800-0xDFFF
+    if (cp > 0x10FFFF) return false;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return false;  // Surrogates
+    return true;
+}
+
+// Convert UTF-32 to UTF-8 with validation
 static std::string utf32ToUtf8(const std::u32string& utf32) {
     std::string result;
     result.reserve(utf32.length() * 3);
 
     for (char32_t cp : utf32) {
+        // Skip invalid code points
+        if (!isValidCodePoint(cp)) {
+            continue;
+        }
+
         if (cp < 0x80) {
             result += static_cast<char>(cp);
         } else if (cp < 0x800) {
@@ -469,72 +490,146 @@ public:
         : data_(data), size_(size), trieStartPos_(trieStartPos) {}
 
     void loadIntoTrie(Trie* trie) {
-        std::u32string prefix;
-        traverseAndLoad(trieStartPos_, prefix, trie, 0);
+        // Use iterative approach with explicit stack to avoid stack overflow
+        // Stack frame: (nodeArrayPos, prefix, nodeIndex, nodeCount, currentPos)
+        struct StackFrame {
+            int nodeArrayPos;
+            std::u32string prefix;
+            int nodeIndex;
+            int nodeCount;
+            int currentPos;
+        };
+
+        std::vector<StackFrame> stack;
+        stack.reserve(256);  // Pre-allocate to reduce reallocations
+
+        // Initial frame
+        if (trieStartPos_ < 0 || trieStartPos_ >= static_cast<int>(size_)) {
+            return;
+        }
+
+        int pos = trieStartPos_;
+        bool ok = true;
+        int nodeCount = readPtNodeArraySize(data_, &pos, size_, &ok);
+        if (!ok || nodeCount <= 0 || nodeCount > 10000) {
+            return;
+        }
+
+        stack.push_back({trieStartPos_, std::u32string(), 0, nodeCount, pos});
+
+        constexpr int MAX_STACK_DEPTH = 64;    // Limit to prevent memory issues
+        constexpr int MAX_WORDS = 100000;     // Good balance for prediction dictionary
+        constexpr int MAX_ITERATIONS = 1000000; // Safety limit for loop iterations
+        int wordsLoaded = 0;
+        int iterations = 0;
+
+        while (!stack.empty() && wordsLoaded < MAX_WORDS && iterations < MAX_ITERATIONS) {
+            iterations++;
+            // Limit stack depth to prevent memory exhaustion
+            if (static_cast<int>(stack.size()) > MAX_STACK_DEPTH) {
+                stack.pop_back();
+                continue;
+            }
+
+            StackFrame& frame = stack.back();
+
+            // Process next node in current array
+            if (frame.nodeIndex >= frame.nodeCount) {
+                stack.pop_back();
+                continue;
+            }
+
+            // Validate position before reading node
+            if (frame.currentPos < 0 || frame.currentPos >= static_cast<int>(size_)) {
+                stack.pop_back();
+                continue;
+            }
+
+            PtNodeInfo nodeInfo = readPtNode(data_, frame.currentPos, size_);
+
+            // Check if node parsing succeeded
+            if (!nodeInfo.isValid) {
+                stack.pop_back();
+                continue;
+            }
+
+            // Validate code points before building word prefix
+            bool validCodePoints = true;
+            for (char32_t cp : nodeInfo.codePoints) {
+                if (cp == 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                    validCodePoints = false;
+                    break;
+                }
+            }
+
+            if (!validCodePoints || nodeInfo.codePoints.empty()) {
+                // Skip this node but continue with siblings
+                frame.nodeIndex++;
+                int nextSiblingPos = nodeInfo.siblingPos;
+                if (nextSiblingPos <= frame.currentPos || nextSiblingPos >= static_cast<int>(size_)) {
+                    frame.nodeIndex = frame.nodeCount;
+                } else {
+                    frame.currentPos = nextSiblingPos;
+                }
+                continue;
+            }
+
+            // Build word prefix with length limit
+            std::u32string wordPrefix = frame.prefix;
+            if (wordPrefix.length() + nodeInfo.codePoints.length() > MAX_WORD_LENGTH) {
+                // Prefix too long, skip this branch
+                frame.nodeIndex++;
+                int nextSiblingPos = nodeInfo.siblingPos;
+                if (nextSiblingPos <= frame.currentPos || nextSiblingPos >= static_cast<int>(size_)) {
+                    frame.nodeIndex = frame.nodeCount;
+                } else {
+                    frame.currentPos = nextSiblingPos;
+                }
+                continue;
+            }
+            wordPrefix += nodeInfo.codePoints;
+
+            // If terminal and it's a valid word, add to trie
+            if (nodeInfo.isTerminal && !nodeInfo.isNotAWord) {
+                std::string word = utf32ToUtf8(wordPrefix);
+                if (!word.empty() && word.length() <= MAX_WORD_LENGTH * 4) {  // UTF-8 can be up to 4 bytes per char
+                    trie->insert(word, nodeInfo.probability);
+                    wordsLoaded++;
+                }
+            }
+
+            // Update current frame for next iteration (move to sibling)
+            frame.nodeIndex++;
+            int nextSiblingPos = nodeInfo.siblingPos;
+
+            // Validate sibling position
+            if (nextSiblingPos <= frame.currentPos || nextSiblingPos >= static_cast<int>(size_)) {
+                // Invalid sibling, skip remaining nodes in this array
+                frame.nodeIndex = frame.nodeCount;
+            } else {
+                frame.currentPos = nextSiblingPos;
+            }
+
+            // Push children to stack if present (process after siblings via stack)
+            if (nodeInfo.childrenPos != NOT_A_DICT_POS &&
+                nodeInfo.childrenPos > 0 &&
+                nodeInfo.childrenPos < static_cast<int>(size_)) {
+
+                int childPos = nodeInfo.childrenPos;
+                bool childOk = true;
+                int childNodeCount = readPtNodeArraySize(data_, &childPos, size_, &childOk);
+
+                if (childOk && childNodeCount > 0 && childNodeCount <= 10000) {
+                    stack.push_back({nodeInfo.childrenPos, wordPrefix, 0, childNodeCount, childPos});
+                }
+            }
+        }
     }
 
 private:
     const uint8_t* data_;
     size_t size_;
     int trieStartPos_;
-
-    void traverseAndLoad(int nodeArrayPos, std::u32string& prefix, Trie* trie, int depth) {
-        // Bounds check
-        if (nodeArrayPos < 0 || nodeArrayPos >= static_cast<int>(size_)) {
-            return;
-        }
-
-        // Recursion depth check to prevent stack overflow
-        if (depth > MAX_RECURSION_DEPTH) {
-            return;
-        }
-
-        int pos = nodeArrayPos;
-        bool ok = true;
-        int nodeCount = readPtNodeArraySize(data_, &pos, size_, &ok);
-
-        if (!ok || nodeCount <= 0 || nodeCount > 10000) {
-            return;  // Invalid node count
-        }
-
-        for (int i = 0; i < nodeCount; i++) {
-            // Validate position before reading node
-            if (pos < 0 || pos >= static_cast<int>(size_)) {
-                return;
-            }
-
-            PtNodeInfo nodeInfo = readPtNode(data_, pos, size_);
-
-            // Check if node parsing succeeded
-            if (!nodeInfo.isValid) {
-                return;  // Stop parsing on error
-            }
-
-            // Build word prefix
-            std::u32string wordPrefix = prefix;
-            wordPrefix += nodeInfo.codePoints;
-
-            // If terminal and it's a valid word, add to trie
-            if (nodeInfo.isTerminal && !nodeInfo.isNotAWord) {
-                std::string word = utf32ToUtf8(wordPrefix);
-                trie->insert(word, nodeInfo.probability);
-            }
-
-            // Recursively process children with bounds validation
-            if (nodeInfo.childrenPos != NOT_A_DICT_POS) {
-                // Validate children position before recursing
-                if (nodeInfo.childrenPos > 0 && nodeInfo.childrenPos < static_cast<int>(size_)) {
-                    traverseAndLoad(nodeInfo.childrenPos, wordPrefix, trie, depth + 1);
-                }
-            }
-
-            // Move to sibling with bounds check
-            if (nodeInfo.siblingPos <= pos || nodeInfo.siblingPos >= static_cast<int>(size_)) {
-                return;  // Invalid sibling position, stop to prevent infinite loop
-            }
-            pos = nodeInfo.siblingPos;
-        }
-    }
 };
 
 // ============================================================================

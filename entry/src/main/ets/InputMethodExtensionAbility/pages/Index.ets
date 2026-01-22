@@ -2550,7 +2550,7 @@ struct Index {
         .width('100%')
         .height(46)
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-        .backgroundColor(OpenBoardTheme.keyboardBackgroundSemi)
+        .backgroundColor(OpenBoardTheme.keyboardBackground)
         .borderRadius(OpenBoardTheme.radiusMedium)
         .shadow(OpenBoardTheme.shadowPanel)
         .accessibilityText('Input method toolbar')  // Accessibility text for toolbar

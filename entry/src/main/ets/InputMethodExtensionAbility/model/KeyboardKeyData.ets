@@ -373,7 +373,7 @@ export const russianLayout: KeyData[][] = [
     { mainValue: 'м', shiftValue: 'М', secondaryValue: '/', action: KeyAction.Char, flex: 1 },
     { mainValue: 'и', shiftValue: 'И', secondaryValue: '\\', action: KeyAction.Char, flex: 1 },
     { mainValue: 'т', shiftValue: 'Т', secondaryValue: '[', action: KeyAction.Char, flex: 1 },
-    { mainValue: 'ь', shiftValue: 'Ь', secondaryValue: ']', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ь', shiftValue: 'Ь', secondaryValue: 'ъ', action: KeyAction.Char, flex: 1 },
     { mainValue: 'б', shiftValue: 'Б', secondaryValue: '{', action: KeyAction.Char, flex: 1 },
     { mainValue: 'ю', shiftValue: 'Ю', secondaryValue: '}', action: KeyAction.Char, flex: 1 },
     BACKSPACE_KEY_RU,

@@ -1,6 +1,3 @@
 {
-  "src": [
-    "pages/SetupGuidePage",
-    "InputMethodExtensionAbility/pages/Index"
-  ]
+  "src" : [ "pages/SetupGuidePage", "InputMethodExtensionAbility/pages/Index" ]
 }

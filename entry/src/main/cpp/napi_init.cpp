@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdio>
+#include <mutex>
 
 // HarmonyOS logging
 #include <hilog/log.h>
@@ -58,7 +59,8 @@ struct KeyBounds {
 
 static std::vector<KeyBounds> g_keyboardLayout;
 
-// Global instances
+// Global instances with mutex protection
+static std::mutex g_trieMutex;  // Protects g_trie and g_suggestEngine
 static std::unique_ptr<hoskey::Trie> g_trie;
 static std::unique_ptr<hoskey::SuggestEngine> g_suggestEngine;
 
@@ -218,26 +220,26 @@ static void LoadDictionaryExecute(napi_env env, void* data) {
 
     OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: loading from path=%{public}s", asyncData->path.c_str());
 
-    // Initialize trie if needed
-    if (!g_trie) {
-        OH_LOG_DEBUG(LOG_APP, "loadDictionary [ASYNC]: creating new Trie instance");
-        g_trie = std::make_unique<hoskey::Trie>();
-    }
+    // Load into LOCAL trie first (no lock needed - this is the slow part)
+    auto newTrie = std::make_unique<hoskey::Trie>();
+    bool success = newTrie->loadFromFile(asyncData->path);
 
-    // This is the heavy operation - now runs on background thread!
-    asyncData->success = g_trie->loadFromFile(asyncData->path);
-
-    if (asyncData->success) {
-        asyncData->wordCount = g_trie->getWordCount();
+    if (success) {
+        asyncData->wordCount = newTrie->getWordCount();
         OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: SUCCESS - loaded %d words", asyncData->wordCount);
 
-        // Initialize suggest engine with loaded trie
-        if (!g_suggestEngine) {
-            OH_LOG_DEBUG(LOG_APP, "loadDictionary [ASYNC]: creating SuggestEngine");
+        // Quick swap under mutex (only lock during fast pointer swap)
+        {
+            std::lock_guard<std::mutex> lock(g_trieMutex);
+            g_suggestEngine.reset();  // Reset first (holds ref to old trie)
+            g_trie = std::move(newTrie);  // Fast move, old trie deleted
             g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
         }
+
+        asyncData->success = true;
     } else {
         OH_LOG_ERROR(LOG_APP, "loadDictionary [ASYNC]: FAILED to load from %{public}s", asyncData->path.c_str());
+        asyncData->success = false;
     }
 }
 
@@ -329,15 +331,16 @@ static napi_value Contains(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // Return false if dictionary not loaded (not an error)
-    if (!g_trie) {
-        napi_value result;
-        napi_get_boolean(env, false, &result);
-        return result;
-    }
-
     std::string word = NapiValueToString(env, args[0]);
-    bool found = g_trie->contains(word);
+
+    // Lock and check trie
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(g_trieMutex);
+        if (g_trie) {
+            found = g_trie->contains(word);
+        }
+    }
 
     napi_value result;
     napi_get_boolean(env, found, &result);
@@ -361,15 +364,16 @@ static napi_value GetFrequency(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // Return 0 if dictionary not loaded (not an error)
-    if (!g_trie) {
-        napi_value result;
-        napi_create_int32(env, 0, &result);
-        return result;
-    }
-
     std::string word = NapiValueToString(env, args[0]);
-    int frequency = g_trie->getFrequency(word);
+
+    // Lock and check trie
+    int frequency = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_trieMutex);
+        if (g_trie) {
+            frequency = g_trie->getFrequency(word);
+        }
+    }
 
     napi_value result;
     napi_create_int32(env, frequency, &result);
@@ -583,8 +587,15 @@ static napi_value GetStats(napi_env env, napi_callback_info info) {
     napi_value obj;
     napi_create_object(env, &obj);
 
-    int wordCount = g_trie ? g_trie->getWordCount() : 0;
-    size_t memoryUsage = g_trie ? g_trie->getMemoryUsage() : 0;
+    int wordCount = 0;
+    size_t memoryUsage = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_trieMutex);
+        if (g_trie) {
+            wordCount = g_trie->getWordCount();
+            memoryUsage = g_trie->getMemoryUsage();
+        }
+    }
 
     napi_value wordCountVal;
     napi_create_int32(env, wordCount, &wordCountVal);
@@ -696,10 +707,13 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
     }
 
     // Return null if prerequisites not met (not an error, just not ready)
-    if (g_keyboardLayout.empty() || !g_trie) {
-        napi_value result;
-        napi_get_null(env, &result);
-        return result;
+    {
+        std::lock_guard<std::mutex> lock(g_trieMutex);
+        if (g_keyboardLayout.empty() || !g_trie) {
+            napi_value result;
+            napi_get_null(env, &result);
+            return result;
+        }
     }
 
     uint32_t length = 0;
@@ -819,7 +833,13 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
         score -= lenDiff * 0.1f;
 
         // Bonus for frequency
-        int freq = g_trie->getFrequency(word);
+        int freq = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_trieMutex);
+            if (g_trie) {
+                freq = g_trie->getFrequency(word);
+            }
+        }
         score += freq * 0.001f;
 
         if (score > 0.3f) { // Threshold
@@ -883,16 +903,20 @@ static napi_value Unload(napi_env env, napi_callback_info info) {
     g_keyboardLayout.clear();
     OH_LOG_DEBUG(LOG_APP, "unload: cleared keyboard layout (%zu keys)", layoutSize);
 
-    // Clean up dictionary instances
-    // unique_ptr::reset() is safe even if already null (no double-free)
-    if (g_suggestEngine) {
-        OH_LOG_DEBUG(LOG_APP, "unload: releasing SuggestEngine");
-        g_suggestEngine.reset();  // Safely deletes and sets to nullptr
-    }
+    // Clean up dictionary instances with mutex protection
+    {
+        std::lock_guard<std::mutex> lock(g_trieMutex);
 
-    if (g_trie) {
-        OH_LOG_DEBUG(LOG_APP, "unload: releasing Trie");
-        g_trie.reset();  // Safely deletes and sets to nullptr
+        // unique_ptr::reset() is safe even if already null (no double-free)
+        if (g_suggestEngine) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing SuggestEngine");
+            g_suggestEngine.reset();  // Safely deletes and sets to nullptr
+        }
+
+        if (g_trie) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing Trie");
+            g_trie.reset();  // Safely deletes and sets to nullptr
+        }
     }
 
     OH_LOG_INFO(LOG_APP, "unload: complete");

@@ -68,13 +68,16 @@ bool Trie::loadFromTextFile(const std::string& path) {
 
 void Trie::insert(const std::string& word, int frequency) {
     if (word.empty()) return;
+    if (!root_) return;  // Safety check
 
     TrieNode* current = root_.get();
+    if (!current) return;  // Safety check
 
     // Handle UTF-8: iterate by bytes (works for both ASCII and Cyrillic)
     for (size_t i = 0; i < word.size(); i++) {
-        char c = word[i];
+        unsigned char c = static_cast<unsigned char>(word[i]);
         current = current->getOrCreateChild(c);
+        if (!current) return;  // Safety: bail if allocation failed
     }
 
     if (!current->isEndOfWord()) {
@@ -91,7 +94,7 @@ bool Trie::contains(const std::string& word) const {
     const TrieNode* current = root_.get();
 
     for (size_t i = 0; i < word.size(); i++) {
-        char c = word[i];
+        unsigned char c = static_cast<unsigned char>(word[i]);
         current = current->getChild(c);
         if (!current) return false;
     }
@@ -105,7 +108,7 @@ int Trie::getFrequency(const std::string& word) const {
     const TrieNode* current = root_.get();
 
     for (size_t i = 0; i < word.size(); i++) {
-        char c = word[i];
+        unsigned char c = static_cast<unsigned char>(word[i]);
         current = current->getChild(c);
         if (!current) return 0;
     }
@@ -125,7 +128,7 @@ std::vector<WordEntry> Trie::findByPrefix(const std::string& prefix, int limit) 
     // Navigate to prefix node
     const TrieNode* current = root_.get();
     for (size_t i = 0; i < prefix.size(); i++) {
-        char c = prefix[i];
+        unsigned char c = static_cast<unsigned char>(prefix[i]);
         current = current->getChild(c);
         if (!current) return results; // No words with this prefix
     }
@@ -158,15 +161,17 @@ void Trie::collectWords(const TrieNode* node, const std::string& prefix,
         results.emplace_back(prefix, node->getFrequency(), node->getProbability());
     }
 
-    for (const auto& pair : node->getChildren()) {
-        collectWords(pair.second.get(), prefix + pair.first, results, limit);
-    }
+    // Use forEachChild with new array-based TrieNode
+    node->forEachChild([this, &prefix, &results, limit](char c, const TrieNode* child) {
+        collectWords(child, prefix + c, results, limit);
+    });
 }
 
 std::vector<std::string> Trie::getWordsByFirstLetter(char letter, int limit) const {
     std::vector<std::string> results;
 
-    const TrieNode* letterNode = root_->getChild(letter);
+    unsigned char uc = static_cast<unsigned char>(letter);
+    const TrieNode* letterNode = root_->getChild(uc);
     if (!letterNode) return results;
 
     std::vector<WordEntry> entries;
@@ -192,8 +197,13 @@ size_t Trie::getMemoryUsage() const {
 }
 
 void Trie::clear() {
-    root_ = std::make_unique<TrieNode>();
+    // First release the old tree explicitly
+    // This ensures memory is freed before allocating new root
+    root_.reset();
     wordCount_ = 0;
+
+    // Create new empty root
+    root_ = std::make_unique<TrieNode>();
 }
 
 } // namespace hoskey

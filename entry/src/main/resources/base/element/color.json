@@ -1,228 +1,270 @@
 {
-  "color": [
-    {
-      "name": "start_window_background",
-      "value": "#FFFFFF"
-    },
-    {
-      "name": "divider",
-      "value": "#E5E5E5"
-    },
-    {
-      "name": "keyboard_background_transparent",
-      "value": "#00000000"
-    },
-    {
-      "name": "keyboard_regular_key",
-      "value": "#ffD9D9D9"
-    },
-    {
-      "name": "keyboard_special_key",
-      "value": "#ffBDBDBD"
-    },
-    {
-      "name": "theme_colors_brand",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_warning",
-      "value": "#ffe84026"
-    },
-    {
-      "name": "theme_colors_alert",
-      "value": "#ffed6f21"
-    },
-    {
-      "name": "theme_colors_confirm",
-      "value": "#ff64bb5c"
-    },
-    {
-      "name": "theme_colors_fontPrimary",
-      "value": "#e5000000"
-    },
-    {
-      "name": "theme_colors_fontSecondary",
-      "value": "#99000000"
-    },
-    {
-      "name": "theme_colors_fontTertiary",
-      "value": "#66000000"
-    },
-    {
-      "name": "theme_colors_fontFourth",
-      "value": "#33000000"
-    },
-    {
-      "name": "theme_colors_fontEmphasize",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_fontOnPrimary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_fontOnSecondary",
-      "value": "#99ffffff"
-    },
-    {
-      "name": "theme_colors_fontOnTertiary",
-      "value": "#66ffffff"
-    },
-    {
-      "name": "theme_colors_fontOnFourth",
-      "value": "#33ffffff"
-    },
-    {
-      "name": "theme_colors_iconPrimary",
-      "value": "#e5000000"
-    },
-    {
-      "name": "theme_colors_iconSecondary",
-      "value": "#99000000"
-    },
-    {
-      "name": "theme_colors_iconTertiary",
-      "value": "#66000000"
-    },
-    {
-      "name": "theme_colors_iconFourth",
-      "value": "#33000000"
-    },
-    {
-      "name": "theme_colors_iconEmphasize",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_iconSubEmphasize",
-      "value": "#660a59f7"
-    },
-    {
-      "name": "theme_colors_iconOnPrimary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_iconOnSecondary",
-      "value": "#99ffffff"
-    },
-    {
-      "name": "theme_colors_iconOnTertiary",
-      "value": "#66ffffff"
-    },
-    {
-      "name": "theme_colors_iconOnFourth",
-      "value": "#33ffffff"
-    },
-    {
-      "name": "theme_colors_backgroundPrimary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_backgroundSecondary",
-      "value": "#fff1f3f5"
-    },
-    {
-      "name": "theme_colors_backgroundTertiary",
-      "value": "#ffe5e5ea"
-    },
-    {
-      "name": "theme_colors_backgroundFourth",
-      "value": "#ffd1d1d6"
-    },
-    {
-      "name": "theme_colors_backgroundEmphasize",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_compForegroundPrimary",
-      "value": "#ff000000"
-    },
-    {
-      "name": "theme_colors_compBackgroundPrimary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_compBackgroundPrimaryTran",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_compBackgroundPrimaryContrary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_compBackgroundGray",
-      "value": "#fff1f3f5"
-    },
-    {
-      "name": "theme_colors_compBackgroundSecondary",
-      "value": "#19000000"
-    },
-    {
-      "name": "theme_colors_compBackgroundTertiary",
-      "value": "#0c000000"
-    },
-    {
-      "name": "theme_colors_compBackgroundEmphasize",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_compBackgroundNeutral",
-      "value": "#ff000000"
-    },
-    {
-      "name": "theme_colors_compEmphasizeSecondary",
-      "value": "#330a59f7"
-    },
-    {
-      "name": "theme_colors_compEmphasizeTertiary",
-      "value": "#190a59f7"
-    },
-    {
-      "name": "theme_colors_compDivider",
-      "value": "#33000000"
-    },
-    {
-      "name": "theme_colors_compCommonContrary",
-      "value": "#ffffffff"
-    },
-    {
-      "name": "theme_colors_compBackgroundFocus",
-      "value": "#fff1f3f5"
-    },
-    {
-      "name": "theme_colors_compFocusedPrimary",
-      "value": "#e5000000"
-    },
-    {
-      "name": "theme_colors_compFocusedSecondary",
-      "value": "#99000000"
-    },
-    {
-      "name": "theme_colors_compFocusedTertiary",
-      "value": "#66000000"
-    },
-    {
-      "name": "theme_colors_interactiveHover",
-      "value": "#0c000000"
-    },
-    {
-      "name": "theme_colors_interactivePressed",
-      "value": "#19000000"
-    },
-    {
-      "name": "theme_colors_interactiveFocus",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_interactiveActive",
-      "value": "#ff0a59f7"
-    },
-    {
-      "name": "theme_colors_interactiveSelect",
-      "value": "#33000000"
-    },
-    {
-      "name": "theme_colors_interactiveClick",
-      "value": "#19000000"
-    }
-  ]
+  "color" : [ {
+    "name" : "start_window_background",
+    "value" : "#FFFFFF"
+  }, {
+    "name" : "app_icon_color",
+    "value" : "#BDBDBD"
+  }, {
+    "name" : "app_icon_pressed_color",
+    "value" : "#9E9E9E"
+  }, {
+    "name" : "font_primary",
+    "value" : "#e5000000"
+  }, {
+    "name" : "font_secondary",
+    "value" : "#99000000"
+  }, {
+    "name" : "font_tertiary",
+    "value" : "#66000000"
+  }, {
+    "name" : "font_fourth",
+    "value" : "#33000000"
+  }, {
+    "name" : "font_emphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "font_on_primary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "font_on_secondary",
+    "value" : "#99ffffff"
+  }, {
+    "name" : "font_on_tertiary",
+    "value" : "#66ffffff"
+  }, {
+    "name" : "icon_primary",
+    "value" : "#e5000000"
+  }, {
+    "name" : "icon_emphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "icon_sub_emphasize",
+    "value" : "#660a59f7"
+  }, {
+    "name" : "background_primary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "background_secondary",
+    "value" : "#fff1f3f5"
+  }, {
+    "name" : "background_emphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "comp_background_primary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "comp_background_primary_trans",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "comp_background_gray",
+    "value" : "#fff1f3f5"
+  }, {
+    "name" : "comp_background_secondary",
+    "value" : "#19000000"
+  }, {
+    "name" : "comp_background_emphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "comp_background_neutral",
+    "value" : "#ff000000"
+  }, {
+    "name" : "comp_emphasize_secondary",
+    "value" : "#330a59f7"
+  }, {
+    "name" : "comp_divider",
+    "value" : "#33000000"
+  }, {
+    "name" : "comp_common_contrary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "interactive_active",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "page_bg_color",
+    "value" : "#F5F5F5"
+  }, {
+    "name" : "module_icon_color",
+    "value" : "#9E9E9E"
+  }, {
+    "name" : "module_item_bg_color",
+    "value" : "#F2F2F2"
+  }, {
+    "name" : "content_main_title_font_color",
+    "value" : "#616161"
+  }, {
+    "name" : "content_sub_title_font_color",
+    "value" : "#757575"
+  }, {
+    "name" : "content_font_color",
+    "value" : "#000000"
+  }, {
+    "name" : "comp_background_gray_dark",
+    "value" : "#ffe5e5ea"
+  }, {
+    "name" : "divider",
+    "value" : "#E5E5E5"
+  }, {
+    "name" : "keyboard_background_transparent",
+    "value" : "#ffFFFFFF"
+  }, {
+    "name" : "keyboard_regular_key",
+    "value" : "#ffDEE0E6"
+  }, {
+    "name" : "keyboard_special_key",
+    "value" : "#ffBCC0C7"
+  }, {
+    "name" : "theme_colors_brand",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_warning",
+    "value" : "#ffe84026"
+  }, {
+    "name" : "theme_colors_alert",
+    "value" : "#ffed6f21"
+  }, {
+    "name" : "theme_colors_confirm",
+    "value" : "#ff64bb5c"
+  }, {
+    "name" : "theme_colors_fontPrimary",
+    "value" : "#e5000000"
+  }, {
+    "name" : "theme_colors_fontSecondary",
+    "value" : "#99000000"
+  }, {
+    "name" : "theme_colors_fontTertiary",
+    "value" : "#66000000"
+  }, {
+    "name" : "theme_colors_fontFourth",
+    "value" : "#33000000"
+  }, {
+    "name" : "theme_colors_fontEmphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_fontOnPrimary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_fontOnSecondary",
+    "value" : "#99ffffff"
+  }, {
+    "name" : "theme_colors_fontOnTertiary",
+    "value" : "#66ffffff"
+  }, {
+    "name" : "theme_colors_fontOnFourth",
+    "value" : "#33ffffff"
+  }, {
+    "name" : "theme_colors_iconPrimary",
+    "value" : "#e5000000"
+  }, {
+    "name" : "theme_colors_iconSecondary",
+    "value" : "#99000000"
+  }, {
+    "name" : "theme_colors_iconTertiary",
+    "value" : "#66000000"
+  }, {
+    "name" : "theme_colors_iconFourth",
+    "value" : "#33000000"
+  }, {
+    "name" : "theme_colors_iconEmphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_iconSubEmphasize",
+    "value" : "#660a59f7"
+  }, {
+    "name" : "theme_colors_iconOnPrimary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_iconOnSecondary",
+    "value" : "#99ffffff"
+  }, {
+    "name" : "theme_colors_iconOnTertiary",
+    "value" : "#66ffffff"
+  }, {
+    "name" : "theme_colors_iconOnFourth",
+    "value" : "#33ffffff"
+  }, {
+    "name" : "theme_colors_backgroundPrimary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_backgroundSecondary",
+    "value" : "#fff1f3f5"
+  }, {
+    "name" : "theme_colors_backgroundTertiary",
+    "value" : "#ffe5e5ea"
+  }, {
+    "name" : "theme_colors_backgroundFourth",
+    "value" : "#ffd1d1d6"
+  }, {
+    "name" : "theme_colors_backgroundEmphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_compForegroundPrimary",
+    "value" : "#ff000000"
+  }, {
+    "name" : "theme_colors_compBackgroundPrimary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_compBackgroundPrimaryTran",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_compBackgroundPrimaryContrary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_compBackgroundGray",
+    "value" : "#fff1f3f5"
+  }, {
+    "name" : "theme_colors_compBackgroundSecondary",
+    "value" : "#19000000"
+  }, {
+    "name" : "theme_colors_compBackgroundTertiary",
+    "value" : "#0c000000"
+  }, {
+    "name" : "theme_colors_compBackgroundEmphasize",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_compBackgroundNeutral",
+    "value" : "#ff000000"
+  }, {
+    "name" : "theme_colors_compEmphasizeSecondary",
+    "value" : "#330a59f7"
+  }, {
+    "name" : "theme_colors_compEmphasizeTertiary",
+    "value" : "#190a59f7"
+  }, {
+    "name" : "theme_colors_compDivider",
+    "value" : "#33000000"
+  }, {
+    "name" : "theme_colors_compCommonContrary",
+    "value" : "#ffffffff"
+  }, {
+    "name" : "theme_colors_compBackgroundFocus",
+    "value" : "#fff1f3f5"
+  }, {
+    "name" : "theme_colors_compFocusedPrimary",
+    "value" : "#e5000000"
+  }, {
+    "name" : "theme_colors_compFocusedSecondary",
+    "value" : "#99000000"
+  }, {
+    "name" : "theme_colors_compFocusedTertiary",
+    "value" : "#66000000"
+  }, {
+    "name" : "theme_colors_interactiveHover",
+    "value" : "#0c000000"
+  }, {
+    "name" : "theme_colors_interactivePressed",
+    "value" : "#19000000"
+  }, {
+    "name" : "theme_colors_interactiveFocus",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_interactiveActive",
+    "value" : "#ff0a59f7"
+  }, {
+    "name" : "theme_colors_interactiveSelect",
+    "value" : "#33000000"
+  }, {
+    "name" : "theme_colors_interactiveClick",
+    "value" : "#19000000"
+  } ]
 }
