@@ -106,10 +106,10 @@
     "value" : "#E5E5E5"
   }, {
     "name" : "keyboard_background_transparent",
-    "value" : "#ffFFFFFF"
+    "value" : "#ffDEE0E6"
   }, {
     "name" : "keyboard_regular_key",
-    "value" : "#ffDEE0E6"
+    "value" : "#ffFFFFFF"
   }, {
     "name" : "keyboard_special_key",
     "value" : "#ffBCC0C7"
