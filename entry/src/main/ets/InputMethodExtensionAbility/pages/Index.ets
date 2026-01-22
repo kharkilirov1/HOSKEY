@@ -1659,30 +1659,46 @@ struct Index {
   }
 
   handleSwipe(direction: LayoutSwipeDirection): void {
-    if (this.availableLanguages.length <= 1) {
-      console.warn('[HOSKEY] Only one language enabled, cannot switch.');
-      return;
+    try {
+      if (this.availableLanguages.length <= 1) {
+        console.warn('[HOSKEY] Only one language enabled, cannot switch.');
+        return;
+      }
+
+      let currentIndex = this.availableLanguages.indexOf(this.currentLanguage);
+
+      // Guard: if current language not in list, reset to first
+      if (currentIndex < 0) {
+        console.warn('[HOSKEY] Current language not in available list, resetting');
+        currentIndex = 0;
+      }
+
+      if (direction === LayoutSwipeDirection.Right) {
+        currentIndex = (currentIndex - 1 + this.availableLanguages.length) % this.availableLanguages.length;
+      } else {
+        currentIndex = (currentIndex + 1) % this.availableLanguages.length;
+      }
+
+      const newLang = this.availableLanguages[currentIndex];
+      if (!newLang) {
+        console.error('[HOSKEY] Invalid language index:', currentIndex);
+        return;
+      }
+
+      this.currentLanguage = newLang;
+      console.info('[HOSKEY] Switched to language:', this.currentLanguage);
+
+      // Clear keyBoundsMap on language change (iOS-style)
+      this.keyBoundsMap.clear();
+      this.currentLayoutId = `${this.currentLanguage}_alphabet`;
+
+      // Warmup NativeDictionary for new language
+      optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
+        console.error('[HOSKEY] Failed to warmup language:', err);
+      });
+    } catch (err) {
+      console.error('[HOSKEY] handleSwipe error:', err);
     }
-
-    let currentIndex = this.availableLanguages.indexOf(this.currentLanguage);
-
-    if (direction === LayoutSwipeDirection.Right) {
-      currentIndex = (currentIndex - 1 + this.availableLanguages.length) % this.availableLanguages.length;
-    } else {
-      currentIndex = (currentIndex + 1) % this.availableLanguages.length;
-    }
-
-    this.currentLanguage = this.availableLanguages[currentIndex];
-    console.info('[HOSKEY] Switched to language:', this.currentLanguage);
-
-    // Clear keyBoundsMap on language change (iOS-style)
-    this.keyBoundsMap.clear();
-    this.currentLayoutId = `${this.currentLanguage}_alphabet`;
-
-    // Warmup NativeDictionary for new language
-    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-      console.error('[HOSKEY] Failed to warmup language:', err);
-    });
   }
 
   /**
