@@ -9,4 +9,5 @@
 /.clang-format
 /.clang-tidy
 **/.test
-/.appanalyzer
+/.appanalyzerlog.txt
+log.txt
