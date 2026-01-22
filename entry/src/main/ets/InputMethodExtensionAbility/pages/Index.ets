@@ -306,7 +306,7 @@ struct KeyView {
       .width('100%')
       .height('100%')
       .backgroundColor(this.isPressed ?
-        OpenBoardTheme.surface : (this.keyData.action === KeyAction.Char ? OpenBoardTheme.regularKey : OpenBoardTheme.specialKey))
+        OpenBoardTheme.surface : ((this.keyData.action === KeyAction.Char || this.keyData.action === KeyAction.Space) ? OpenBoardTheme.regularKey : OpenBoardTheme.specialKey))
       .borderRadius(OpenBoardTheme.radiusMedium)
       .shadow(this.isPressed ? OpenBoardTheme.shadowPressed : OpenBoardTheme.shadowKey)
       .zIndex(this.isPressed ? 100 : 0)

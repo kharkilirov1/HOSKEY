@@ -28,8 +28,8 @@ export class OpenBoardTheme {
   static readonly secondaryText = $r('app.color.theme_colors_fontSecondary');
 
   // Keyboard specific colors
-  static readonly specialKey = $r('app.color.theme_colors_iconEmphasize');
-  static readonly regularKey = $r('app.color.theme_colors_backgroundTertiary');
+  static readonly specialKey = $r('app.color.keyboard_special_key');
+  static readonly regularKey = $r('app.color.keyboard_regular_key');
   static readonly divider = $r('app.color.theme_colors_compDivider');
 
   // Border radius - Slightly rounded, almost angular
