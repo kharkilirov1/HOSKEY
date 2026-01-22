@@ -10,6 +10,9 @@ import nativeDictionary, { SuggestResult } from './NativeDictionary';
 // Debug mode flag - set to false for production
 const DEBUG_MODE = false; // Disabled for performance
 
+// BaseLexicon flag - disabled to test NativeDictionary only
+const BASELEXICON_ENABLED = false;
+
 function debugLog(...args: string[]): void {
   if (DEBUG_MODE) {
     console.info('[OptimizedPredictionModel]', ...args);
@@ -199,27 +202,23 @@ export class OptimizedPredictionModel {
     nativeDictionary.setContext(ctx);
 
     // Initialize base lexicons for languages that have lexicon files
-    // BaseLexicon is OPTIONAL - predictions work without it via user model + pending words
-    //
-    // HOW TO ADD NEW LANGUAGE (e.g. 'en'):
-    // 1. Create files: rawfile/en_base_words_50k.txt and en_base_freq_50k.tsv
-    // 2. Add 'en' to baseLexiconLanguages array below
-    // 3. Done! No code changes needed in predict()/recordWord()
-    //
-    // Currently supported: 'ru' (50k words with morphology)
-    // TEMP: Disabled BaseLexicon to test NativeDictionary
-    const baseLexiconLanguages: string[] = [];  // Was: ['ru']
-    baseLexiconLanguages.forEach(lang => {
-      const lexicon = new BaseLexicon();
-      lexicon.setContext(ctx);
-      this.baseLexicons.set(lang, lexicon);
-    });
+    // BaseLexicon is DISABLED - using NativeDictionary only
+    // To re-enable: set BASELEXICON_ENABLED = true at top of file
+    if (BASELEXICON_ENABLED) {
+      const baseLexiconLanguages: string[] = ['ru'];
+      baseLexiconLanguages.forEach(lang => {
+        const lexicon = new BaseLexicon();
+        lexicon.setContext(ctx);
+        this.baseLexicons.set(lang, lexicon);
+      });
+    }
   }
 
   /**
    * Check if language has BaseLexicon registered
    */
   hasBaseLexicon(lang: string): boolean {
+    if (!BASELEXICON_ENABLED) return false;
     return this.baseLexicons.has(lang);
   }
 
@@ -227,6 +226,7 @@ export class OptimizedPredictionModel {
    * Get BaseLexicon for language (returns null if not available)
    */
   getBaseLexicon(lang: string): BaseLexicon | null {
+    if (!BASELEXICON_ENABLED) return null;
     return this.baseLexicons.get(lang) ?? null;
   }
 
@@ -234,6 +234,11 @@ export class OptimizedPredictionModel {
    * Lazy load BaseLexicon for language (only loads once when first needed)
    */
   private async ensureBaseLexiconLoaded(lang: string): Promise<void> {
+    // Early exit if BaseLexicon is disabled
+    if (!BASELEXICON_ENABLED) {
+      return;
+    }
+
     const lexicon = this.baseLexicons.get(lang);
     if (!lexicon) {
       debugLog(`No BaseLexicon configured for language '${lang}'`);
@@ -1797,13 +1802,11 @@ export class OptimizedPredictionModel {
   }
 
   /**
-   * Load base dictionaries - now deprecated, BaseLexicon loads on-demand
+   * Load base dictionaries - DISABLED (using NativeDictionary only)
    * This method is kept for API compatibility but does nothing
-   * BaseLexicon will be loaded lazily via warmup() or first predict()/autocorrect() call
    */
   async loadDictionaries(): Promise<void> {
-    console.info('[HOSKEY] BaseLexicon will be loaded on-demand via warmup() or first use');
-    console.info('[HOSKEY] Call warmup(lang) after keyboard initialization to preload lexicon');
+    console.info('[HOSKEY] BaseLexicon DISABLED, using NativeDictionary only');
   }
 }
 
