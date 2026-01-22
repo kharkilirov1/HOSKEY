@@ -10,3 +10,4 @@
 /.clang-tidy
 **/.test
 /.appanalyzerlog.txt
+log.txt
