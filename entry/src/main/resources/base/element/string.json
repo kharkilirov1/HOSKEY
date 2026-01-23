@@ -1,56 +1,66 @@
 {
-  "string": [
-    {
-      "name": "module_desc",
-      "value": "module description"
-    },
-    {
-      "name": "EntryAbility_desc",
-      "value": "description"
-    },
-    {
-      "name": "EntryAbility_label",
-      "value": "OpenBoard_Keyboard"
-    },
-    {
-      "name": "clipboard_permission_reason",
-      "value": "Allow keyboard to read clipboard for pasting text"
-    },
-    {
-      "name": "vibrate_permission_reason",
-      "value": "Allow keyboard to provide haptic feedback when typing"
-    },
-    {
-      "name": "HoskeyInputMethod_desc",
-      "value": "HOSKEY - OpenBoard Keyboard for HarmonyOS"
-    },
-    {
-      "name": "HoskeyInputMethod_label",
-      "value": "HOSKEY Keyboard"
-    },
-    {
-      "name": "russian_keyboard",
-      "value": "Russian Keyboard"
-    },
-    {
-      "name": "english_keyboard",
-      "value": "English Keyboard"
-    },
-    {
-      "name": "polish_keyboard",
-      "value": "Polish Keyboard"
-    },
-    {
-      "name": "italian_keyboard",
-      "value": "Italian Keyboard"
-    },
-    {
-      "name": "persian_keyboard",
-      "value": "Persian Keyboard"
-    },
-    {
-      "name": "arabic_keyboard",
-      "value": "Arabic Keyboard"
-    }
-  ]
+  "string" : [ {
+    "name" : "module_desc",
+    "value" : "module description"
+  }, {
+    "name" : "EntryAbility_desc",
+    "value" : "description"
+  }, {
+    "name" : "EntryAbility_label",
+    "value" : "OpenBoard_Keyboard"
+  }, {
+    "name" : "defaultForm_label",
+    "value" : "form_label"
+  }, {
+    "name" : "defaultForm_desc",
+    "value" : "form_description"
+  }, {
+    "name" : "EntryFormAbility_desc",
+    "value" : "form_description"
+  }, {
+    "name" : "EntryFormAbility_label",
+    "value" : "form_label"
+  }, {
+    "name" : "widget_desc",
+    "value" : "This is a service widget."
+  }, {
+    "name" : "widget_display_name",
+    "value" : "widget"
+  }, {
+    "name" : "widget1_desc",
+    "value" : "This is a service widget."
+  }, {
+    "name" : "widget1_display_name",
+    "value" : "widget1"
+  }, {
+    "name" : "clipboard_permission_reason",
+    "value" : "Allow keyboard to read clipboard for pasting text"
+  }, {
+    "name" : "vibrate_permission_reason",
+    "value" : "Allow keyboard to provide haptic feedback when typing"
+  }, {
+    "name" : "HoskeyInputMethod_desc",
+    "value" : "HOSKEY - OpenBoard Keyboard for HarmonyOS"
+  }, {
+    "name" : "HoskeyInputMethod_label",
+    "value" : "HOSKEY Keyboard"
+  }, {
+    "name" : "russian_keyboard",
+    "value" : "Russian Keyboard"
+  }, {
+    "name" : "english_keyboard",
+    "value" : "English Keyboard"
+  }, {
+    "name" : "polish_keyboard",
+    "value" : "Polish Keyboard"
+  }, {
+    "name" : "italian_keyboard",
+    "value" : "Italian Keyboard"
+  }, {
+    "name" : "persian_keyboard",
+    "value" : "Persian Keyboard"
+  }, {
+    "name" : "arabic_keyboard",
+    "value" : "Arabic Keyboard"
+  } ]
 }

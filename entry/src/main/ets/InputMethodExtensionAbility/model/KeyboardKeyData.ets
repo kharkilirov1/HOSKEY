@@ -176,7 +176,7 @@ export const italianLayout: KeyData[][] = [
     SYMBOLS_KEY,
     { mainValue: ',', shiftValue: ';', action: KeyAction.Char, flex: 0.8 },
     SPACE_KEY,
-    { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
   ]
 ];
@@ -221,7 +221,7 @@ export const polishLayout: KeyData[][] = [
   [
     SYMBOLS_KEY,
     SPACE_KEY,
-    { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',:,@', action: KeyAction.Char, flex: 0.8 },
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
   ]
 ];
@@ -381,7 +381,7 @@ export const russianLayout: KeyData[][] = [
   [
     SYMBOLS_KEY,
     SPACE_KEY_RU,
-    { mainValue: '.', shiftValue: ':', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
   ]
 ];
