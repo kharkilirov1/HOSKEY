@@ -21,6 +21,16 @@
           ],
           "when": "inuse"
         }
+      },
+      {
+        "name": "ohos.permission.VIBRATE",
+        "reason": "$string:vibrate_permission_reason",
+        "usedScene": {
+          "abilities": [
+            "InputMethodExtensionAbility"
+          ],
+          "when": "inuse"
+        }
       }
     ],
 
@@ -65,7 +75,13 @@
         "icon": "$media:layered_image",
         "srcEntry": "./ets/InputMethodExtensionAbility/InputMethodService.ets",
         "type": "inputMethod",
-        "exported": true
+        "exported": true,
+        "metadata": [
+          {
+            "name": "ohos.extension.input_method",
+            "resource": "$profile:input_method_config"
+          }
+        ]
       }
     ]
   }
