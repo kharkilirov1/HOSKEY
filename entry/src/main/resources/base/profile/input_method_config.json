@@ -1,0 +1,40 @@
+{
+  "subtypes": [
+    {
+      "label": "$string:russian_keyboard",
+      "locale": "ru-RU",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:english_keyboard",
+      "locale": "en-US",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:polish_keyboard",
+      "locale": "pl-PL",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:italian_keyboard",
+      "locale": "it-IT",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:persian_keyboard",
+      "locale": "fa-IR",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    },
+    {
+      "label": "$string:arabic_keyboard",
+      "locale": "ar-SA",
+      "mode": "keyboard",
+      "icon": "$media:layered_image"
+    }
+  ]
+}

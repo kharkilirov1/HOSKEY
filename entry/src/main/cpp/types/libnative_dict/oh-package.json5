@@ -1,0 +1,4 @@
+{
+  "name": "libnative_dict.so",
+  "types": "./Index.d.ts"
+}
