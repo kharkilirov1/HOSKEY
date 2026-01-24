@@ -538,6 +538,7 @@ interface GeneratedTypeLiteralInterface_1 {
 @Component
 struct Index {
   @State currentLanguage: LanguageCode = 'ru';
+  @State isDictionaryLoading: boolean = false;
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
   @State keyboardLayout: KeyboardLayout = KeyboardLayout.Alphabet;
@@ -811,10 +812,10 @@ struct Index {
     // Initial check
     this.monitorClipboard();
 
-    // Check every 2 seconds
+    // Check every 5 seconds (reduced frequency to minimize overhead)
     this.clipboardMonitorTimer = setInterval(() => {
       this.monitorClipboard();
-    }, 2000);
+    }, 5000);
 
     console.info('[HOSKEY] Clipboard monitoring started');
   }
@@ -866,7 +867,7 @@ struct Index {
       this.currentLanguage = this.availableLanguages[0];
     }
     this.startInactivityTimer();
-    this.startClipboardMonitoring();
+    // Clipboard monitoring disabled on startup - only runs when clipboard panel is open
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
 
@@ -1589,7 +1590,7 @@ struct Index {
       case KeyAction.Enter:
         feedbackController.provideFeedback(FeedbackType.Medium);
         keyboardController.sendEnterKey();
-        await this.onBoundaryTyped('\n');
+        await this.onBoundaryTyped('\n', false);  // false = don't insert again, sendEnterKey already did
         break;
       case KeyAction.Backspace:
         feedbackController.provideFeedback(FeedbackType.Heavy);
@@ -1644,6 +1645,12 @@ struct Index {
       this.showEmojiPanel = false;
       this.clipboardSearchQuery = '';
       this.clipboardFilter = 'all';
+      // Start monitoring only when panel is open
+      this.monitorClipboard();  // Initial check
+      this.startClipboardMonitoring();
+    } else {
+      // Stop monitoring when panel is closed
+      this.stopClipboardMonitoring();
     }
   }
 
@@ -1658,6 +1665,7 @@ struct Index {
 
       // Close clipboard panel after pasting
       this.showClipboardPanel = false;
+      this.stopClipboardMonitoring();
     }
   }
 
@@ -1695,10 +1703,22 @@ struct Index {
       this.keyBoundsMap.clear();
       this.currentLayoutId = `${this.currentLanguage}_alphabet`;
 
-      // Warmup NativeDictionary for new language
-      optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-        console.error('[HOSKEY] Failed to warmup language:', err);
-      });
+      // Clear suggestions and show loading state
+      this.suggestions = ['', '', '', '', ''];
+      this.isDictionaryLoading = true;
+
+      // Defer dictionary warmup to next tick so UI updates first
+      const langToWarmup = this.currentLanguage;
+      setTimeout(() => {
+        optimizedPredictionModel.warmup(langToWarmup)
+          .then(() => {
+            this.isDictionaryLoading = false;
+          })
+          .catch((err: Error) => {
+            console.error('[HOSKEY] Failed to warmup language:', err);
+            this.isDictionaryLoading = false;
+          });
+      }, 50);
     } catch (err) {
       console.error('[HOSKEY] handleSwipe error:', err);
     }
@@ -1955,37 +1975,46 @@ struct Index {
 
       // SUGGESTIONS (iOS-style: NO preview during swipe)
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
-        Row({ space: 0 }) {
-          ForEach(
-            this.isSwipeActive ? ['', '', '', '', ''] : this.suggestions,
-            (suggestion: string, index: number) => {
-            Column() {
-              Text(suggestion)
-                .fontSize(13)
-                .fontWeight(500)
-                .fontColor(OpenBoardTheme.primaryText)
-                .textAlign(TextAlign.Center)
-                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                .accessibilityText(suggestion ? `Suggestion: ${suggestion}` : '')
-            }
-            .justifyContent(FlexAlign.Center)
-            .alignItems(HorizontalAlign.Center)
-            .layoutWeight(1)
-            .onClick(async () => {
-              if (suggestion) await this.pickSuggestion(suggestion);
-            })
+        if (this.isDictionaryLoading) {
+          // Loading indicator while dictionary loads
+          Text('...')
+            .fontSize(13)
+            .fontWeight(500)
+            .fontColor(OpenBoardTheme.secondaryText)
+            .textAlign(TextAlign.Center)
+        } else {
+          Row({ space: 0 }) {
+            ForEach(
+              this.isSwipeActive ? ['', '', '', '', ''] : this.suggestions,
+              (suggestion: string, index: number) => {
+              Column() {
+                Text(suggestion)
+                  .fontSize(13)
+                  .fontWeight(500)
+                  .fontColor(OpenBoardTheme.primaryText)
+                  .textAlign(TextAlign.Center)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .accessibilityText(suggestion ? `Suggestion: ${suggestion}` : '')
+              }
+              .justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
+              .layoutWeight(1)
+              .onClick(async () => {
+                if (suggestion) await this.pickSuggestion(suggestion);
+              })
 
-            if (index < 4) {
-              Text('|')
-                .fontSize(13)
-                .fontWeight(400)
-                .fontColor(OpenBoardTheme.secondaryText)
-            }
-          })
+              if (index < 4) {
+                Text('|')
+                  .fontSize(13)
+                  .fontWeight(400)
+                  .fontColor(OpenBoardTheme.secondaryText)
+              }
+            })
+          }
+          .width('100%')
+          .justifyContent(FlexAlign.Center)
+          .alignItems(VerticalAlign.Center)
         }
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-        .alignItems(VerticalAlign.Center)
       }
       .layoutWeight(1)
     }
@@ -2496,6 +2525,7 @@ struct Index {
       .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => {
         this.showClipboardPanel = false;
+        this.stopClipboardMonitoring();
       })
 
       // SEARCH INPUT
