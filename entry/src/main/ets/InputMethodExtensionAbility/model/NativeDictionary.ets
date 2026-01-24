@@ -176,8 +176,8 @@ class NativeDictionary {
         }
       }
 
-      // Load dictionary via NAPI (SYNC - no libuv overhead, much faster with optimized TrieNode)
-      const loaded: boolean = nativeDict.loadDictionarySync(dictPath);
+      // Load dictionary via NAPI (ASYNC - runs on worker thread to prevent ANR)
+      const loaded: boolean = await nativeDict.loadDictionary(dictPath) as boolean;
 
       if (!loaded) {
         console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
