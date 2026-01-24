@@ -518,7 +518,7 @@ public:
         stack.push_back({trieStartPos_, std::u32string(), 0, nodeCount, pos});
 
         constexpr int MAX_STACK_DEPTH = 64;    // Limit to prevent memory issues
-        constexpr int MAX_WORDS = 100000;     // Good balance for prediction dictionary
+        constexpr int MAX_WORDS = 250000;     // Increased for larger dictionaries (ru, en have 150k-200k words)
         constexpr int MAX_ITERATIONS = 1000000; // Safety limit for loop iterations
         int wordsLoaded = 0;
         int iterations = 0;
