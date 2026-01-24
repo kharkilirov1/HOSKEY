@@ -8,6 +8,10 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <hilog/log.h>
+
+#undef LOG_TAG
+#define LOG_TAG "HOSKEY-TRIE"
 
 namespace hoskey {
 
@@ -66,18 +70,53 @@ bool Trie::loadFromTextFile(const std::string& path) {
 
 // loadFromBinaryFile is implemented in binary_dict_reader.cpp
 
+// Static counter for debug logging
+static int s_insertCallCount = 0;
+
 void Trie::insert(const std::string& word, int frequency) {
-    if (word.empty()) return;
-    if (!root_) return;  // Safety check
+    s_insertCallCount++;
+
+    if (word.empty()) {
+        if (s_insertCallCount < 10) OH_LOG_WARN(LOG_APP, "Trie::insert SKIP empty word");
+        return;
+    }
+    if (!root_) {
+        if (s_insertCallCount < 10) OH_LOG_WARN(LOG_APP, "Trie::insert SKIP no root");
+        return;
+    }
 
     TrieNode* current = root_.get();
-    if (!current) return;  // Safety check
+    if (!current) {
+        if (s_insertCallCount < 10) OH_LOG_WARN(LOG_APP, "Trie::insert SKIP null root.get()");
+        return;
+    }
+
+    // DEBUG: Log first few insertions with this pointer
+    if (s_insertCallCount <= 5) {
+        std::string hexWord;
+        for (unsigned char c : word) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", c);
+            hexWord += buf;
+        }
+        OH_LOG_INFO(LOG_APP, "Trie::insert[%{public}d] this=%{public}p root=%{public}p word=\"%{public}s\" bytes=[%{public}s] freq=%{public}d",
+                    s_insertCallCount, static_cast<void*>(this), static_cast<void*>(root_.get()),
+                    word.c_str(), hexWord.c_str(), frequency);
+    }
 
     // Handle UTF-8: iterate by bytes (works for both ASCII and Cyrillic)
     for (size_t i = 0; i < word.size(); i++) {
         unsigned char c = static_cast<unsigned char>(word[i]);
-        current = current->getOrCreateChild(c);
-        if (!current) return;  // Safety: bail if allocation failed
+        TrieNode* nextNode = current->getOrCreateChild(c);
+        if (s_insertCallCount <= 3) {
+            OH_LOG_INFO(LOG_APP, "Trie::insert[%{public}d] step %{public}zu byte=0x%{public}02X current=%{public}p next=%{public}p",
+                        s_insertCallCount, i, c, static_cast<void*>(current), static_cast<void*>(nextNode));
+        }
+        current = nextNode;
+        if (!current) {
+            if (s_insertCallCount < 10) OH_LOG_ERROR(LOG_APP, "Trie::insert FAIL getOrCreateChild returned null at i=%{public}zu", i);
+            return;  // Safety: bail if allocation failed
+        }
     }
 
     if (!current->isEndOfWord()) {
@@ -86,20 +125,52 @@ void Trie::insert(const std::string& word, int frequency) {
 
     current->setEndOfWord(true);
     current->setFrequency(frequency);
+
+    // DEBUG: Verify insertion worked (for first few words)
+    if (s_insertCallCount <= 5) {
+        bool found = contains(word);
+        OH_LOG_INFO(LOG_APP, "Trie::insert[%{public}d] VERIFY contains(\"%{public}s\")=%{public}s wordCount=%{public}d",
+                    s_insertCallCount, word.c_str(), found ? "YES" : "NO", wordCount_);
+    }
 }
 
 bool Trie::contains(const std::string& word) const {
+    static int s_containsCount = 0;
+    s_containsCount++;
+    bool shouldLog = (s_containsCount <= 20);
+
     if (word.empty()) return false;
+
+    if (shouldLog) {
+        OH_LOG_INFO(LOG_APP, "contains[%{public}d]: word=\"%{public}s\" this=%{public}p root=%{public}p",
+                    s_containsCount, word.c_str(), static_cast<const void*>(this), static_cast<const void*>(root_.get()));
+    }
 
     const TrieNode* current = root_.get();
 
     for (size_t i = 0; i < word.size(); i++) {
         unsigned char c = static_cast<unsigned char>(word[i]);
-        current = current->getChild(c);
-        if (!current) return false;
+        const TrieNode* nextNode = current->getChild(c);
+        if (shouldLog && i < 3) {
+            OH_LOG_INFO(LOG_APP, "contains[%{public}d]: step %{public}zu byte=0x%{public}02X current=%{public}p next=%{public}p",
+                        s_containsCount, i, c, static_cast<const void*>(current), static_cast<const void*>(nextNode));
+        }
+        current = nextNode;
+        if (!current) {
+            if (shouldLog) {
+                OH_LOG_INFO(LOG_APP, "contains[%{public}d]: FAILED at step %{public}zu - no child for 0x%{public}02X",
+                            s_containsCount, i, c);
+            }
+            return false;
+        }
     }
 
-    return current->isEndOfWord();
+    bool result = current->isEndOfWord();
+    if (shouldLog) {
+        OH_LOG_INFO(LOG_APP, "contains[%{public}d]: reached end node=%{public}p isEndOfWord=%{public}s",
+                    s_containsCount, static_cast<const void*>(current), result ? "YES" : "NO");
+    }
+    return result;
 }
 
 int Trie::getFrequency(const std::string& word) const {
@@ -119,9 +190,29 @@ int Trie::getFrequency(const std::string& word) const {
 std::vector<WordEntry> Trie::findByPrefix(const std::string& prefix, int limit) const {
     std::vector<WordEntry> results;
 
+    // DEBUG: Log entry
+    static int s_findPrefixCount = 0;
+    s_findPrefixCount++;
+    bool shouldLog = (s_findPrefixCount <= 10);
+
+    if (shouldLog) {
+        std::string hexPrefix;
+        for (unsigned char c : prefix) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", c);
+            hexPrefix += buf;
+        }
+        OH_LOG_INFO(LOG_APP, "findByPrefix[%{public}d]: prefix=\"%{public}s\" bytes=[%{public}s] limit=%{public}d this=%{public}p root=%{public}p wordCount=%{public}d",
+                    s_findPrefixCount, prefix.c_str(), hexPrefix.c_str(), limit,
+                    static_cast<const void*>(this), static_cast<const void*>(root_.get()), wordCount_);
+    }
+
     if (prefix.empty()) {
         // Return most frequent words
         collectWords(root_.get(), "", results, limit);
+        if (shouldLog) {
+            OH_LOG_INFO(LOG_APP, "findByPrefix[%{public}d]: empty prefix, collected %{public}zu results", s_findPrefixCount, results.size());
+        }
         return results;
     }
 
@@ -129,8 +220,24 @@ std::vector<WordEntry> Trie::findByPrefix(const std::string& prefix, int limit) 
     const TrieNode* current = root_.get();
     for (size_t i = 0; i < prefix.size(); i++) {
         unsigned char c = static_cast<unsigned char>(prefix[i]);
-        current = current->getChild(c);
-        if (!current) return results; // No words with this prefix
+        const TrieNode* nextNode = current->getChild(c);
+        if (shouldLog) {
+            OH_LOG_INFO(LOG_APP, "findByPrefix[%{public}d]: step %{public}zu byte=0x%{public}02X current=%{public}p next=%{public}p",
+                        s_findPrefixCount, i, c, static_cast<const void*>(current), static_cast<const void*>(nextNode));
+        }
+        current = nextNode;
+        if (!current) {
+            if (shouldLog) {
+                OH_LOG_INFO(LOG_APP, "findByPrefix[%{public}d]: FAILED at step %{public}zu - no child for byte 0x%{public}02X",
+                            s_findPrefixCount, i, c);
+            }
+            return results; // No words with this prefix
+        }
+    }
+
+    if (shouldLog) {
+        OH_LOG_INFO(LOG_APP, "findByPrefix[%{public}d]: reached prefix node=%{public}p, collecting words...",
+                    s_findPrefixCount, static_cast<const void*>(current));
     }
 
     // Collect all words from this point
@@ -197,6 +304,8 @@ size_t Trie::getMemoryUsage() const {
 }
 
 void Trie::clear() {
+    OH_LOG_INFO(LOG_APP, "Trie::clear() called, current wordCount=%{public}d, this=%{public}p",
+                wordCount_, static_cast<void*>(this));
     // First release the old tree explicitly
     // This ensures memory is freed before allocating new root
     root_.reset();
@@ -204,6 +313,7 @@ void Trie::clear() {
 
     // Create new empty root
     root_ = std::make_unique<TrieNode>();
+    OH_LOG_INFO(LOG_APP, "Trie::clear() done, new root=%{public}p", static_cast<void*>(root_.get()));
 }
 
 } // namespace hoskey

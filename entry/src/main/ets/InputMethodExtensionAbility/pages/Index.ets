@@ -36,7 +36,20 @@ type LanguageCode = 'en' | 'it' | 'pl' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
 enum InputMode { Tap, Swipe } // iOS-style input mode
 const ALLOWED_LANGUAGES: string[] = ['en', 'it', 'pl', 'ru'];  // Only languages with native dictionaries
-const EMOJI_CATEGORIES: string[] = ['Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
+const EMOJI_CATEGORIES: string[] = ['Recents', 'Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
+// iOS-style category icons
+const EMOJI_CATEGORY_ICONS: Record<string, string> = {
+  'Recents': '🕐',
+  'Smileys & Emotion': '😀',
+  'People': '👤',
+  'Animals & Nature': '🐻',
+  'Food & Drink': '🍔',
+  'Activity & Event': '⚽',
+  'Travel & Places': '🚗',
+  'Objects': '💡',
+  'Symbols': '❤️',
+  'Flags': '🏳️'
+};
 const DEBUG_PREDICT = false; // Disabled for performance
 const DEBUG_SWIPE = false;
 const MIN_SWIPE_LAYOUT_KEYS = 20;
@@ -553,7 +566,10 @@ struct Index {
 
   @State showEmojiPanel: boolean = false;
   @State emojiCategory: string = 'Smileys & Emotion';
-  private emojiScroller: Scroller = new Scroller();
+  @State emojiSwiperIndex: number = 1;  // Index in EMOJI_CATEGORIES (1 = 'Smileys & Emotion')
+  @State recentEmojis: string[] = [];
+  private emojiSwiperController: SwiperController = new SwiperController();
+  private readonly MAX_RECENT_EMOJIS: number = 30;
 
   @State showClipboardPanel: boolean = false;
   @State clipboardFilter: ClipboardItemType | 'all' = 'all';
@@ -565,7 +581,7 @@ struct Index {
   @State private previousWord: string = '';
   @State private prevPrevWord: string = ''; // For trigram predictions
   @State private currentWord: string = '';
-  @State private suggestions: string[] = ['', '', ''];
+  @State private suggestions: string[] = ['', '', '', '', ''];
   @State private lastAutocorrection: GeneratedTypeLiteralInterface_1 | null = null;
   private suggestionsReqId: number = 0; // Race condition protection for async suggestions
   private suggestionsDebounceTimer: number | null = null; // Debounce timer for updateSuggestions
@@ -1150,7 +1166,9 @@ struct Index {
         this.suggestions = [
           word,
           result.alternatives[0] || '',
-          result.alternatives[1] || ''
+          result.alternatives[1] || '',
+          result.alternatives[2] || '',
+          result.alternatives[3] || ''
         ];
 
         // Reset shift if needed
@@ -1728,21 +1746,21 @@ struct Index {
           return;
         }
 
-        this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? ''];
+        this.suggestions = [autocorrection, list[0] ?? '', list[1] ?? '', list[2] ?? '', list[3] ?? ''];
 
         if (DEBUG_PREDICT) {
           logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
         // Normal predictions
-        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 3, this.prevPrevWord);
+        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 5, this.prevPrevWord);
 
         // Check again after async call
         if (currentReqId !== this.suggestionsReqId) {
           return;
         }
 
-        this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? ''];
+        this.suggestions = [list[0] ?? '', list[1] ?? '', list[2] ?? '', list[3] ?? '', list[4] ?? ''];
 
         if (DEBUG_PREDICT) {
           logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" predictions=[${list.join(', ')}]`);
@@ -1751,7 +1769,7 @@ struct Index {
     } catch (e) {
       console.error(`[Index] EXCEPTION in updateSuggestions:`, e);
       logger.warn('Prediction model error', e as Error);
-      this.suggestions = ['', '', ''];
+      this.suggestions = ['', '', '', '', ''];
     }
   }
 
@@ -1939,11 +1957,11 @@ struct Index {
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
         Row({ space: 0 }) {
           ForEach(
-            this.isSwipeActive ? ['', '', ''] : this.suggestions,
+            this.isSwipeActive ? ['', '', '', '', ''] : this.suggestions,
             (suggestion: string, index: number) => {
             Column() {
               Text(suggestion)
-                .fontSize(16)
+                .fontSize(13)
                 .fontWeight(500)
                 .fontColor(OpenBoardTheme.primaryText)
                 .textAlign(TextAlign.Center)
@@ -1957,10 +1975,10 @@ struct Index {
               if (suggestion) await this.pickSuggestion(suggestion);
             })
 
-            if (index < 2) {
-              Text(' | ')
-                .fontSize(16)
-                .fontWeight(500)
+            if (index < 4) {
+              Text('|')
+                .fontSize(13)
+                .fontWeight(400)
                 .fontColor(OpenBoardTheme.secondaryText)
             }
           })
@@ -2648,59 +2666,75 @@ struct Index {
             this.keyboardRootOffset = { x: basePosition.x, y: basePosition.y };
           })
         } else {
-          // Emoji Panel
-          Column({ space: 10 }) {
-            // Emoji Categories
-            Scroll() {
-              Row() {
-                ForEach(EMOJI_CATEGORIES, (cat: string) => {
-                  Text(cat)
-                    .fontSize(14)
-                    .fontWeight(500)
-                    .fontColor(this.emojiCategory === cat ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
-                    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-                    .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
-                    .borderRadius(OpenBoardTheme.radiusMedium)
-                    .shadow(this.emojiCategory === cat ? OpenBoardTheme.shadowKey : { radius: 0 })
-                    .accessibilityText(`Select ${cat} category`)
-                    .onClick(() => { this.emojiCategory = cat; })
-                })
-              }
-              .padding({ left: 8, right: 8 })
-              .accessibilityText('Emoji categories')  // Accessibility text for categories
+          // Emoji Panel (iOS-style horizontal swipe)
+          Column() {
+            // Emoji Grid with horizontal swiper between categories
+            Swiper(this.emojiSwiperController) {
+              ForEach(EMOJI_CATEGORIES, (cat: string, catIndex: number) => {
+                // Each category is a scrollable page
+                Scroll() {
+                  Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+                    ForEach(this.getEmojiList(cat), (emoji: string, emojiIndex: number) => {
+                      Text(emoji)
+                        .fontSize(24)
+                        .textAlign(TextAlign.Center)
+                        .width('11.1%')  // 9 per row (smaller emojis = more per row)
+                        .height(36)
+                        .accessibilityText(`Insert ${emoji}`)
+                        .onClick(async () => {
+                          keyboardController.insertText(emoji);
+                          this.addRecentEmoji(emoji);
+                          await this.onBoundaryTyped('');
+                          this.resetInactivityTimer();
+                        })
+                    }, (emoji: string, index: number) => `${cat}_${emoji}_${index}`)
+                  }
+                  .width('100%')
+                  .padding({ left: 4, right: 4, top: 4 })
+                }
+                .scrollable(ScrollDirection.Vertical)
+                .scrollBar(BarState.Off)
+              }, (cat: string) => cat)
             }
-
-            // Emoji
-            Scroll(this.emojiScroller) {
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
-                ForEach(this.getEmojiList(this.emojiCategory), (emoji: string) => {
-                  Text(emoji)
-                    .fontSize(28)
-                    .textAlign(TextAlign.Center)
-                    .width('11%')
-                    .height(46)
-                    .accessibilityText(`Insert ${emoji}`)
-                    .onClick(async () => {
-                      keyboardController.insertText(emoji);
-                      // Emoji is a boundary - don't add to currentWord
-                      await this.onBoundaryTyped('');
-                      this.resetInactivityTimer();
-                    })
-                })
-              }
-              .width('100%')
-              .padding({ left: 8, right: 8 })
-              .accessibilityText('Emoji selection')  // Accessibility text for emoji grid
-            }
-            .scrollable(ScrollDirection.Vertical)
-            .scrollBar(BarState.On)
-            .onScrollFrameBegin((offset: number, state: ScrollState) => {
-              return { offsetRemain: offset };
+            .index(this.emojiSwiperIndex)
+            .indicator(false)  // No dots indicator
+            .loop(false)
+            .cachedCount(2)
+            .layoutWeight(1)
+            .onChange((index: number) => {
+              this.emojiSwiperIndex = index;
+              this.emojiCategory = EMOJI_CATEGORIES[index] || 'Smileys & Emotion';
             })
+            .accessibilityText('Emoji selection - swipe left/right to change category')
+
+            // Category bar at bottom (iOS-style icons)
+            Row() {
+              ForEach(EMOJI_CATEGORIES, (cat: string, catIndex: number) => {
+                Column() {
+                  Text(EMOJI_CATEGORY_ICONS[cat] || '😀')
+                    .fontSize(20)
+                    .opacity(this.emojiSwiperIndex === catIndex ? 1.0 : 0.4)
+                }
+                .layoutWeight(1)
+                .height(36)
+                .justifyContent(FlexAlign.Center)
+                .backgroundColor(this.emojiSwiperIndex === catIndex ? OpenBoardTheme.surface : 'transparent')
+                .borderRadius(6)
+                .onClick(() => {
+                  this.emojiSwiperIndex = catIndex;
+                  this.emojiCategory = cat;
+                  this.emojiSwiperController.changeIndex(catIndex, true);
+                })
+              }, (cat: string) => `cat_${cat}`)
+            }
+            .width('100%')
+            .height(40)
+            .padding({ left: 2, right: 2, bottom: 2 })
+            .backgroundColor(OpenBoardTheme.keyboardBackground)
+            .accessibilityText('Emoji categories')
           }
           .layoutWeight(1)
-          .padding({ left: 2, right: 2, bottom: 2 })
-          .accessibilityText('Emoji panel')  // Accessibility text for emoji panel
+          .accessibilityText('Emoji panel')
         }
       }
       .alignSelf(ItemAlign.End)
@@ -2806,8 +2840,25 @@ struct Index {
     }
   }
 
+  // Add emoji to recents (iOS-style)
+  private addRecentEmoji(emoji: string): void {
+    // Remove if already exists
+    const index = this.recentEmojis.indexOf(emoji);
+    if (index > -1) {
+      this.recentEmojis.splice(index, 1);
+    }
+    // Add to beginning
+    this.recentEmojis.unshift(emoji);
+    // Limit size
+    if (this.recentEmojis.length > this.MAX_RECENT_EMOJIS) {
+      this.recentEmojis = this.recentEmojis.slice(0, this.MAX_RECENT_EMOJIS);
+    }
+  }
+
   private getEmojiList(category: string): string[] {
     switch (category) {
+      case 'Recents':
+        return this.recentEmojis.length > 0 ? this.recentEmojis : ['😀', '😂', '❤️', '👍', '🙏', '😊', '🥰', '😍'];  // Default recents
       case 'Smileys & Emotion':
         return ['😀','😁','😂','🤣','😃','😄','😅','😆','😉','😊','😋','😎','🥰','😍','😘','😗','😙','😚','🥲','🥳','🤩','🤗','🤔','🤨','😐','😶','😏','😒','🙄','😬','🤥','😟','😔','😥','🤤','😫','😩','🥺','😭','😤','😮','😱','😳','🤯','🥵','🥶','😴','😵','😷','🤕','🤢','🤮','🤧','😇','😈','👿','👹','👺','💀','👻','👽','🤖','💩','😺','😸','😹','😻','😼','😽','😾','😿','🙀','🫶','👍','👎','✊','👊','🤝','🤞','✌️','🫰','🤟','🤘','👌','🤌','🤏','👈','👉','👆','👇','☝️','✋','🤚','🖐️','S','💪','🙏','✍️','💅','👂','👃','👁️','🧠','🦷','🦴','🗣️','👤','👥','🫂'];
       case 'People':

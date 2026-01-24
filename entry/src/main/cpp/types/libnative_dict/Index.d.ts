@@ -82,6 +82,20 @@ declare interface NativeDictModule {
   loadDictionary(path: string): Promise<boolean>;
 
   /**
+   * Load binary dictionary SYNCHRONOUSLY - no libuv/async overhead
+   * Use this for faster loading when UI blocking is acceptable
+   *
+   * With optimized TrieNode (unordered_map instead of children_[256]):
+   * - Memory: 800MB -> ~20MB
+   * - Load time: ~20s -> ~1-2s (expected)
+   *
+   * @param path - Path to dictionary file (.dict or .txt)
+   * @returns true if loaded successfully
+   * @throws TypeError if path is not a string
+   */
+  loadDictionarySync(path: string): boolean;
+
+  /**
    * Check if word exists in dictionary
    * @param word - Word to check
    * @returns true if word exists, false if not found or dictionary not loaded
@@ -162,6 +176,7 @@ export default nativeDict;
 
 // Named exports for standalone function usage
 export declare function loadDictionary(path: string): Promise<boolean>;
+export declare function loadDictionarySync(path: string): boolean;
 export declare function contains(word: string): boolean;
 export declare function getFrequency(word: string): number;
 export declare function getSuggestions(prefix: string, limit: number): SuggestResult[];

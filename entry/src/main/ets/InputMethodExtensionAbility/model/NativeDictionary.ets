@@ -124,6 +124,12 @@ class NativeDictionary {
    * @param keyHeight - Key height for proximity (optional)
    */
   async initialize(lang: string, keyWidth: number = 48, keyHeight: number = 64): Promise<boolean> {
+    // Skip if already loaded for the same language
+    if (this.isLoaded && this.currentLanguage === lang) {
+      console.info(`[NativeDictionary] Already loaded for '${lang}', skipping reload`);
+      return true;
+    }
+
     if (!this.nativeAvailable) {
       console.info(`[NativeDictionary] Native not available for '${lang}', using BaseLexicon`);
       return false;
@@ -170,8 +176,8 @@ class NativeDictionary {
         }
       }
 
-      // Load dictionary via NAPI (async - runs on background thread)
-      const loaded: boolean = await nativeDict.loadDictionary(dictPath);
+      // Load dictionary via NAPI (SYNC - no libuv overhead, much faster with optimized TrieNode)
+      const loaded: boolean = nativeDict.loadDictionarySync(dictPath);
 
       if (!loaded) {
         console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
@@ -261,14 +267,54 @@ class NativeDictionary {
   }
 
   /**
+   * Apply capitalization from source to target word
+   * - If source starts with uppercase → capitalize first letter of target
+   * - If source is ALL CAPS → convert target to ALL CAPS
+   * - Otherwise → return target as-is (lowercase)
+   */
+  private applyCapitalization(source: string, target: string): string {
+    if (source.length === 0 || target.length === 0) {
+      return target;
+    }
+
+    // Check if ALL CAPS (at least 2 chars, all uppercase)
+    if (source.length >= 2 && source === source.toUpperCase() && source !== source.toLowerCase()) {
+      return target.toUpperCase();
+    }
+
+    // Check if first letter is uppercase
+    const firstChar = source.charAt(0);
+    if (firstChar === firstChar.toUpperCase() && firstChar !== firstChar.toLowerCase()) {
+      // Capitalize first letter of target
+      return target.charAt(0).toUpperCase() + target.slice(1);
+    }
+
+    // Return as-is (lowercase)
+    return target;
+  }
+
+  /**
    * Get word suggestions
    * @param prefix - Input prefix
    * @param limit - Maximum results
    */
   getSuggestions(prefix: string, limit: number = 10): SuggestResult[] {
-    if (!this.nativeAvailable || !this.isLoaded) return [];
+    if (!this.nativeAvailable || !this.isLoaded) {
+      console.warn(`[NativeDictionary] getSuggestions SKIPPED: nativeAvailable=${this.nativeAvailable}, isLoaded=${this.isLoaded}, lang=${this.currentLanguage}`);
+      return [];
+    }
     try {
-      const results = nativeDict.getSuggestions(prefix.toLowerCase(), limit) as SuggestResult[];
+      const prefixLower = prefix.toLowerCase();
+      const results = nativeDict.getSuggestions(prefixLower, limit) as SuggestResult[];
+      console.info(`[NativeDictionary] getSuggestions("${prefixLower}", ${limit}) returned ${results?.length ?? 0} results for lang=${this.currentLanguage}`);
+
+      // Apply capitalization from original prefix to results
+      if (results && results.length > 0) {
+        for (let i = 0; i < results.length; i++) {
+          results[i].word = this.applyCapitalization(prefix, results[i].word);
+        }
+        console.info(`[NativeDictionary] First 3 (with case): ${results.slice(0, 3).map(r => r.word).join(', ')}`);
+      }
       return results || [];
     } catch (err) {
       const error = err as BusinessError;
@@ -286,6 +332,10 @@ class NativeDictionary {
     if (!this.nativeAvailable || !this.isLoaded) return null;
     try {
       const result = nativeDict.findAutocorrection(word.toLowerCase(), threshold) as SuggestResult | null;
+      // Apply capitalization from original word to result
+      if (result && result.word) {
+        result.word = this.applyCapitalization(word, result.word);
+      }
       return result;
     } catch (err) {
       const error = err as BusinessError;

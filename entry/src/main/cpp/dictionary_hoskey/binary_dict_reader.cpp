@@ -14,6 +14,10 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <hilog/log.h>
+
+#undef LOG_TAG
+#define LOG_TAG "HOSKEY-DICTREADER"
 
 namespace hoskey {
 
@@ -173,8 +177,26 @@ static inline bool isValidCodePoint(char32_t cp) {
     return true;
 }
 
-// Convert UTF-32 to UTF-8 with validation
-static std::string utf32ToUtf8(const std::u32string& utf32) {
+// Convert UTF-32 code point to lowercase
+static char32_t toLowerCodePoint(char32_t cp) {
+    // Latin uppercase A-Z (U+0041 - U+005A) -> a-z (U+0061 - U+007A)
+    if (cp >= 0x0041 && cp <= 0x005A) {
+        return cp + 0x20;
+    }
+    // Cyrillic uppercase А-Я (U+0410 - U+042F) -> а-я (U+0430 - U+044F)
+    if (cp >= 0x0410 && cp <= 0x042F) {
+        return cp + 0x20;
+    }
+    // Cyrillic Ё (U+0401) -> ё (U+0451)
+    if (cp == 0x0401) {
+        return 0x0451;
+    }
+    // Already lowercase or not a letter
+    return cp;
+}
+
+// Convert UTF-32 to UTF-8 with validation (and optional lowercase conversion)
+static std::string utf32ToUtf8(const std::u32string& utf32, bool toLower = false) {
     std::string result;
     result.reserve(utf32.length() * 3);
 
@@ -182,6 +204,11 @@ static std::string utf32ToUtf8(const std::u32string& utf32) {
         // Skip invalid code points
         if (!isValidCodePoint(cp)) {
             continue;
+        }
+
+        // Convert to lowercase if requested
+        if (toLower) {
+            cp = toLowerCodePoint(cp);
         }
 
         if (cp < 0x80) {
@@ -490,6 +517,9 @@ public:
         : data_(data), size_(size), trieStartPos_(trieStartPos) {}
 
     void loadIntoTrie(Trie* trie) {
+        OH_LOG_INFO(LOG_APP, "BinaryDictLoader::loadIntoTrie START trie=%{public}p trieStartPos=%{public}d size=%{public}zu",
+                    static_cast<void*>(trie), trieStartPos_, size_);
+
         // Use iterative approach with explicit stack to avoid stack overflow
         // Stack frame: (nodeArrayPos, prefix, nodeIndex, nodeCount, currentPos)
         struct StackFrame {
@@ -505,6 +535,7 @@ public:
 
         // Initial frame
         if (trieStartPos_ < 0 || trieStartPos_ >= static_cast<int>(size_)) {
+            OH_LOG_ERROR(LOG_APP, "BinaryDictLoader::loadIntoTrie ABORT invalid trieStartPos");
             return;
         }
 
@@ -512,14 +543,17 @@ public:
         bool ok = true;
         int nodeCount = readPtNodeArraySize(data_, &pos, size_, &ok);
         if (!ok || nodeCount <= 0 || nodeCount > 10000) {
+            OH_LOG_ERROR(LOG_APP, "BinaryDictLoader::loadIntoTrie ABORT invalid nodeCount=%{public}d ok=%{public}s",
+                        nodeCount, ok ? "true" : "false");
             return;
         }
 
+        OH_LOG_INFO(LOG_APP, "BinaryDictLoader::loadIntoTrie initial nodeCount=%{public}d", nodeCount);
         stack.push_back({trieStartPos_, std::u32string(), 0, nodeCount, pos});
 
         constexpr int MAX_STACK_DEPTH = 64;    // Limit to prevent memory issues
-        constexpr int MAX_WORDS = 100000;     // Good balance for prediction dictionary
-        constexpr int MAX_ITERATIONS = 1000000; // Safety limit for loop iterations
+        constexpr int MAX_WORDS = 2000000;    // Load all words (no practical limit)
+        constexpr int MAX_ITERATIONS = 5000000; // Safety limit for loop iterations
         int wordsLoaded = 0;
         int iterations = 0;
 
@@ -591,10 +625,32 @@ public:
 
             // If terminal and it's a valid word, add to trie
             if (nodeInfo.isTerminal && !nodeInfo.isNotAWord) {
-                std::string word = utf32ToUtf8(wordPrefix);
+                // Convert to lowercase for case-insensitive search
+                std::string word = utf32ToUtf8(wordPrefix, true);  // toLower=true
                 if (!word.empty() && word.length() <= MAX_WORD_LENGTH * 4) {  // UTF-8 can be up to 4 bytes per char
+                    // DEBUG: Log first 5 words and every 10000th word
+                    if (wordsLoaded < 5 || wordsLoaded % 10000 == 0) {
+                        // Also show original (before lowercase) for debugging
+                        std::string originalWord = utf32ToUtf8(wordPrefix, false);
+                        OH_LOG_INFO(LOG_APP, "BinaryDictLoader: inserting word[%{public}d] original=\"%{public}s\" lowercase=\"%{public}s\" prob=%{public}d",
+                                    wordsLoaded, originalWord.c_str(), word.c_str(), nodeInfo.probability);
+                    }
                     trie->insert(word, nodeInfo.probability);
                     wordsLoaded++;
+
+                    // DEBUG: After first word, verify trie state
+                    if (wordsLoaded == 1) {
+                        bool verifyContains = trie->contains(word);
+                        int verifyWordCount = trie->getWordCount();
+                        OH_LOG_INFO(LOG_APP, "BinaryDictLoader: VERIFY after first insert - contains(\"%{public}s\")=%{public}s wordCount=%{public}d",
+                                    word.c_str(), verifyContains ? "YES" : "NO", verifyWordCount);
+                    }
+                    // DEBUG: After 100 words, do a batch test
+                    if (wordsLoaded == 100) {
+                        auto testResults = trie->findByPrefix("a", 5);
+                        OH_LOG_INFO(LOG_APP, "BinaryDictLoader: VERIFY after 100 words - findByPrefix(a) returned %{public}zu results, wordCount=%{public}d",
+                                    testResults.size(), trie->getWordCount());
+                    }
                 }
             }
 
@@ -624,6 +680,22 @@ public:
                 }
             }
         }
+
+        // DEBUG: Log final stats
+        OH_LOG_INFO(LOG_APP, "BinaryDictLoader: FINISHED - wordsLoaded=%{public}d iterations=%{public}d trieWordCount=%{public}d",
+                    wordsLoaded, iterations, trie->getWordCount());
+
+        // DEBUG: Final verification before returning
+        auto finalTestA = trie->findByPrefix("a", 3);
+        auto finalTestP = trie->findByPrefix("\xD0\xBF", 3);  // "п"
+        OH_LOG_INFO(LOG_APP, "BinaryDictLoader: FINAL VERIFY findByPrefix(a)=%{public}zu findByPrefix(п)=%{public}zu",
+                    finalTestA.size(), finalTestP.size());
+        if (finalTestA.size() > 0) {
+            OH_LOG_INFO(LOG_APP, "BinaryDictLoader: FINAL VERIFY first Latin word: %{public}s", finalTestA[0].word.c_str());
+        }
+        if (finalTestP.size() > 0) {
+            OH_LOG_INFO(LOG_APP, "BinaryDictLoader: FINAL VERIFY first Cyrillic word: %{public}s", finalTestP[0].word.c_str());
+        }
     }
 
 private:
@@ -637,8 +709,12 @@ private:
 // ============================================================================
 
 bool Trie::loadFromBinaryFile(const std::string& path) {
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: START this=%{public}p path=%{public}s",
+                static_cast<void*>(this), path.c_str());
+
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
+        OH_LOG_ERROR(LOG_APP, "loadFromBinaryFile: failed to open file");
         return false;
     }
 
@@ -646,32 +722,72 @@ bool Trie::loadFromBinaryFile(const std::string& path) {
     file.seekg(0, std::ios::beg);
 
     if (fileSize < 100) {
+        OH_LOG_ERROR(LOG_APP, "loadFromBinaryFile: file too small (%{public}lld bytes)", (long long)fileSize);
         return false;
     }
 
     // Read entire file
     std::vector<uint8_t> data(fileSize);
     if (!file.read(reinterpret_cast<char*>(data.data()), fileSize)) {
+        OH_LOG_ERROR(LOG_APP, "loadFromBinaryFile: failed to read file data");
         return false;
     }
 
     // Parse header
     DictHeader header = parseHeader(data.data(), data.size());
     if (!header.isValid) {
+        OH_LOG_ERROR(LOG_APP, "loadFromBinaryFile: invalid header");
         return false;
     }
 
     // Validate header size is within file bounds
     if (header.headerSize >= data.size()) {
+        OH_LOG_ERROR(LOG_APP, "loadFromBinaryFile: header size exceeds file size");
         return false;
     }
+
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: header valid, locale=%{public}s headerSize=%{public}u",
+                header.locale.c_str(), header.headerSize);
 
     // Clear existing data
     clear();
 
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: AFTER clear() this=%{public}p root_=%{public}p wordCount_=%{public}d",
+                static_cast<void*>(this), static_cast<void*>(root_.get()), wordCount_);
+
     // Load trie data
     BinaryDictLoader loader(data.data(), data.size(), header.headerSize);
     loader.loadIntoTrie(this);
+
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: AFTER loadIntoTrie() this=%{public}p root_=%{public}p wordCount_=%{public}d",
+                static_cast<void*>(this), static_cast<void*>(root_.get()), wordCount_);
+
+    // CRITICAL DEBUG: Test if words can be found immediately after loading
+    bool testA = contains("a");
+    auto testPrefix = findByPrefix("a", 3);
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: POST-LOAD TEST contains(a)=%{public}s findByPrefix(a).size=%{public}zu",
+                testA ? "YES" : "NO", testPrefix.size());
+
+    // Test Cyrillic
+    bool testP = contains("\xD0\xBF");  // "п"
+    auto testCyrPrefix = findByPrefix("\xD0\xBF", 3);  // "п"
+    OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: POST-LOAD TEST contains(п)=%{public}s findByPrefix(п).size=%{public}zu",
+                testP ? "YES" : "NO", testCyrPrefix.size());
+
+    // Check if root has any children at all
+    if (root_) {
+        int childCount = root_->getChildCount();
+        OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: root has %{public}d children", childCount);
+
+        // Log what children exist at root level
+        std::string rootChildren;
+        root_->forEachChild([&rootChildren](char c, const TrieNode* child) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%02X ", static_cast<unsigned char>(c));
+            rootChildren += buf;
+        });
+        OH_LOG_INFO(LOG_APP, "loadFromBinaryFile: root children bytes: [%{public}s]", rootChildren.c_str());
+    }
 
     return wordCount_ > 0;
 }
