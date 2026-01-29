@@ -14,8 +14,7 @@ import {
   russianLayout
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
-import optimizedPredictionModel from '../model/OptimizedPredictionModel';
-import nativeDictionary from '../model/NativeDictionary';
+import nativeDictionary, { SuggestResult } from '../model/NativeDictionary';
 import clipboardHistory, { ClipboardItem, ClipboardItemType } from '../model/ClipboardHistory';
 import feedbackController, { FeedbackType } from '../model/FeedbackController';
 import { display } from '@kit.ArkUI';
@@ -871,9 +870,9 @@ struct Index {
     // Auto-capitalize at the start of new typing session
     this.enableAutoCapitalization();
 
-    // Warmup NativeDictionary for current language
-    optimizedPredictionModel.warmup(this.currentLanguage).catch((err: Error) => {
-      console.error('[HOSKEY] Failed to warmup language on start:', err);
+    // Initialize NativeDictionary for current language
+    nativeDictionary.initialize(this.currentLanguage).catch((err: Error) => {
+      console.error('[HOSKEY] Failed to initialize dictionary on start:', err);
     });
   }
 
@@ -1707,15 +1706,15 @@ struct Index {
       this.suggestions = ['', '', '', '', ''];
       this.isDictionaryLoading = true;
 
-      // Defer dictionary warmup to next tick so UI updates first
-      const langToWarmup = this.currentLanguage;
+      // Defer dictionary initialization to next tick so UI updates first
+      const langToInit = this.currentLanguage;
       setTimeout(() => {
-        optimizedPredictionModel.warmup(langToWarmup)
+        nativeDictionary.initialize(langToInit)
           .then(() => {
             this.isDictionaryLoading = false;
           })
           .catch((err: Error) => {
-            console.error('[HOSKEY] Failed to warmup language:', err);
+            console.error('[HOSKEY] Failed to initialize dictionary:', err);
             this.isDictionaryLoading = false;
           });
       }, 50);
@@ -1747,21 +1746,23 @@ struct Index {
     const currentReqId = this.suggestionsReqId;
 
     try {
-      // Check for autocorrection first
-      const autocorrection = this.currentWord.length >= 2
-        ? await optimizedPredictionModel.findAutocorrection(this.currentLanguage, this.currentWord)
+      // Check for autocorrection first (synchronous native call)
+      const autocorrectionResult: SuggestResult | null = this.currentWord.length >= 2
+        ? nativeDictionary.findAutocorrection(this.currentWord)
         : null;
+      const autocorrection = autocorrectionResult?.word ?? null;
 
       // Check if request is stale (user typed more keys while we were waiting)
       if (currentReqId !== this.suggestionsReqId) {
         return;
       }
 
-      if (autocorrection && autocorrection !== this.currentWord) {
+      if (autocorrection && autocorrection !== this.currentWord.toLowerCase()) {
         // Show autocorrection as first suggestion, then predictions
-        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 2, this.prevPrevWord);
+        const results: SuggestResult[] = nativeDictionary.getSuggestions(this.currentWord, 4);
+        const list = results.map((r: SuggestResult) => r.word);
 
-        // Check again after async call
+        // Check again after call
         if (currentReqId !== this.suggestionsReqId) {
           return;
         }
@@ -1772,10 +1773,11 @@ struct Index {
           logger.info(`[Predict] lang=${this.currentLanguage} prefix="${this.currentWord}" prev="${this.previousWord}" prev2="${this.prevPrevWord}" autocorrect="${autocorrection}" predictions=[${list.join(', ')}]`);
         }
       } else {
-        // Normal predictions
-        const list = await optimizedPredictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, 5, this.prevPrevWord);
+        // Normal predictions (synchronous native call)
+        const results: SuggestResult[] = nativeDictionary.getSuggestions(this.currentWord, 5);
+        const list = results.map((r: SuggestResult) => r.word);
 
-        // Check again after async call
+        // Check again after call
         if (currentReqId !== this.suggestionsReqId) {
           return;
         }
@@ -1842,8 +1844,9 @@ struct Index {
     if (this.currentWord) {
       // Check for autocorrection on space
       if (ch === ' ') {
-        const correction = await optimizedPredictionModel.findAutocorrection(this.currentLanguage, this.currentWord);
-        if (correction && correction !== this.currentWord) {
+        const correctionResult = nativeDictionary.findAutocorrection(this.currentWord);
+        const correction = correctionResult?.word ?? null;
+        if (correction && correction !== this.currentWord.toLowerCase()) {
           // Autocorrection found! Replace the typed word
           console.info(`[Autocorrect] "${this.currentWord}" → "${correction}"`);
 
@@ -1859,15 +1862,15 @@ struct Index {
             corrected: correction
           };
 
-          // Record corrected word with trigram context
-          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, correction, this.prevPrevWord);
+          // Record corrected word with bigram context
+          nativeDictionary.addLearnedWord(correction, this.previousWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
           this.previousWord = correction;
         } else {
-          // No correction, record the word as typed with trigram context
-          optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+          // No correction, record the word as typed with bigram context
+          nativeDictionary.addLearnedWord(this.currentWord, this.previousWord);
 
           // Shift word history for trigram
           this.prevPrevWord = this.previousWord;
@@ -1877,8 +1880,8 @@ struct Index {
         // NOTE: Space insertion moved outside if (this.currentWord) block
         // to ensure space is ALWAYS inserted, even when currentWord is empty
       } else {
-        // Non-space boundary, just record the word with trigram context
-        optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord, this.prevPrevWord);
+        // Non-space boundary, just record the word with bigram context
+        nativeDictionary.addLearnedWord(this.currentWord, this.previousWord);
 
         // Shift word history for trigram
         this.prevPrevWord = this.previousWord;
@@ -1932,9 +1935,9 @@ struct Index {
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
-    // Record the picked suggestion word with trigram context
+    // Record the picked suggestion word with bigram context
     // Don't call onBoundaryTyped to avoid double recording
-    optimizedPredictionModel.recordWord(this.currentLanguage, this.previousWord, word, this.prevPrevWord);
+    nativeDictionary.addLearnedWord(word, this.previousWord);
 
     // Shift word history for trigram
     this.prevPrevWord = this.previousWord;
@@ -1983,31 +1986,26 @@ struct Index {
             .fontColor(OpenBoardTheme.secondaryText)
             .textAlign(TextAlign.Center)
         } else {
-          Row({ space: 0 }) {
+          Row({ space: 8 }) {
             ForEach(
               this.isSwipeActive ? ['', '', '', '', ''] : this.suggestions,
               (suggestion: string, index: number) => {
-              Column() {
-                Text(suggestion)
-                  .fontSize(13)
-                  .fontWeight(500)
-                  .fontColor(OpenBoardTheme.primaryText)
-                  .textAlign(TextAlign.Center)
-                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .accessibilityText(suggestion ? `Suggestion: ${suggestion}` : '')
-              }
-              .justifyContent(FlexAlign.Center)
-              .alignItems(HorizontalAlign.Center)
-              .layoutWeight(1)
-              .onClick(async () => {
-                if (suggestion) await this.pickSuggestion(suggestion);
-              })
-
-              if (index < 4) {
-                Text('|')
-                  .fontSize(13)
-                  .fontWeight(400)
-                  .fontColor(OpenBoardTheme.secondaryText)
+              if (suggestion) {
+                Column() {
+                  Text(suggestion)
+                    .fontSize(13)
+                    .fontWeight(500)
+                    .fontColor(OpenBoardTheme.primaryText)
+                    .textAlign(TextAlign.Center)
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .accessibilityText(`Suggestion: ${suggestion}`)
+                }
+                .justifyContent(FlexAlign.Center)
+                .alignItems(HorizontalAlign.Center)
+                .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+                .onClick(async () => {
+                  await this.pickSuggestion(suggestion);
+                })
               }
             })
           }

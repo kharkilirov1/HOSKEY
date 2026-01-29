@@ -84,6 +84,43 @@ export interface SwipeResult {
 }
 
 /**
+ * FlatTrie statistics
+ */
+export interface FlatTrieStats {
+  wordCount: number;
+  memoryUsage: number;
+  locale: string;
+}
+
+/**
+ * Trail interpolation parameters (Yandex-style)
+ */
+export interface TrailParams {
+  minSamplingDistance?: number;
+  maxAngleRadians?: number;
+  maxSegmentLength?: number;
+  maxInterpolationSteps?: number;
+}
+
+/**
+ * Trail render parameters (Yandex-style)
+ */
+export interface TrailRenderParams {
+  maxWidth?: number;
+  minWidth?: number;
+  widthRatio?: number;
+  fadeStartTimeMs?: number;
+  fadeDurationMs?: number;
+  trailColor?: number;
+  shadowEnabled?: boolean;
+}
+
+/**
+ * Combined trail initialization parameters
+ */
+export interface TrailInitParams extends TrailParams, TrailRenderParams {}
+
+/**
  * Native Dictionary Manager
  * Real implementation using C++ NAPI bridge
  */
@@ -119,11 +156,16 @@ class NativeDictionary {
 
   /**
    * Initialize dictionary for language
+   * Two-stage loading for fast startup:
+   * 1. First, try to load mini dictionary (fast, ~1.8MB)
+   * 2. Then, optionally upgrade to full dictionary in background
+   * 
    * @param lang - Language code ('ru', 'en', etc.)
    * @param keyWidth - Key width for proximity (optional)
    * @param keyHeight - Key height for proximity (optional)
+   * @param loadFullInBackground - Whether to load full dictionary after mini (default: true)
    */
-  async initialize(lang: string, keyWidth: number = 48, keyHeight: number = 64): Promise<boolean> {
+  async initialize(lang: string, keyWidth: number = 48, keyHeight: number = 64, loadFullInBackground: boolean = true): Promise<boolean> {
     // Skip if already loaded for the same language
     if (this.isLoaded && this.currentLanguage === lang) {
       console.info(`[NativeDictionary] Already loaded for '${lang}', skipping reload`);
@@ -141,47 +183,125 @@ class NativeDictionary {
     }
 
     try {
-      // Get dictionary path in filesDir (writable directory)
-      // rawfile resources are not accessible via file path, so we copy them to filesDir first
-      const dictFilename = `main_${lang}.dict`;
-      const dictDir = `${this.context.filesDir}/dict`;
-      const dictPath = `${dictDir}/${dictFilename}`;
-
-      console.info(`[NativeDictionary] Dictionary target path: ${dictPath}`);
-
       // Ensure dict directory exists
+      const dictDir = `${this.context.filesDir}/dict`;
       try {
         fileIo.mkdirSync(dictDir);
       } catch (mkdirErr) {
         // Directory may already exist - ignore error
       }
 
-      // Check if dictionary already exists in filesDir
-      let needsCopy = true;
+      // Stage 1: Try to load mini dictionary first (fast startup)
+      const miniDictFilename = `main_${lang}_mini.dict`;
+      const miniDictPath = `${dictDir}/${miniDictFilename}`;
+      
+      console.info(`[NativeDictionary] Stage 1: checking mini dict '${miniDictFilename}'`);
+      
+      let miniLoaded = false;
       try {
-        const stat = fileIo.statSync(dictPath);
-        console.info(`[NativeDictionary] Dictionary already exists in filesDir, size: ${stat.size} bytes`);
-        needsCopy = false;
-      } catch (statErr) {
-        // File doesn't exist, need to copy
-        console.info(`[NativeDictionary] Dictionary not in filesDir, copying from rawfile...`);
+        // Check if mini dictionary exists in rawfile
+        console.info(`[NativeDictionary] Checking rawfile exists...`);
+        const miniExists = await this.checkRawfileExists(miniDictFilename);
+        console.info(`[NativeDictionary] miniExists=${miniExists}`);
+        
+        if (miniExists) {
+          console.info(`[NativeDictionary] Mini dictionary found for '${lang}', loading first...`);
+          
+          // Copy mini dict if not already in filesDir
+          let needsCopy = true;
+          try {
+            const stat = fileIo.statSync(miniDictPath);
+            console.info(`[NativeDictionary] Mini dictionary exists in filesDir, size: ${stat.size} bytes`);
+            needsCopy = false;
+          } catch (statErr) {
+            console.info(`[NativeDictionary] Mini not in filesDir, will copy from rawfile...`);
+          }
+          
+          if (needsCopy) {
+            console.info(`[NativeDictionary] Calling copyDictFromRawfile...`);
+            const copySuccess = await this.copyDictFromRawfile(miniDictFilename, miniDictPath);
+            console.info(`[NativeDictionary] copyDictFromRawfile returned: ${copySuccess}`);
+            
+            // Verify file exists after copy
+            if (copySuccess) {
+              try {
+                const stat = fileIo.statSync(miniDictPath);
+                console.info(`[NativeDictionary] Verified: mini dict copied, size=${stat.size} bytes`);
+              } catch (verifyErr) {
+                console.error(`[NativeDictionary] COPY VERIFICATION FAILED - file doesn't exist after copy!`);
+              }
+            }
+          }
+          
+          // Load mini dictionary SYNC for fastest startup
+          console.info(`[NativeDictionary] Calling loadDictionarySync(${miniDictPath})...`);
+          miniLoaded = nativeDict.loadDictionarySync(miniDictPath) as boolean;
+          console.info(`[NativeDictionary] loadDictionarySync returned: ${miniLoaded}`);
+          
+          if (miniLoaded) {
+            this.isLoaded = true;
+            this.currentLanguage = lang;
+            const miniStats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
+            console.info(`[NativeDictionary] Mini dictionary loaded: ${miniStats.wordCount} words, ${miniStats.memoryUsage} bytes`);
+          }
+        } else {
+          console.info(`[NativeDictionary] Mini dictionary NOT found in rawfile, skipping to full...`);
+        }
+      } catch (miniErr) {
+        const error = miniErr as BusinessError;
+        console.error(`[NativeDictionary] Mini dictionary error: code=${error.code} msg=${error.message}`);
+        console.warn(`[NativeDictionary] Mini dictionary not available for '${lang}', loading full...`);
       }
 
-      // Copy dictionary from rawfile to filesDir if needed
+      // Stage 2: Load full dictionary (either now or in background)
+      const fullDictFilename = `main_${lang}.dict`;
+      const fullDictPath = `${dictDir}/${fullDictFilename}`;
+
+      // Copy full dictionary if needed
+      let needsCopy = true;
+      try {
+        const stat = fileIo.statSync(fullDictPath);
+        console.info(`[NativeDictionary] Full dictionary exists in filesDir, size: ${stat.size} bytes`);
+        needsCopy = false;
+      } catch (statErr) {
+        console.info(`[NativeDictionary] Full dictionary not in filesDir, copying from rawfile...`);
+      }
+
       if (needsCopy) {
-        const copied = await this.copyDictFromRawfile(dictFilename, dictPath);
+        const copied = await this.copyDictFromRawfile(fullDictFilename, fullDictPath);
         if (!copied) {
+          // If mini loaded, we're still partially functional
+          if (miniLoaded) {
+            console.warn(`[NativeDictionary] Full dictionary copy failed, using mini only`);
+            return true;
+          }
           console.error(`[NativeDictionary] Failed to copy dictionary for '${lang}'`);
           return false;
         }
       }
 
-      // Load dictionary via NAPI (ASYNC - runs on worker thread to prevent ANR)
-      const loaded: boolean = await nativeDict.loadDictionary(dictPath) as boolean;
+      // Load full dictionary
+      if (miniLoaded && loadFullInBackground) {
+        // Mini already loaded - upgrade to full in background (non-blocking)
+        console.info(`[NativeDictionary] Upgrading to full dictionary in background...`);
+        this.loadFullDictionaryInBackground(fullDictPath, lang, keyWidth, keyHeight);
+      } else {
+        // No mini - load full dictionary now (blocking)
+        console.info(`[NativeDictionary] Loading full dictionary directly...`);
+        const loaded: boolean = await nativeDict.loadDictionary(fullDictPath) as boolean;
 
-      if (!loaded) {
-        console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
-        return false;
+        if (!loaded) {
+          // If mini was loaded, we're still functional
+          if (miniLoaded) {
+            console.warn(`[NativeDictionary] Full dictionary load failed, using mini only`);
+            return true;
+          }
+          console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
+          return false;
+        }
+        
+        this.isLoaded = true;
+        this.currentLanguage = lang;
       }
 
       // Set proximity info for autocorrection
@@ -192,10 +312,7 @@ class NativeDictionary {
         console.warn('[NativeDictionary] Failed to set proximity info, autocorrection may be less accurate');
       }
 
-      this.isLoaded = true;
-      this.currentLanguage = lang;
-
-      // Get and log stats
+      // Get and log final stats
       const nativeStats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
       console.info(`[NativeDictionary] Loaded ${nativeStats.wordCount} words for '${lang}', memory: ${nativeStats.memoryUsage} bytes`);
 
@@ -209,21 +326,74 @@ class NativeDictionary {
   }
 
   /**
+   * Load full dictionary in background (non-blocking)
+   * Used to upgrade from mini to full dictionary after initial fast load
+   */
+  private loadFullDictionaryInBackground(dictPath: string, lang: string, keyWidth: number, keyHeight: number): void {
+    // Use async NAPI call which runs on worker thread
+    nativeDict.loadDictionary(dictPath).then((loaded: boolean) => {
+      if (loaded) {
+        const stats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
+        console.info(`[NativeDictionary] Background upgrade complete: ${stats.wordCount} words for '${lang}'`);
+        
+        // Re-apply proximity info after full load
+        const layoutName = lang === 'ru' ? 'ru' : 'qwerty';
+        nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
+      } else {
+        console.warn(`[NativeDictionary] Background upgrade to full dictionary failed, continuing with mini`);
+      }
+    }).catch((err: Error) => {
+      console.error(`[NativeDictionary] Background dictionary upgrade error:`, err);
+    });
+  }
+
+  /**
+   * Check if a file exists in rawfile resources
+   */
+  private async checkRawfileExists(filename: string): Promise<boolean> {
+    console.info(`[NativeDictionary] checkRawfileExists('${filename}') called`);
+    if (!this.context) {
+      console.error(`[NativeDictionary] checkRawfileExists: context is null!`);
+      return false;
+    }
+    try {
+      const resMgr = this.context.resourceManager;
+      console.info(`[NativeDictionary] checkRawfileExists: calling getRawFileContent...`);
+      const data = await resMgr.getRawFileContent(filename);
+      const exists = data && data.byteLength > 0;
+      console.info(`[NativeDictionary] checkRawfileExists: result=${exists}, size=${data?.byteLength ?? 0}`);
+      return exists;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error(`[NativeDictionary] checkRawfileExists error: code=${error.code} msg=${error.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Copy dictionary from rawfile resources to filesDir
    * rawfile resources are packed in HAP and only accessible via resourceManager
    */
   private async copyDictFromRawfile(filename: string, destPath: string): Promise<boolean> {
-    if (!this.context) return false;
+    console.info(`[NativeDictionary] copyDictFromRawfile('${filename}' -> '${destPath}') called`);
+    
+    if (!this.context) {
+      console.error(`[NativeDictionary] copyDictFromRawfile: context is null!`);
+      return false;
+    }
 
     try {
       // Read dictionary from rawfile using resourceManager
       const resMgr = this.context.resourceManager;
+      console.info(`[NativeDictionary] copyDictFromRawfile: reading rawfile...`);
       const rawData = await resMgr.getRawFileContent(filename);
 
       console.info(`[NativeDictionary] Read ${rawData.byteLength} bytes from rawfile/${filename}`);
 
       // Write to filesDir
+      console.info(`[NativeDictionary] copyDictFromRawfile: opening dest file for write...`);
       const file = fileIo.openSync(destPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      console.info(`[NativeDictionary] copyDictFromRawfile: writing ${rawData.byteLength} bytes...`);
       const written = fileIo.writeSync(file.fd, rawData.buffer);
       fileIo.closeSync(file);
 
@@ -438,6 +608,405 @@ class NativeDictionary {
     } catch (err) {
       console.error('[NativeDictionary] Error in processSwipePath:', err);
       return null;
+    }
+  }
+
+  // ======== USER DICTIONARY / LEARNING ========
+
+  /**
+   * Add learned word to user dictionary
+   * @param word - Word to add
+   * @param prevWord - Previous word for bigram context (empty if none)
+   * @param count - Initial frequency count (default 1)
+   */
+  addLearnedWord(word: string, prevWord: string, count: number = 1): void {
+    if (!this.nativeAvailable || !this.isLoaded) {
+      console.warn('[NativeDictionary] addLearnedWord: not available');
+      return;
+    }
+    try {
+      nativeDict.addLearnedWord(word.toLowerCase(), prevWord.toLowerCase(), count);
+      console.info(`[NativeDictionary] Added learned word: "${word}" (prev: "${prevWord}", count: ${count})`);
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error in addLearnedWord:', error);
+    }
+  }
+
+  /**
+   * Save user dictionary to persistent storage
+   * @returns Promise<boolean> - true if saved successfully
+   */
+  async saveUserDictionary(): Promise<boolean> {
+    if (!this.nativeAvailable || !this.context) {
+      console.warn('[NativeDictionary] saveUserDictionary: not available');
+      return false;
+    }
+    try {
+      const userDictPath = `${this.context.filesDir}/dict/user_${this.currentLanguage}.dict`;
+      const saved: boolean = await nativeDict.saveUserDictionary(userDictPath) as boolean;
+      if (saved) {
+        console.info(`[NativeDictionary] User dictionary saved to: ${userDictPath}`);
+      } else {
+        console.warn('[NativeDictionary] Failed to save user dictionary');
+      }
+      return saved;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error saving user dictionary:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Load user dictionary from persistent storage
+   * @returns Promise<boolean> - true if loaded successfully
+   */
+  async loadUserDictionary(): Promise<boolean> {
+    if (!this.nativeAvailable || !this.context) {
+      console.warn('[NativeDictionary] loadUserDictionary: not available');
+      return false;
+    }
+    try {
+      const userDictPath = `${this.context.filesDir}/dict/user_${this.currentLanguage}.dict`;
+      
+      // Check if file exists first
+      try {
+        fileIo.statSync(userDictPath);
+      } catch (statErr) {
+        console.info('[NativeDictionary] No user dictionary file found, starting fresh');
+        return true; // Not an error - just no saved data yet
+      }
+      
+      const loaded: boolean = await nativeDict.loadUserDictionary(userDictPath) as boolean;
+      if (loaded) {
+        console.info(`[NativeDictionary] User dictionary loaded from: ${userDictPath}`);
+      }
+      return loaded;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error loading user dictionary:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Clear all learned words from user dictionary
+   */
+  clearLearnedWords(): void {
+    if (!this.nativeAvailable) {
+      return;
+    }
+    try {
+      nativeDict.clearLearnedWords();
+      console.info('[NativeDictionary] Cleared all learned words');
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error('[NativeDictionary] Error clearing learned words:', error);
+    }
+  }
+
+  // =========================================================================
+  // Legacy User Learning API (kept for backward compatibility)
+  // New code should use addLearnedWord(word, prevWord, count) above
+  // =========================================================================
+
+  /**
+   * Record word usage (boost frequency)
+   * @param word - Word that was used
+   * @returns true if recorded
+   */
+  recordWordUsage(word: string): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      // Delegate to new API with empty prevWord
+      this.addLearnedWord(word, '', 1);
+      return true;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in recordWordUsage:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Get count of learned words
+   * @returns Number of learned words
+   */
+  getLearnedWordsCount(): number {
+    if (!this.nativeAvailable) return 0;
+
+    try {
+      return nativeDict.getLearnedWordsCount() as number;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getLearnedWordsCount:', err);
+      return 0;
+    }
+  }
+
+  /**
+   * Remove a word from user dictionary
+   * @param word - Word to remove
+   * @returns true if removed
+   */
+  removeLearnedWord(word: string): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      return nativeDict.removeLearnedWord(word) as boolean;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in removeLearnedWord:', err);
+      return false;
+    }
+  }
+
+  // ============ FlatTrie API (instant loading) ============
+
+  /**
+   * Load pre-serialized .flat dictionary for instant loading (<50ms)
+   * @param path - Path to .flat file
+   * @returns true if loaded successfully
+   */
+  loadFlatDictionary(path: string): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      const result = nativeDict.loadFlatDictionary(path) as boolean;
+      if (result) {
+        console.info(`[NativeDictionary] FlatTrie loaded from ${path}`);
+      }
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in loadFlatDictionary:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Convert .dict file to optimized .flat format
+   * @param inputPath - Path to input .dict file
+   * @param outputPath - Path to output .flat file
+   * @param locale - Optional language code (e.g., 'ru', 'en')
+   * @returns true if conversion successful
+   */
+  convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      const result = nativeDict.convertToFlatFormat(inputPath, outputPath, locale || '') as boolean;
+      if (result) {
+        console.info(`[NativeDictionary] Converted ${inputPath} to ${outputPath}`);
+      }
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in convertToFlatFormat:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Get FlatTrie statistics
+   * @returns FlatTrie stats or null if not loaded
+   */
+  getFlatTrieStats(): FlatTrieStats | null {
+    if (!this.nativeAvailable) return null;
+
+    try {
+      return nativeDict.getFlatTrieStats() as FlatTrieStats | null;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getFlatTrieStats:', err);
+      return null;
+    }
+  }
+
+  // ============ Batch Operations API ============
+
+  /**
+   * Check if multiple words exist in dictionary
+   * @param words Array of words to check
+   * @returns Array of booleans (true if exists)
+   */
+  batchContains(words: string[]): boolean[] {
+    if (!this.nativeAvailable) return words.map(() => false);
+
+    try {
+      return nativeDict.batchOps.batchContains(words) as boolean[];
+    } catch (err) {
+      console.error('[NativeDictionary] Error in batchContains:', err);
+      return words.map(() => false);
+    }
+  }
+
+  /**
+   * Get frequencies of multiple words
+   * @param words Array of words
+   * @returns Array of frequencies
+   */
+  batchGetFrequency(words: string[]): number[] {
+    if (!this.nativeAvailable) return words.map(() => 0);
+
+    try {
+      return nativeDict.batchOps.batchGetFrequency(words) as number[];
+    } catch (err) {
+      console.error('[NativeDictionary] Error in batchGetFrequency:', err);
+      return words.map(() => 0);
+    }
+  }
+
+  /**
+   * Load default autocorrect rules for language
+   * @param language Language code ('ru', 'en')
+   * @returns true if rules loaded
+   */
+  loadAutocorrectRules(language: string): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      const result = nativeDict.batchOps.loadAutocorrectRules(language) as boolean;
+      if (result) {
+        console.info(`[NativeDictionary] Autocorrect rules loaded for ${language}`);
+      }
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in loadAutocorrectRules:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Apply autocorrect rules to a word
+   * @param word Word to check
+   * @returns Corrected word or original if no rule matches
+   */
+  applyAutocorrectRule(word: string): string {
+    if (!this.nativeAvailable) return word;
+
+    try {
+      return nativeDict.batchOps.applyAutocorrectRule(word) as string;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in applyAutocorrectRule:', err);
+      return word;
+    }
+  }
+
+  /**
+   * Add custom autocorrect rule
+   * @param wrong Wrong form
+   * @param correct Correct form
+   */
+  addAutocorrectRule(wrong: string, correct: string): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.batchOps.addAutocorrectRule(wrong, correct);
+    } catch (err) {
+      console.error('[NativeDictionary] Error in addAutocorrectRule:', err);
+    }
+  }
+
+  // ============ Gesture Trail API (Yandex-style) ============
+
+  /**
+   * Initialize trail data system for gesture visualization
+   * @param params Optional trail parameters
+   * @returns true if initialized
+   */
+  initTrailData(params?: TrailInitParams): boolean {
+    if (!this.nativeAvailable) return false;
+
+    try {
+      return nativeDict.initTrailData(params) as boolean;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in initTrailData:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Add a point to the trail drawer
+   * @param x X coordinate
+   * @param y Y coordinate
+   * @param timestamp Timestamp in milliseconds
+   */
+  addTrailPoint(x: number, y: number, timestamp: number): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.addTrailPoint(x, y, timestamp);
+    } catch (err) {
+      console.error('[NativeDictionary] Error in addTrailPoint:', err);
+    }
+  }
+
+  /**
+   * Process drawer points and update visibility
+   * @param currentTime Current timestamp in milliseconds
+   * @returns Number of visible points
+   */
+  updateTrailData(currentTime: number): number {
+    if (!this.nativeAvailable) return 0;
+
+    try {
+      return nativeDict.updateTrailData(currentTime) as number;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in updateTrailData:', err);
+      return 0;
+    }
+  }
+
+  /**
+   * Get trail segments for rendering
+   * @param currentTime Current timestamp in milliseconds
+   * @returns Float32Array of segments (7 floats each: x0, y0, w0, x1, y1, w1, alpha) or null
+   */
+  getTrailSegments(currentTime: number): Float32Array | null {
+    if (!this.nativeAvailable) return null;
+
+    try {
+      return nativeDict.getTrailSegments(currentTime) as Float32Array | null;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getTrailSegments:', err);
+      return null;
+    }
+  }
+
+  /**
+   * Reset trail data for new gesture
+   */
+  resetTrailData(): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.resetTrailData();
+    } catch (err) {
+      console.error('[NativeDictionary] Error in resetTrailData:', err);
+    }
+  }
+
+  /**
+   * Update trail render parameters
+   * @param params Render parameters to update
+   */
+  setTrailRenderParams(params: TrailRenderParams): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.setTrailRenderParams(params);
+    } catch (err) {
+      console.error('[NativeDictionary] Error in setTrailRenderParams:', err);
+    }
+  }
+
+  /**
+   * Compact trail buffers to save memory
+   */
+  compactTrailBuffers(): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.compactTrailBuffers();
+    } catch (err) {
+      console.error('[NativeDictionary] Error in compactTrailBuffers:', err);
     }
   }
 

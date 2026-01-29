@@ -28,6 +28,8 @@ include_directories(${NATIVE_ROOT_PATH})
 set(DICTIONARY_HOSKEY_SOURCES
     dictionary_hoskey/trie.cpp
     dictionary_hoskey/trie_node.cpp
+    dictionary_hoskey/trie_pooled.cpp
+    dictionary_hoskey/flat_trie.cpp
     dictionary_hoskey/binary_dict_reader.cpp
     dictionary_hoskey/suggest_engine.cpp
 )
@@ -110,11 +112,24 @@ set(SUGGEST_SOURCES
     suggest/core/session/dic_traverse_session.cpp
     suggest/core/suggest.cpp
     suggest/policyimpl/gesture/gesture_suggest_policy_factory.cpp
+    suggest/policyimpl/gesture/gesture_stroke.cpp
+    suggest/policyimpl/gesture/gesture_trail_data.cpp
     suggest/policyimpl/typing/scoring_params.cpp
     suggest/policyimpl/typing/typing_scoring.cpp
     suggest/policyimpl/typing/typing_suggest_policy.cpp
     suggest/policyimpl/typing/typing_traversal.cpp
     suggest/policyimpl/typing/typing_weighting.cpp
+)
+
+# Source files - Multi-Predictor & Caching (Yandex-inspired)
+set(MULTI_PREDICTOR_SOURCES
+    suggest/multi_predictor.cpp
+    suggest/suggestion_cache.cpp
+)
+
+# Source files - Autocorrect Rules
+set(AUTOCORRECT_SOURCES
+    dictionary/autocorrect_rules.cpp
 )
 
 # Source files - Utils
@@ -151,6 +166,11 @@ set(DIC_TRAVERSE_SESSION_NAPI_SOURCES
     dic_traverse_session_napi.cpp
 )
 
+# Batch Operations NAPI (Yandex-inspired)
+set(BATCH_OPERATIONS_NAPI_SOURCES
+    batch_operations_napi.cpp
+)
+
 # Create shared library
 add_library(native_dict SHARED
     ${NAPI_SOURCES}
@@ -158,9 +178,12 @@ add_library(native_dict SHARED
     ${BINARY_DICTIONARY_NAPI_SOURCES}
     ${PROXIMITY_INFO_NAPI_SOURCES}
     ${DIC_TRAVERSE_SESSION_NAPI_SOURCES}
+    ${BATCH_OPERATIONS_NAPI_SOURCES}
     ${DICTIONARY_HOSKEY_SOURCES}
     ${DICTIONARY_OPENBOARD_SOURCES}
     ${SUGGEST_SOURCES}
+    ${MULTI_PREDICTOR_SOURCES}
+    ${AUTOCORRECT_SOURCES}
     ${UTILS_SOURCES}
 )
 

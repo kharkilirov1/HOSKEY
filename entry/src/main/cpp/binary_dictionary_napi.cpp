@@ -420,11 +420,46 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
     }
 
     // Extract parameters
-    // Extract input arrays and parameters
-    int inputSize;
-    napi_get_value_int32(env, args[5], &inputSize);
+    // Argument indices (fixed):
+    // args[0] = dictHandle
+    // args[1] = traverseSession
+    // args[2] = xCoordinates (array)
+    // args[3] = yCoordinates (array)
+    // args[4] = times (array)
+    // args[5] = pointerIds (array) <-- FIXED: was incorrectly used as inputSize
+    // args[6] = inputSize (int)    <-- FIXED: inputSize is here
+    // args[7] = inputCodePoints (array)
+    // args[8] = options (array)
+    // ...
     
-    // Extract all the needed arrays
+    int inputSize;
+    napi_get_value_int32(env, args[6], &inputSize);  // FIXED: was args[5]
+    
+    // Validate inputSize is positive and reasonable
+    if (inputSize <= 0 || inputSize > 1024) {
+        OH_LOG_ERROR(LOG_APP, "GetSuggestions: invalid inputSize=%d", inputSize);
+        napi_value result;
+        napi_get_undefined(env, &result);
+        return result;
+    }
+    
+    // FIXED: Validate array lengths before access (Bug #2)
+    uint32_t xCoordsLength = napiGetArrayLengthChecked(env, args[2]);
+    uint32_t yCoordsLength = napiGetArrayLengthChecked(env, args[3]);
+    uint32_t timesLength = napiGetArrayLengthChecked(env, args[4]);
+    uint32_t pointerIdsLength = napiGetArrayLengthChecked(env, args[5]);
+    
+    if (xCoordsLength < (uint32_t)inputSize || 
+        yCoordsLength < (uint32_t)inputSize || 
+        timesLength < (uint32_t)inputSize || 
+        pointerIdsLength < (uint32_t)inputSize) {
+        OH_LOG_ERROR(LOG_APP, "GetSuggestions: array length mismatch. inputSize=%d, x=%u, y=%u, t=%u, p=%u",
+                     inputSize, xCoordsLength, yCoordsLength, timesLength, pointerIdsLength);
+        napi_throw_error(env, nullptr, "Input array length mismatch");
+        return nullptr;
+    }
+    
+    // Extract all the needed arrays (now safe to access)
     int* xCoordinates = new int[inputSize];
     int* yCoordinates = new int[inputSize];
     int* times = new int[inputSize];
@@ -433,15 +468,15 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
     napiGetIntArrayRegion(env, args[2], 0, inputSize, xCoordinates);
     napiGetIntArrayRegion(env, args[3], 0, inputSize, yCoordinates);
     napiGetIntArrayRegion(env, args[4], 0, inputSize, times);
-    napiGetIntArrayRegion(env, args[5], 0, inputSize, pointerIds);
+    napiGetIntArrayRegion(env, args[5], 0, inputSize, pointerIds);  // FIXED: was args[5] used as int
     
-    int inputCodePointsLength = napiGetArrayLengthChecked(env, args[6]);
+    int inputCodePointsLength = napiGetArrayLengthChecked(env, args[7]);  // FIXED: was args[6]
     int* inputCodePoints = new int[inputCodePointsLength];
-    napiGetIntArrayRegion(env, args[6], 0, inputCodePointsLength, inputCodePoints);
+    napiGetIntArrayRegion(env, args[7], 0, inputCodePointsLength, inputCodePoints);  // FIXED: was args[6]
     
-    int numberOfOptions = napiGetArrayLengthChecked(env, args[7]);
+    int numberOfOptions = napiGetArrayLengthChecked(env, args[8]);  // FIXED: was args[7]
     int* options = new int[numberOfOptions];
-    napiGetIntArrayRegion(env, args[7], 0, numberOfOptions, options);
+    napiGetIntArrayRegion(env, args[8], 0, numberOfOptions, options);  // FIXED: was args[7]
     
     SuggestOptions givenSuggestOptions(options, numberOfOptions);
     

@@ -6,8 +6,12 @@
 #include "suggest_engine.h"
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <fstream>
+#include <sstream>
+#include <chrono>
 
 namespace hoskey {
 
@@ -49,7 +53,9 @@ bool ProximityInfo::areProximate(char a, char b) const {
     return false;
 }
 
-SuggestEngine::SuggestEngine(Trie* trie) : trie_(trie), proximityInfo_(nullptr) {}
+SuggestEngine::SuggestEngine(TrieType* trie)
+    : trie_(trie), proximityInfo_(nullptr), userTrie_(std::make_unique<Trie>()),
+      userDictDirty_(false), bigramDictDirty_(false) {}
 
 SuggestEngine::~SuggestEngine() = default;
 
@@ -64,10 +70,35 @@ std::vector<SuggestResult> SuggestEngine::getSuggestions(const std::string& inpu
         return results;
     }
 
-    // Step 1: Get exact prefix matches (fast path)
-    auto prefixMatches = trie_->findByPrefix(input, limit * 2);
+    // O(1) duplicate tracking instead of O(n²) nested loops
+    std::unordered_set<std::string> addedWords;
+
+    // Step 0: Get user dictionary matches first (highest priority)
+    if (userTrie_ && userTrie_->getWordCount() > 0) {
+        auto userMatches = userTrie_->findByPrefix(input, limit);
+        for (const auto& entry : userMatches) {
+            if (entry.frequency > 0) {  // Skip "deleted" words (freq=0)
+                EditResult editResult;
+                editResult.distance = 0;
+                editResult.weightedCost = 0.0f;
+                editResult.primaryError = ErrorType::NOT_AN_ERROR;
+
+                // Boost user dictionary scores by 20%
+                float score = calculateFinalScore(entry, editResult, input.length(), true) * 1.2f;
+                results.emplace_back(entry.word, score, ErrorType::NOT_AN_ERROR, 0);
+                addedWords.insert(entry.word);
+            }
+        }
+    }
+
+    // Step 1: Get exact prefix matches from main dictionary (fast path)
+    // Reduced from limit*2 to limit+5 for better performance
+    auto prefixMatches = trie_->findByPrefix(input, limit + 5);
 
     for (const auto& entry : prefixMatches) {
+        // O(1) duplicate check
+        if (addedWords.count(entry.word)) continue;
+
         EditResult editResult;
         editResult.distance = 0;
         editResult.weightedCost = 0.0f;
@@ -75,31 +106,20 @@ std::vector<SuggestResult> SuggestEngine::getSuggestions(const std::string& inpu
 
         float score = calculateFinalScore(entry, editResult, input.length(), true);
         results.emplace_back(entry.word, score, ErrorType::NOT_AN_ERROR, 0);
+        addedWords.insert(entry.word);
     }
 
     // Step 2: If not enough results, search with corrections
     if (results.size() < static_cast<size_t>(limit) && input.length() >= 2) {
-        // Get candidates by first letter (for correction search)
+        // Reduced from 500 to 100 candidates for performance
         char firstChar = input[0];
-        auto candidates = trie_->getWordsByFirstLetter(firstChar, 500);
-
-        // Also check nearby first letters if proximity info available
-        if (proximityInfo_) {
-            // TODO: Add nearby first letter candidates
-        }
+        auto candidates = trie_->getWordsByFirstLetter(firstChar, 100);
 
         int maxEditDistance = std::min(2, static_cast<int>(input.length()) / 3 + 1);
 
         for (const auto& candidate : candidates) {
-            // Skip if already in results
-            bool alreadyAdded = false;
-            for (const auto& r : results) {
-                if (r.word == candidate) {
-                    alreadyAdded = true;
-                    break;
-                }
-            }
-            if (alreadyAdded) continue;
+            // O(1) duplicate check
+            if (addedWords.count(candidate)) continue;
 
             // Skip if length difference too big
             int lengthDiff = std::abs(static_cast<int>(candidate.length()) -
@@ -119,6 +139,7 @@ std::vector<SuggestResult> SuggestEngine::getSuggestions(const std::string& inpu
                 if (score > 0.1f) {
                     results.emplace_back(candidate, score, editResult.primaryError,
                                         editResult.distance);
+                    addedWords.insert(candidate);
                 }
             }
         }
@@ -335,6 +356,469 @@ float SuggestEngine::calculateFinalScore(const WordEntry& entry, const EditResul
     score *= (0.5f + 0.5f * lengthRatio);
 
     return score;
+}
+
+// =========================================================================
+// User Learning Implementation
+// =========================================================================
+
+bool SuggestEngine::addLearnedWord(const std::string& word, int frequency) {
+    if (word.empty() || word.length() < 2) {
+        return false;
+    }
+
+    // Normalize to lowercase
+    std::string normalized = word;
+    for (char& c : normalized) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    // Insert into user trie with high frequency
+    userTrie_->insert(normalized, frequency);
+    userDictDirty_ = true;
+    return true;
+}
+
+bool SuggestEngine::recordWordUsage(const std::string& word) {
+    if (word.empty()) {
+        return false;
+    }
+
+    // Normalize to lowercase
+    std::string normalized = word;
+    for (char& c : normalized) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    // Check if word exists in user dictionary
+    int currentFreq = userTrie_->getFrequency(normalized);
+    if (currentFreq > 0) {
+        // Boost frequency (cap at 255)
+        int newFreq = std::min(255, currentFreq + 10);
+        userTrie_->insert(normalized, newFreq);
+        userDictDirty_ = true;
+        return true;
+    }
+
+    // Check if word exists in main dictionary
+    if (trie_ && trie_->contains(normalized)) {
+        // Add to user dict with boosted frequency
+        int mainFreq = trie_->getFrequency(normalized);
+        int userFreq = std::min(255, mainFreq + 50);
+        userTrie_->insert(normalized, userFreq);
+        userDictDirty_ = true;
+        return true;
+    }
+
+    return false;
+}
+
+bool SuggestEngine::saveUserDict(const std::string& path) {
+    if (!userTrie_) {
+        return false;
+    }
+
+    // Use Trie's built-in serialization
+    bool success = userTrie_->saveToFile(path);
+    if (success) {
+        userDictDirty_ = false;
+    }
+    return success;
+}
+
+bool SuggestEngine::loadUserDict(const std::string& path) {
+    auto newUserTrie = std::make_unique<Trie>();
+    bool success = newUserTrie->loadFromFile(path);
+
+    if (success) {
+        userTrie_ = std::move(newUserTrie);
+        userDictDirty_ = false;
+        return true;
+    }
+
+    return false;
+}
+
+int SuggestEngine::getLearnedWordsCount() const {
+    return userTrie_ ? userTrie_->getWordCount() : 0;
+}
+
+bool SuggestEngine::removeLearnedWord(const std::string& word) {
+    if (!userTrie_ || word.empty()) {
+        return false;
+    }
+
+    // Normalize to lowercase
+    std::string normalized = word;
+    for (char& c : normalized) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    // Check if exists
+    if (!userTrie_->contains(normalized)) {
+        return false;
+    }
+
+    // Set frequency to 0 (effective removal - Trie doesn't support real deletion)
+    userTrie_->insert(normalized, 0);
+    userDictDirty_ = true;
+    return true;
+}
+
+// =========================================================================
+// Bigram-Aware Learning Implementation
+// =========================================================================
+
+void SuggestEngine::addLearnedWordWithContext(const std::string& word, const std::string& prevWord, int count) {
+    if (word.empty() || count <= 0) {
+        return;
+    }
+
+    // Normalize to lowercase
+    std::string normalizedWord = word;
+    for (char& c : normalizedWord) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    std::string normalizedPrev = prevWord;
+    for (char& c : normalizedPrev) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+
+    // Find or create entry
+    auto it = learnedWords_.find(normalizedWord);
+    if (it == learnedWords_.end()) {
+        LearnedWordEntry entry(normalizedWord);
+        entry.totalCount = count;
+        entry.lastUsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        
+        if (!normalizedPrev.empty()) {
+            entry.prevWordCounts[normalizedPrev] = count;
+        }
+        
+        learnedWords_[normalizedWord] = std::move(entry);
+    } else {
+        it->second.totalCount += count;
+        it->second.lastUsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        
+        if (!normalizedPrev.empty()) {
+            it->second.prevWordCounts[normalizedPrev] += count;
+        }
+    }
+
+    bigramDictDirty_ = true;
+}
+
+int SuggestEngine::getLearnedBoost(const std::string& word, const std::string& prevWord) {
+    if (word.empty()) {
+        return 0;
+    }
+
+    // Normalize to lowercase
+    std::string normalizedWord = word;
+    for (char& c : normalizedWord) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    std::string normalizedPrev = prevWord;
+    for (char& c : normalizedPrev) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c + 32;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+
+    auto it = learnedWords_.find(normalizedWord);
+    if (it == learnedWords_.end()) {
+        return 0;
+    }
+
+    const LearnedWordEntry& entry = it->second;
+
+    // Base boost from total count (logarithmic scaling, capped)
+    int baseBoost = std::min(50, static_cast<int>(std::log2(entry.totalCount + 1) * 10));
+
+    // Context boost if prevWord matches
+    int contextBoost = 0;
+    if (!normalizedPrev.empty()) {
+        auto prevIt = entry.prevWordCounts.find(normalizedPrev);
+        if (prevIt != entry.prevWordCounts.end()) {
+            // Bigram match - significant boost
+            contextBoost = std::min(100, prevIt->second * 20);
+        }
+    }
+
+    // Recency boost (decay over time, max 30 days)
+    int recencyBoost = 0;
+    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t ageMs = now - entry.lastUsed;
+    int64_t maxAgeMs = 30LL * 24 * 60 * 60 * 1000;  // 30 days
+    
+    if (ageMs < maxAgeMs) {
+        // Linear decay from 20 to 0 over 30 days
+        recencyBoost = static_cast<int>(20.0 * (1.0 - static_cast<double>(ageMs) / maxAgeMs));
+    }
+
+    return baseBoost + contextBoost + recencyBoost;
+}
+
+// Simple JSON escape function
+static std::string escapeJson(const std::string& str) {
+    std::string result;
+    result.reserve(str.length() + 10);
+    for (char c : str) {
+        switch (c) {
+            case '"':  result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n";  break;
+            case '\r': result += "\\r";  break;
+            case '\t': result += "\\t";  break;
+            default:   result += c;      break;
+        }
+    }
+    return result;
+}
+
+bool SuggestEngine::saveUserDictionary(const std::string& path) {
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    // Write JSON format
+    file << "{\n";
+    file << "  \"version\": 1,\n";
+    file << "  \"words\": {\n";
+
+    bool firstWord = true;
+    for (const auto& pair : learnedWords_) {
+        const LearnedWordEntry& entry = pair.second;
+        
+        if (!firstWord) {
+            file << ",\n";
+        }
+        firstWord = false;
+
+        file << "    \"" << escapeJson(entry.word) << "\": {\n";
+        file << "      \"totalCount\": " << entry.totalCount << ",\n";
+        file << "      \"lastUsed\": " << entry.lastUsed << ",\n";
+        file << "      \"prevWords\": {";
+
+        bool firstPrev = true;
+        for (const auto& prevPair : entry.prevWordCounts) {
+            if (!firstPrev) {
+                file << ", ";
+            }
+            firstPrev = false;
+            file << "\"" << escapeJson(prevPair.first) << "\": " << prevPair.second;
+        }
+
+        file << "}\n";
+        file << "    }";
+    }
+
+    file << "\n  }\n";
+    file << "}\n";
+
+    file.close();
+    bigramDictDirty_ = false;
+    return true;
+}
+
+// Simple JSON parsing helpers
+static std::string readJsonString(const std::string& json, size_t& pos) {
+    std::string result;
+    if (pos >= json.length() || json[pos] != '"') return result;
+    pos++;  // Skip opening quote
+    
+    while (pos < json.length() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.length()) {
+            pos++;
+            switch (json[pos]) {
+                case 'n': result += '\n'; break;
+                case 'r': result += '\r'; break;
+                case 't': result += '\t'; break;
+                case '"': result += '"';  break;
+                case '\\': result += '\\'; break;
+                default: result += json[pos]; break;
+            }
+        } else {
+            result += json[pos];
+        }
+        pos++;
+    }
+    if (pos < json.length()) pos++;  // Skip closing quote
+    return result;
+}
+
+static int64_t readJsonNumber(const std::string& json, size_t& pos) {
+    std::string numStr;
+    while (pos < json.length() && (isdigit(json[pos]) || json[pos] == '-')) {
+        numStr += json[pos];
+        pos++;
+    }
+    return numStr.empty() ? 0 : std::stoll(numStr);
+}
+
+static void skipWhitespace(const std::string& json, size_t& pos) {
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\n' || 
+           json[pos] == '\r' || json[pos] == '\t')) {
+        pos++;
+    }
+}
+
+bool SuggestEngine::loadUserDictionary(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    // Read entire file
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string json = buffer.str();
+    file.close();
+
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+    learnedWords_.clear();
+
+    // Simple state machine parser
+    size_t pos = 0;
+    
+    // Find "words" section
+    size_t wordsPos = json.find("\"words\"");
+    if (wordsPos == std::string::npos) {
+        return false;
+    }
+    
+    pos = json.find('{', wordsPos + 7);  // Skip past "words":
+    if (pos == std::string::npos) {
+        return false;
+    }
+    pos++;  // Skip opening brace of words object
+
+    // Parse each word entry
+    while (pos < json.length()) {
+        skipWhitespace(json, pos);
+        
+        if (json[pos] == '}') {
+            break;  // End of words object
+        }
+        
+        if (json[pos] == ',') {
+            pos++;
+            continue;
+        }
+        
+        if (json[pos] != '"') {
+            pos++;
+            continue;
+        }
+
+        // Read word key
+        std::string word = readJsonString(json, pos);
+        if (word.empty()) continue;
+
+        LearnedWordEntry entry(word);
+
+        // Find entry object
+        size_t entryStart = json.find('{', pos);
+        if (entryStart == std::string::npos) break;
+        pos = entryStart + 1;
+
+        // Parse entry fields
+        while (pos < json.length() && json[pos] != '}') {
+            skipWhitespace(json, pos);
+            
+            if (json[pos] == ',') {
+                pos++;
+                continue;
+            }
+            
+            if (json[pos] != '"') {
+                pos++;
+                continue;
+            }
+
+            std::string fieldName = readJsonString(json, pos);
+            
+            // Skip colon
+            size_t colonPos = json.find(':', pos);
+            if (colonPos == std::string::npos) break;
+            pos = colonPos + 1;
+            skipWhitespace(json, pos);
+
+            if (fieldName == "totalCount") {
+                entry.totalCount = static_cast<int>(readJsonNumber(json, pos));
+            } else if (fieldName == "lastUsed") {
+                entry.lastUsed = readJsonNumber(json, pos);
+            } else if (fieldName == "prevWords") {
+                // Parse prevWords object
+                if (json[pos] == '{') {
+                    pos++;
+                    while (pos < json.length() && json[pos] != '}') {
+                        skipWhitespace(json, pos);
+                        if (json[pos] == ',') { pos++; continue; }
+                        if (json[pos] != '"') { pos++; continue; }
+                        
+                        std::string prevWord = readJsonString(json, pos);
+                        size_t prevColonPos = json.find(':', pos);
+                        if (prevColonPos == std::string::npos) break;
+                        pos = prevColonPos + 1;
+                        skipWhitespace(json, pos);
+                        int prevCount = static_cast<int>(readJsonNumber(json, pos));
+                        
+                        if (!prevWord.empty()) {
+                            entry.prevWordCounts[prevWord] = prevCount;
+                        }
+                    }
+                    if (pos < json.length()) pos++;  // Skip closing brace
+                }
+            }
+        }
+        
+        if (pos < json.length() && json[pos] == '}') {
+            pos++;  // Skip closing brace of entry
+        }
+
+        if (!word.empty()) {
+            learnedWords_[word] = std::move(entry);
+        }
+    }
+
+    bigramDictDirty_ = false;
+    return true;
+}
+
+void SuggestEngine::clearLearnedWords() {
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+    learnedWords_.clear();
+    bigramDictDirty_ = true;
+}
+
+int SuggestEngine::getBigramLearnedWordsCount() const {
+    std::lock_guard<std::mutex> lock(learnedWordsMutex_);
+    return static_cast<int>(learnedWords_.size());
 }
 
 } // namespace hoskey

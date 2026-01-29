@@ -32,11 +32,16 @@ export declare interface SuggestResult {
 }
 
 /**
- * Dictionary statistics
+ * Dictionary and cache statistics
  */
 export declare interface DictStats {
   wordCount: number;
   memoryUsage: number;
+  // Cache statistics
+  cacheSize: number;
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRate: number;
 }
 
 /**
@@ -67,6 +72,120 @@ export declare interface SwipeResult {
   alternatives: string[];
   confidence: number;
   rawSequence: string;
+}
+
+/**
+ * FlatTrie statistics
+ */
+export declare interface FlatTrieStats {
+  wordCount: number;
+  memoryUsage: number;
+  locale: string;
+}
+
+/**
+ * Trail interpolation parameters (Yandex-style)
+ */
+export declare interface TrailParams {
+  minSamplingDistance?: number;  // Min distance between sampled points (default: 3.0)
+  maxAngleRadians?: number;      // Max angle change before adding points (default: ~15°)
+  maxSegmentLength?: number;     // Max segment length before subdivision (default: 20.0)
+  maxInterpolationSteps?: number; // Max interpolation steps per segment (default: 10)
+}
+
+/**
+ * Trail render parameters (Yandex-style)
+ */
+export declare interface TrailRenderParams {
+  maxWidth?: number;       // Width at start of fade (default: 12.0)
+  minWidth?: number;       // Width at end of fade (default: 2.0)
+  widthRatio?: number;     // Overall width multiplier (default: 1.0)
+  fadeStartTimeMs?: number;  // When fade begins (default: 100ms)
+  fadeDurationMs?: number;   // How long fade takes (default: 400ms)
+  trailColor?: number;     // ARGB color (default: 0xFF4285F4 Google blue)
+  shadowEnabled?: boolean; // Enable shadow effect (default: true)
+}
+
+/**
+ * Combined trail initialization parameters
+ */
+export declare interface TrailInitParams extends TrailParams, TrailRenderParams {}
+
+/**
+ * Input batch request for processInputBatch
+ */
+export declare interface InputBatchRequest {
+  currentWord: string;
+  prevWord?: string;
+  suggestionLimit?: number;
+  checkAutocorrect?: boolean;
+  applyRules?: boolean;
+}
+
+/**
+ * Input batch response from processInputBatch
+ */
+export declare interface InputBatchResponse {
+  exists: boolean;
+  frequency: number;
+  suggestions: SuggestResult[];
+  autocorrection?: SuggestResult;
+  ruleApplied?: string;
+}
+
+/**
+ * Batch Operations namespace
+ */
+export declare namespace batchOps {
+  /**
+   * Check if multiple words exist in dictionary
+   * @param words Array of words to check
+   * @returns Array of booleans (true if exists)
+   */
+  function batchContains(words: string[]): boolean[];
+
+  /**
+   * Get frequencies of multiple words
+   * @param words Array of words
+   * @returns Array of frequencies
+   */
+  function batchGetFrequency(words: string[]): number[];
+
+  /**
+   * Get suggestions for multiple prefixes
+   * @param prefixes Array of prefixes
+   * @param limit Max suggestions per prefix
+   * @returns Array of suggestion arrays
+   */
+  function batchGetSuggestions(prefixes: string[], limit: number): SuggestResult[][];
+
+  /**
+   * Process input with all operations in one call
+   * @param request Input batch request
+   * @returns Combined response
+   */
+  function processInputBatch(request: InputBatchRequest): InputBatchResponse;
+
+  /**
+   * Load default autocorrect rules for language
+   * @param language Language code ('ru', 'en')
+   * @returns true if rules loaded
+   */
+  function loadAutocorrectRules(language: string): boolean;
+
+  /**
+   * Add custom autocorrect rule
+   * @param wrong Wrong form
+   * @param correct Correct form
+   */
+  function addAutocorrectRule(wrong: string, correct: string): void;
+
+  /**
+   * Apply autocorrect rules to a word
+   * @param word Word to check
+   * @returns Corrected word or original if no rule matches
+   */
+  function applyAutocorrectRule(word: string): string;
 }
 
 /**
@@ -151,6 +270,35 @@ declare interface NativeDictModule {
    */
   unload(): void;
 
+  // ============ FlatTrie API (instant loading) ============
+
+  /**
+   * Load pre-serialized .flat dictionary for instant loading (<50ms)
+   * @param path - Path to .flat file
+   * @returns true if loaded successfully
+   */
+  loadFlatDictionary(path: string): boolean;
+
+  /**
+   * Convert .dict file to optimized .flat format
+   * @param inputPath - Path to input .dict file
+   * @param outputPath - Path to output .flat file
+   * @param locale - Optional language code (e.g., 'ru', 'en')
+   * @returns true if conversion successful
+   */
+  convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean;
+
+  /**
+   * Get FlatTrie statistics
+   * @returns FlatTrie stats or null if not loaded
+   */
+  getFlatTrieStats(): FlatTrieStats | null;
+
+  /**
+   * Batch operations namespace
+   */
+  batchOps: typeof batchOps;
+
   /**
    * Set keyboard layout for swipe recognition
    * @param keys - Array of key bounds
@@ -166,6 +314,129 @@ declare interface NativeDictModule {
    * @throws TypeError if points is not an array
    */
   processSwipePath(points: Array<TouchPoint>): SwipeResult | null;
+
+  // ============ Learning Methods ============
+
+  /**
+   * Add learned word with bigram context
+   * @param word - Word to learn
+   * @param prevWord - Previous word for bigram context
+   * @param count - Usage count (default 1)
+   */
+  addLearnedWord(word: string, prevWord: string, count?: number): void;
+
+  /**
+   * Save user dictionary to file
+   * @param path - Path to save file
+   * @returns true if saved successfully
+   */
+  saveUserDictionary(path: string): boolean;
+
+  /**
+   * Load user dictionary from file
+   * @param path - Path to load from
+   * @returns true if loaded successfully
+   */
+  loadUserDictionary(path: string): boolean;
+
+  /**
+   * Clear all learned words
+   */
+  clearLearnedWords(): void;
+
+  /**
+   * Get count of learned words
+   * @returns Number of learned words
+   */
+  getLearnedWordsCount(): number;
+
+  /**
+   * Remove a learned word
+   * @param word - Word to remove
+   * @returns true if removed
+   */
+  removeLearnedWord(word: string): boolean;
+
+  /**
+   * Get learned boost score for word with context
+   * @param word - Word to check
+   * @param prevWord - Previous word for context
+   * @returns Boost score (0 if not learned)
+   */
+  getLearnedBoost(word: string, prevWord: string): number;
+
+  /**
+   * Get count of bigram learned words
+   * @returns Number of bigram entries
+   */
+  getBigramLearnedWordsCount(): number;
+
+  /**
+   * Legacy: Add learned word simple (no context)
+   */
+  addLearnedWordSimple(word: string, frequency: number): void;
+
+  /**
+   * Legacy: Record word usage
+   */
+  recordWordUsage(word: string): void;
+
+  /**
+   * Legacy: Save user dict
+   */
+  saveUserDict(path: string): boolean;
+
+  /**
+   * Legacy: Load user dict
+   */
+  loadUserDict(path: string): boolean;
+
+  // ============ Gesture Trail API (Yandex-style) ============
+
+  /**
+   * Initialize trail data system
+   * @param params - Optional trail parameters
+   * @returns true if initialized
+   */
+  initTrailData(params?: TrailInitParams): boolean;
+
+  /**
+   * Add a point to the trail drawer
+   * @param x - X coordinate
+   * @param y - Y coordinate
+   * @param timestamp - Timestamp in milliseconds
+   */
+  addTrailPoint(x: number, y: number, timestamp: number): void;
+
+  /**
+   * Process drawer points and update visibility
+   * @param currentTime - Current timestamp in milliseconds
+   * @returns Number of visible points
+   */
+  updateTrailData(currentTime: number): number;
+
+  /**
+   * Get trail segments for rendering
+   * @param currentTime - Current timestamp in milliseconds
+   * @returns Float32Array of segments (7 floats each: x0, y0, w0, x1, y1, w1, alpha) or null
+   */
+  getTrailSegments(currentTime: number): Float32Array | null;
+
+  /**
+   * Reset trail data for new gesture
+   */
+  resetTrailData(): void;
+
+  /**
+   * Update trail render parameters
+   * @param params - Render parameters to update
+   */
+  setTrailRenderParams(params: TrailRenderParams): void;
+
+  /**
+   * Compact trail buffers to save memory
+   */
+  compactTrailBuffers(): void;
 }
 
 /**
@@ -186,3 +457,27 @@ export declare function getStats(): DictStats;
 export declare function unload(): void;
 export declare function setSwipeKeyboardLayout(keys: Array<KeyBounds>): boolean;
 export declare function processSwipePath(points: Array<TouchPoint>): SwipeResult | null;
+
+// FlatTrie functions
+export declare function loadFlatDictionary(path: string): boolean;
+export declare function convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean;
+export declare function getFlatTrieStats(): FlatTrieStats | null;
+
+// Learning functions
+export declare function addLearnedWord(word: string, prevWord: string, count?: number): void;
+export declare function saveUserDictionary(path: string): boolean;
+export declare function loadUserDictionary(path: string): boolean;
+export declare function clearLearnedWords(): void;
+export declare function getLearnedWordsCount(): number;
+export declare function removeLearnedWord(word: string): boolean;
+export declare function getLearnedBoost(word: string, prevWord: string): number;
+export declare function getBigramLearnedWordsCount(): number;
+
+// Trail functions (Yandex-style)
+export declare function initTrailData(params?: TrailInitParams): boolean;
+export declare function addTrailPoint(x: number, y: number, timestamp: number): void;
+export declare function updateTrailData(currentTime: number): number;
+export declare function getTrailSegments(currentTime: number): Float32Array | null;
+export declare function resetTrailData(): void;
+export declare function setTrailRenderParams(params: TrailRenderParams): void;
+export declare function compactTrailBuffers(): void;

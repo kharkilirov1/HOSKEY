@@ -28,6 +28,8 @@ import {
 } from './InputTypes';
 import { TextBuffer } from './TextBuffer';
 import { Debouncer } from './Debouncer';
+import nativeDictionary from '../NativeDictionary';
+import { TouchPoint } from '../NativeDictionary';
 
 // Performance logging (disabled by default)
 const PERF_LOG_ENABLED = false;
@@ -46,6 +48,29 @@ interface GeneratedTypeLiteralInterface_1 {
   isSwipeActive: boolean;
 }
 
+/**
+ * SwipeTraceBuffer - Accumulates touch points during swipe gesture
+ */
+class SwipeTraceBuffer {
+  private points: TouchPoint[] = [];
+
+  addPoint(x: number, y: number, timestamp: number): void {
+    this.points.push({ x, y, timestamp });
+  }
+
+  getPoints(): TouchPoint[] {
+    return this.points;
+  }
+
+  getLength(): number {
+    return this.points.length;
+  }
+
+  clear(): void {
+    this.points = [];
+  }
+}
+
 export class InputPipeline {
   // Core components
   private textBuffer: TextBuffer = new TextBuffer();
@@ -59,9 +84,10 @@ export class InputPipeline {
   private currentMode: InputMode = InputMode.Tap;
   private currentLanguage: string = 'en';
   private isProcessing: boolean = false;
-  // Swipe state (will be implemented next)
+  // Swipe state
   private isSwipeActive: boolean = false;
   private swipeStartTime: number = 0;
+  private swipeBuffer: SwipeTraceBuffer = new SwipeTraceBuffer();
 
   constructor() {
   }
@@ -168,18 +194,25 @@ export class InputPipeline {
   }
 
   /**
-   * Handle space - FAST PATH + boundary
+   * Handle space - FAST PATH + boundary + learning
    */
   private handleSpace(timestamp: number): void {
     if (!this.client || this.isSwipeActive) {
       return;
     }
 
+    // Capture word before committing boundary
+    const committedWord = this.textBuffer.getCurrentToken();
+    const prevWord = this.textBuffer.getPrevWord();
+
     // FAST PATH: Insert space immediately
     this.client.insertText(' ');
 
     // Mark word boundary
     this.textBuffer.commitBoundary();
+
+    // Record word for learning (async, fire-and-forget)
+    this.onWordCommitted(committedWord, prevWord);
 
     // Clear suggestions at boundary
     if (this.presenter) {
@@ -191,18 +224,25 @@ export class InputPipeline {
   }
 
   /**
-   * Handle enter - FAST PATH + boundary
+   * Handle enter - FAST PATH + boundary + learning
    */
   private handleEnter(timestamp: number): void {
     if (!this.client || this.isSwipeActive) {
       return;
     }
 
+    // Capture word before committing boundary
+    const committedWord = this.textBuffer.getCurrentToken();
+    const prevWord = this.textBuffer.getPrevWord();
+
     // FAST PATH: Send enter immediately
     this.client.sendEnter();
 
     // Mark word boundary
     this.textBuffer.commitBoundary();
+
+    // Record word for learning (async, fire-and-forget)
+    this.onWordCommitted(committedWord, prevWord);
 
     // Clear suggestions at boundary
     if (this.presenter) {
@@ -214,22 +254,29 @@ export class InputPipeline {
   }
 
   // === SWIPE HANDLERS ===
-  // NOTE: Swipe typing via InputPipeline is DEFERRED.
-  // SwipeEngine core algorithm is implemented in SwipeEngine.ets
-  // Integration with InputPipeline pending (requires SwipeTraceBuffer)
+  // Integrated with native processSwipePath via NativeDictionary
 
   private handleSwipeStart(x: number, y: number, timestamp: number): void {
     this.isSwipeActive = true;
     this.swipeStartTime = timestamp;
     this.currentMode = InputMode.Swipe;
-    // DEFERRED: Initialize SwipeTraceBuffer and connect to SwipeEngine
+
+    // Clear previous trace and add first point
+    this.swipeBuffer.clear();
+    this.swipeBuffer.addPoint(x, y, timestamp);
+
+    // Cancel any pending predictions during swipe
+    this.predictionDebouncer.cancel();
+
+    console.info(`[InputPipeline] SwipeStart at (${x}, ${y})`);
   }
 
   private handleSwipeMove(x: number, y: number, timestamp: number): void {
     if (!this.isSwipeActive) {
       return;
     }
-    // DEFERRED: Add point to SwipeTraceBuffer
+    // Add point to buffer
+    this.swipeBuffer.addPoint(x, y, timestamp);
   }
 
   private handleSwipeEnd(x: number, y: number, timestamp: number): void {
@@ -237,10 +284,67 @@ export class InputPipeline {
       return;
     }
 
+    // Add final point
+    this.swipeBuffer.addPoint(x, y, timestamp);
+
     this.isSwipeActive = false;
     this.currentMode = InputMode.Tap;
 
-    // DEFERRED: Process swipe trace → decode via SwipeEngine → insert word
+    const points = this.swipeBuffer.getPoints();
+    const pointCount = this.swipeBuffer.getLength();
+    console.info(`[InputPipeline] SwipeEnd with ${pointCount} points`);
+
+    // Minimum requirements for valid swipe
+    if (pointCount < 5) {
+      console.info('[InputPipeline] Swipe too short, ignoring');
+      this.swipeBuffer.clear();
+      return;
+    }
+
+    // Process swipe via native engine
+    this.processSwipeAsync(points);
+
+    // Clear buffer
+    this.swipeBuffer.clear();
+  }
+
+  /**
+   * Process swipe path asynchronously via native engine
+   */
+  private async processSwipeAsync(points: TouchPoint[]): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      const result = nativeDictionary.processSwipePath(points);
+
+      if (result && result.bestWord && result.bestWord.length > 0) {
+        console.info(`[InputPipeline] Swipe decoded: "${result.bestWord}" (confidence: ${result.confidence})`);
+
+        // Insert the word with trailing space
+        if (this.client) {
+          this.client.insertText(result.bestWord + ' ');
+        }
+
+        // Update text buffer
+        this.textBuffer.commitBoundary();
+
+        // Show alternatives as suggestions
+        if (this.presenter && result.alternatives && result.alternatives.length > 0) {
+          this.presenter.show(result.alternatives);
+        } else if (this.presenter) {
+          this.presenter.clear();
+        }
+
+        perfLog('SwipeProcess', startTime);
+      } else {
+        console.info('[InputPipeline] No swipe result');
+        if (this.presenter) {
+          this.presenter.clear();
+        }
+      }
+    } catch (err) {
+      console.error('[InputPipeline] Swipe processing error:', err);
+    }
   }
 
   // === PREDICTION (SLOW PATH) ===
@@ -302,6 +406,38 @@ export class InputPipeline {
       this.presenter.clear();
     } finally {
       this.isProcessing = false;
+    }
+  }
+
+  // === LEARNING ===
+
+  /**
+   * Called when a word is committed (space/enter pressed)
+   * Records the word for adaptive learning
+   *
+   * @param word - The word that was committed
+   * @param prevWord - Previous word for bigram context
+   */
+  private onWordCommitted(word: string, prevWord: string): void {
+    // Skip empty or very short words (likely typos or single chars)
+    if (!word || word.length < 2) {
+      return;
+    }
+
+    // Skip words that are just numbers or punctuation
+    const hasLetters = /[a-zA-Zа-яА-ЯёЁ]/.test(word);
+    if (!hasLetters) {
+      return;
+    }
+
+    // Record via predictor (fire-and-forget, non-blocking)
+    if (this.predictor) {
+      try {
+        this.predictor.recordWord(this.currentLanguage, prevWord, word);
+      } catch (err) {
+        // Don't let learning errors affect typing
+        console.error('[InputPipeline] Error recording word:', err);
+      }
     }
   }
 

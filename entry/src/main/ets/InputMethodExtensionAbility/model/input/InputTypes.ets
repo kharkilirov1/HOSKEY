@@ -118,6 +118,15 @@ export interface ISuggestionPresenter {
 // === PREDICTOR INTERFACE ===
 
 /**
+ * Autocorrection result with confidence score
+ */
+export interface AutocorrectionResult {
+  word: string;
+  score: number;
+  errorType: number;
+}
+
+/**
  * Abstract interface for word prediction
  * Allows InputPipeline to work with any prediction model
  */
@@ -144,4 +153,39 @@ export interface IPredictor {
    * @returns Promise<string[]> - Array of candidate words, ranked by score
    */
   decodeSwipe(lang: string, keyPath: string[], prevWord: string): Promise<string[]>;
+
+  /**
+   * Record word usage for adaptive learning
+   * Updates bigram frequencies for better predictions
+   *
+   * @param lang - Current language code
+   * @param prevWord - Previous word (for bigram context)
+   * @param word - The word that was committed
+   * @param prev2Word - Two words back (optional, for trigram)
+   */
+  recordWord(lang: string, prevWord: string, word: string, prev2Word?: string): void;
+
+  /**
+   * Find best autocorrection for a word
+   *
+   * @param lang - Current language code
+   * @param word - Word to find correction for
+   * @param threshold - Confidence threshold (0.0-1.0, default 0.185)
+   * @returns Promise<string | null> - Corrected word or null if no correction
+   */
+  findAutocorrection(lang: string, word: string, threshold?: number): Promise<string | null>;
+
+  /**
+   * Check if word exists in dictionary
+   *
+   * @param lang - Current language code
+   * @param word - Word to check
+   * @returns true if word is in dictionary
+   */
+  contains(lang: string, word: string): boolean;
+
+  /**
+   * Clear prediction cache (on language switch or low memory)
+   */
+  clearCache(): void;
 }

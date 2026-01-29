@@ -316,4 +316,37 @@ void Trie::clear() {
     OH_LOG_INFO(LOG_APP, "Trie::clear() done, new root=%{public}p", static_cast<void*>(root_.get()));
 }
 
+bool Trie::saveToFile(const std::string& path) const {
+    OH_LOG_INFO(LOG_APP, "Trie::saveToFile: saving %{public}d words to %{public}s",
+                wordCount_, path.c_str());
+
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        OH_LOG_ERROR(LOG_APP, "Trie::saveToFile: failed to open file %{public}s", path.c_str());
+        return false;
+    }
+
+    // Header
+    file << "# HOSKEY User Dictionary\n";
+    file << "# Format: word<TAB>frequency\n";
+
+    // Collect all words
+    std::vector<WordEntry> allWords;
+    collectWords(root_.get(), "", allWords, wordCount_ + 100);  // Get all
+
+    // Write each word
+    int savedCount = 0;
+    for (const auto& entry : allWords) {
+        if (entry.frequency > 0) {  // Skip "deleted" words (freq=0)
+            file << entry.word << "\t" << entry.frequency << "\n";
+            savedCount++;
+        }
+    }
+
+    file.close();
+
+    OH_LOG_INFO(LOG_APP, "Trie::saveToFile: saved %{public}d words", savedCount);
+    return true;
+}
+
 } // namespace hoskey

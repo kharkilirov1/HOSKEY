@@ -47,6 +47,9 @@ public:
     bool loadFromTextFile(const std::string& path);  // Fallback for .txt
     bool loadFromBinaryFile(const std::string& path); // .dict format
 
+    // Dictionary saving (for user dictionary)
+    bool saveToFile(const std::string& path) const;
+
     // Basic operations
     bool contains(const std::string& word) const;
     int getFrequency(const std::string& word) const;

@@ -20,6 +20,11 @@ export class KeyboardController {
   private panelReady: boolean = false;
   private panelInitializing: boolean = false;
   private panelDestroyed: boolean = false;
+  
+  // Bug #5 Fix: Promise-based synchronization for panel lifecycle
+  private panelReadyPromise: Promise<void> | null = null;
+  private panelReadyResolve: (() => void) | null = null;
+  private pendingShowKeyboard: boolean = false;
 
   constructor() {}
 
@@ -350,6 +355,11 @@ export class KeyboardController {
 
     this.panelInitializing = true;
     this.panelDestroyed = false;
+    
+    // Bug #5 Fix: Create promise for panel ready state BEFORE async operation
+    this.panelReadyPromise = new Promise<void>((resolve) => {
+      this.panelReadyResolve = resolve;
+    });
 
     // Get display dimensions
     let dWidth: number = 360;
@@ -400,9 +410,20 @@ export class KeyboardController {
         this.panelReady = true;
         this.panelInitializing = false;
         console.info(`${LOG_TAG} initWindow: panel initialization COMPLETE, panelReady=true`);
+        
+        // Bug #5 Fix: Resolve the promise to unblock waiters
+        if (this.panelReadyResolve) {
+          this.panelReadyResolve();
+          this.panelReadyResolve = null;
+        }
 
-        // If there's a pending input session, show keyboard now
-        if (this.textInputClient) {
+        // Bug #5 Fix: Handle pending show request (if inputStart came before panel was ready)
+        if (this.pendingShowKeyboard) {
+          console.info(`${LOG_TAG} initWindow: handling pending showKeyboard request`);
+          this.pendingShowKeyboard = false;
+          this.showKeyboard();
+        } else if (this.textInputClient) {
+          // If there's a pending input session, show keyboard now
           console.info(`${LOG_TAG} initWindow: textInputClient exists, showing keyboard`);
           this.showKeyboard();
         }
@@ -474,22 +495,41 @@ export class KeyboardController {
       this.initWindow();
     }
 
-    // Wait for panel to be ready (with timeout)
+    // Bug #5 Fix: Use promise-based waiting instead of polling
     if (!this.panelReady) {
-      console.info(`${LOG_TAG} ensurePanelReady: waiting for panel to become ready`);
-      const maxWaitMs = 3000;
-      const checkIntervalMs = 50;
-      let waited = 0;
-
-      while (!this.panelReady && waited < maxWaitMs) {
-        await this.delay(checkIntervalMs);
-        waited += checkIntervalMs;
-      }
-
-      if (this.panelReady) {
-        console.info(`${LOG_TAG} ensurePanelReady: panel ready after ${waited}ms`);
+      console.info(`${LOG_TAG} ensurePanelReady: waiting for panel to become ready (promise-based)`);
+      
+      if (this.panelReadyPromise) {
+        // Wait for promise with timeout
+        const timeoutPromise = new Promise<void>((_, reject) => {
+          setTimeout(() => reject(new Error('Panel ready timeout')), 3000);
+        });
+        
+        try {
+          await Promise.race([this.panelReadyPromise, timeoutPromise]);
+          console.info(`${LOG_TAG} ensurePanelReady: panel ready (promise resolved)`);
+        } catch (err) {
+          console.error(`${LOG_TAG} ensurePanelReady: timeout waiting for panel after 3000ms`);
+          // Mark pending so showKeyboard will be called when panel is ready
+          this.pendingShowKeyboard = true;
+        }
       } else {
-        console.error(`${LOG_TAG} ensurePanelReady: timeout waiting for panel after ${maxWaitMs}ms`);
+        // Fallback to old polling method if promise not available
+        console.warn(`${LOG_TAG} ensurePanelReady: no panelReadyPromise, falling back to polling`);
+        const maxWaitMs = 3000;
+        const checkIntervalMs = 50;
+        let waited = 0;
+
+        while (!this.panelReady && waited < maxWaitMs) {
+          await this.delay(checkIntervalMs);
+          waited += checkIntervalMs;
+        }
+
+        if (this.panelReady) {
+          console.info(`${LOG_TAG} ensurePanelReady: panel ready after ${waited}ms (polling)`);
+        } else {
+          console.error(`${LOG_TAG} ensurePanelReady: timeout waiting for panel after ${maxWaitMs}ms`);
+        }
       }
     } else {
       console.info(`${LOG_TAG} ensurePanelReady: panel already ready`);

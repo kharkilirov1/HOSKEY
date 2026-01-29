@@ -1,4 +1,4 @@
-import { BaseLexicon } from './BaseLexicon';
+import nativeDictionary from './NativeDictionary';
 
 // === INTERFACES ===
 
@@ -34,7 +34,6 @@ export interface SwipeResult {
 
 export class SwipeEngine {
   private keyboardLayout: KeyBounds[] = [];
-  private baseLexicon: BaseLexicon | null = null;
 
   // Algorithm parameters
   private readonly MIN_SWIPE_POINTS: number = 5;
@@ -47,10 +46,6 @@ export class SwipeEngine {
 
   setKeyboardLayout(keys: KeyBounds[]): void {
     this.keyboardLayout = keys;
-  }
-
-  setBaseLexicon(lexicon: BaseLexicon | null): void {
-    this.baseLexicon = lexicon;
   }
 
   processSwipe(rawPath: SwipePoint[]): SwipeResult | null {
@@ -209,7 +204,7 @@ export class SwipeEngine {
   }
 
   private getCandidates(keySequence: string[]): SwipeCandidate[] {
-    if (!this.baseLexicon || !this.baseLexicon.isLoaded()) {
+    if (!nativeDictionary.isDictionaryLoaded()) {
       return [];
     }
 
@@ -218,9 +213,10 @@ export class SwipeEngine {
     const lastKey = keySequence[keySequence.length - 1];
     const seqLength = keySequence.length;
 
-    const words = this.baseLexicon.findByPrefix(firstKey, this.MAX_CANDIDATES * 3);
+    // Use nativeDictionary.getSuggestions instead of baseLexicon.findByPrefix
+    const suggestions = nativeDictionary.getSuggestions(firstKey, this.MAX_CANDIDATES * 3);
 
-    for (const entry of words) {
+    for (const entry of suggestions) {
       const word = entry.word;
 
       if (word.length < seqLength * 0.5 || word.length > seqLength * 1.5) continue;
@@ -230,7 +226,7 @@ export class SwipeEngine {
       candidates.push({
         word: word,
         distance: 0,
-        frequency: entry.freq,
+        frequency: Math.round(entry.score), // score as frequency proxy
         score: 0
       });
 
