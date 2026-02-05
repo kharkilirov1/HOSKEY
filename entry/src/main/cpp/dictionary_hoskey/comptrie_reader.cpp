@@ -513,108 +513,166 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
         return results;
     }
 
-    OH_LOG_DEBUG(LOG_APP, "getSuggestions('%{public}s'): scanning trie region [%{public}zu - %{public}zu]",
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: getSuggestions('%{public}s'): navigating trie [%{public}zu - %{public}zu]",
                  prefix.c_str(), trieStart_, trieEnd_);
 
-    // Direct scan approach: search for prefix as UTF-8 byte sequence in trie data
-    // This works because Yandex trie stores words as UTF-8 with node markers
-    const uint8_t* start = data_ + trieStart_;
+    // Navigate to prefix node using proper trie traversal (not byte scanning)
+    const uint8_t* pos = data_ + trieStart_;
     const uint8_t* end = data_ + trieEnd_;
-    const uint8_t* prefixBytes = reinterpret_cast<const uint8_t*>(prefix.data());
     const size_t prefixLen = prefix.size();
 
-    // Scan the trie region looking for the prefix
-    // We look for sequences: [marker] [prefix bytes...] [continuation]
-    std::vector<std::string> foundWords;
-    foundWords.reserve(maxResults * 10);
+    // Navigate to prefix position using leapByte for each byte
+    bool prefixFound = true;
+    for (size_t i = 0; i < prefix.size(); i++) {
+        uint8_t flags = leapByte(pos, end, static_cast<uint8_t>(prefix[i]));
+        if (!pos) {
+            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix byte %{public}zu (0x%{public}02X '%{public}c') not found",
+                         i, static_cast<uint8_t>(prefix[i]),
+                         (prefix[i] >= 32 && prefix[i] < 127) ? prefix[i] : '?');
+            prefixFound = false;
+            break;
+        }
 
-    const size_t maxWordBytes = 60;  // Max ~30 UTF-8 chars
-
-    for (const uint8_t* pos = start; pos < end - prefixLen - 2 && foundWords.size() < static_cast<size_t>(maxResults * 50); ) {
-        // Check for node marker followed by our prefix
-        uint8_t marker = *pos;
-
-        // Node markers: 0x40 (regular), 0x48 (property), 0x50 (end), 0x58 (terminal)
-        bool isNodeMarker = (marker == NODE_REGULAR || marker == NODE_PROPERTY ||
-                             marker == NODE_END || marker == NODE_TERMINAL);
-
-        // Also check if prefix starts directly (for some encodings)
-        bool prefixMatchDirect = (pos + prefixLen <= end) &&
-                                  memcmp(pos, prefixBytes, prefixLen) == 0;
-        bool prefixMatchAfterMarker = isNodeMarker && (pos + 1 + prefixLen <= end) &&
-                                       memcmp(pos + 1, prefixBytes, prefixLen) == 0;
-
-        if (prefixMatchDirect || prefixMatchAfterMarker) {
-            // Found potential prefix - extract the word
-            const uint8_t* wordStart = prefixMatchAfterMarker ? (pos + 1) : pos;
-            std::string word;
-            word.reserve(maxWordBytes);
-
-            // Read UTF-8 characters until we hit a non-letter
-            const uint8_t* p = wordStart;
-            while (p < end && word.size() < maxWordBytes) {
-                uint8_t b = *p;
-
-                // UTF-8 Cyrillic: D0 80-BF, D1 80-BF
-                if ((b == UTF8_CYR_D0 || b == UTF8_CYR_D1) && p + 1 < end) {
-                    uint8_t b1 = *(p + 1);
-                    if (b1 >= 0x80 && b1 <= 0xBF) {
-                        word += static_cast<char>(b);
-                        word += static_cast<char>(b1);
-                        p += 2;
-                        continue;
-                    }
-                }
-
-                // ASCII lowercase letter
-                if (b >= 'a' && b <= 'z') {
-                    word += static_cast<char>(b);
-                    p++;
-                    continue;
-                }
-
-                // Hyphen (compound words)
-                if (b == '-' && !word.empty() && p + 1 < end) {
-                    uint8_t next = *(p + 1);
-                    if (next == UTF8_CYR_D0 || next == UTF8_CYR_D1 ||
-                        (next >= 'a' && next <= 'z')) {
-                        word += '-';
-                        p++;
-                        continue;
-                    }
-                }
-
-                // Word boundary
+        // If this node has a value, skip it to continue navigation
+        if (flags & MT_FINAL) {
+            if (pos >= end) {
+                prefixFound = false;
                 break;
             }
-
-            // Validate: must start with prefix and be reasonable length
-            if (word.size() >= prefixLen && word.compare(0, prefixLen, prefix) == 0) {
-                // Count Cyrillic characters
-                size_t cyrCount = 0;
-                for (size_t i = 0; i < word.size(); ) {
-                    uint8_t c = static_cast<uint8_t>(word[i]);
-                    if (c == UTF8_CYR_D0 || c == UTF8_CYR_D1) {
-                        cyrCount++;
-                        i += 2;
-                    } else {
-                        i++;
-                    }
-                }
-
-                // Accept if has Cyrillic and reasonable length (2-20 chars)
-                if (cyrCount >= 2 && cyrCount <= 20) {
-                    foundWords.push_back(word);
-                }
+            size_t bytesRead = skipVarInt(pos);
+            if (bytesRead == 0 || bytesRead > 8 || pos + bytesRead > end) {
+                prefixFound = false;
+                break;
             }
+            pos += bytesRead;
+        }
 
-            pos = wordStart + 1;  // Move past this position
-        } else {
-            pos++;
+        // Check if we can continue (except for last byte)
+        if (!(flags & MT_NEXT) && i < prefix.size() - 1) {
+            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: no continuation at byte %{public}zu", i);
+            prefixFound = false;
+            break;
         }
     }
 
-    OH_LOG_DEBUG(LOG_APP, "getSuggestions('%{public}s'): found %{public}zu raw matches by scanning",
+    std::vector<std::string> foundWords;
+    foundWords.reserve(maxResults * 10);
+
+    if (!prefixFound) {
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix '%{public}s' not found via trie navigation", prefix.c_str());
+        // Return empty - no fallback to byte scan
+        return results;
+    }
+
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix found at offset %{public}zu, collecting words",
+                 pos - data_);
+
+    // Collect words from this subtrie using DFS
+    struct StackItem {
+        const uint8_t* pos;
+        std::string word;
+        int depth;
+    };
+
+    std::vector<StackItem> stack;
+    stack.reserve(256);
+    stack.push_back({pos, prefix, 0});
+
+    const size_t maxWordLen = prefix.size() + 40;
+
+    while (!stack.empty() && foundWords.size() < static_cast<size_t>(maxResults * 50)) {
+        StackItem item = stack.back();
+        stack.pop_back();
+
+        if (!item.pos || item.pos >= end || item.depth > 30 || item.word.size() > maxWordLen) {
+            continue;
+        }
+
+        const uint8_t* p = item.pos;
+        while (p && p < end - 1) {
+            const uint8_t* startpos = p;
+            uint8_t flags = *p++;
+
+            // Epsilon link (redirect without symbol)
+            if (!(flags & (MT_FINAL | MT_NEXT))) {
+                size_t offsetlen = flags & MT_SIZEMASK;
+                if (offsetlen == 0 || p + offsetlen > end) break;
+                size_t offset = unpackOffset(p, offsetlen);
+                if (!offset || startpos + offset >= end) break;
+                p = startpos + offset;
+                continue;
+            }
+
+            if (p >= end) break;
+            uint8_t ch = *p++;
+            if (ch == 0) break;
+
+            // Skip '@' and ' ' branches - n-gram separators
+            if (ch == '@' || ch == ' ') {
+                size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
+                size_t rightLen = flags & MT_SIZEMASK;
+                if (p + leftLen + rightLen > end) break;
+
+                size_t leftOffset = 0, rightOffset = 0;
+                if (leftLen > 0) leftOffset = unpackOffset(p, leftLen);
+                p += leftLen;
+                if (rightLen > 0) rightOffset = unpackOffset(p, rightLen);
+                p += rightLen;
+
+                if (rightOffset > 0 && startpos + rightOffset < end) {
+                    stack.push_back({startpos + rightOffset, item.word, item.depth});
+                }
+                if (leftOffset > 0 && startpos + leftOffset < end) {
+                    stack.push_back({startpos + leftOffset, item.word, item.depth});
+                }
+                break;
+            }
+
+            size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
+            size_t rightLen = flags & MT_SIZEMASK;
+            if (p + leftLen + rightLen > end) break;
+
+            size_t leftOffset = 0, rightOffset = 0;
+            if (leftLen > 0) leftOffset = unpackOffset(p, leftLen);
+            p += leftLen;
+            if (rightLen > 0) rightOffset = unpackOffset(p, rightLen);
+            p += rightLen;
+
+            // Push siblings to stack
+            if (rightOffset > 0 && startpos + rightOffset < end) {
+                stack.push_back({startpos + rightOffset, item.word, item.depth});
+            }
+            if (leftOffset > 0 && startpos + leftOffset < end) {
+                stack.push_back({startpos + leftOffset, item.word, item.depth});
+            }
+
+            // Build current word by appending this character byte
+            std::string currentWord = item.word;
+            currentWord += static_cast<char>(ch);
+
+            // Check for word boundary (MT_FINAL)
+            if (flags & MT_FINAL) {
+                if (p >= end) break;
+                size_t bytesRead = skipVarInt(p);
+                if (bytesRead == 0 || bytesRead > 8 || p + bytesRead > end) break;
+                p += bytesRead;
+
+                // Save valid word (must be longer than prefix)
+                if (currentWord.size() > prefix.size() && currentWord.size() <= 40) {
+                    foundWords.push_back(currentWord);
+                }
+            }
+
+            // Continue to next level if MT_NEXT
+            if (flags & MT_NEXT) {
+                stack.push_back({p, currentWord, item.depth + 1});
+            }
+
+            break;  // Move to next stack item
+        }
+    }
+
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: getSuggestions('%{public}s'): found %{public}zu raw matches",
                  prefix.c_str(), foundWords.size());
 
     // Log first few found words
