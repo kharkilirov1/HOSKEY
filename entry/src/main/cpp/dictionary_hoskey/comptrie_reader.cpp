@@ -189,63 +189,52 @@ bool CompTrieReader::parseStructure() {
         return value;
     };
 
-    // Parse all relevant JSON fields from decompiled Yandex code:
-    //   "DictOffset"   (0x1a) - start of data section (blacklist)
-    //   "DictSize"     - total size of dict data
-    //   "TrieAddress"  (0x40) - DIRECT offset to main trie (what we need!)
-    //   "TrieSize"     - size of trie section
+    // Yandex dictionary format:
+    // - JSON config contains section NAMES only (e.g. "LM":"trie", "Blacklist":"blacklist")
+    // - Section data follows after JSON with alignment padding
+    // - No explicit offsets in JSON - sections are sequentially packed
+    //
+    // For main_ru format with blacklist (~374KB before trie):
+    //   blacklist: starts after JSON padding, ~374KB
+    //   trie:      starts at offset 384496 (0x5DE30)
+    //
+    // For main_en and smaller dicts:
+    //   trie starts directly after JSON padding
 
-    size_t dictOffset = parseJsonInt("DictOffset");
-    size_t dictSize = parseJsonInt("DictSize");
-    size_t trieAddress = parseJsonInt("TrieAddress");  // Direct trie offset from JSON!
-    size_t trieSize = parseJsonInt("TrieSize");
+    // Detect large dict format (>4MB likely has blacklist section)
+    constexpr size_t LARGE_DICT_THRESHOLD = 4000000;  // 4MB
+    constexpr size_t YANDEX_RU_TRIE_OFFSET = 384496;  // Known offset for main_ru
 
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu, TrieAddress=%{public}zu, TrieSize=%{public}zu",
-                 dictOffset, dictSize, trieAddress, trieSize);
-
-    // Priority 1: Use TrieAddress if available (direct offset to trie)
-    if (trieAddress > 0 && trieAddress < fileSize_) {
-        trieStart_ = trieAddress;
-        trieEnd_ = (trieSize > 0) ? (trieAddress + trieSize) : (dictOffset + dictSize);
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using TrieAddress from JSON: [%{public}zu - %{public}zu]",
-                     trieStart_, trieEnd_);
-    }
-    // Priority 2: Known Yandex format (DictOffset ~10016, large dict)
-    else if (dictOffset > 0 && dictOffset < 20000 && dictSize > 4000000) {
-        constexpr size_t YANDEX_TRIE_OFFSET = 384496;  // 0x5DE30
-        trieStart_ = YANDEX_TRIE_OFFSET;
-        trieEnd_ = dictOffset + dictSize;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Yandex format, hardcoded offset: [%{public}zu - %{public}zu]",
-                     trieStart_, trieEnd_);
-    }
-    // Priority 3: Use DictOffset directly (for smaller dicts without blacklist)
-    else if (dictOffset > 0 && dictSize > 0) {
-        trieStart_ = dictOffset;
-        trieEnd_ = dictOffset + dictSize;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using DictOffset directly: [%{public}zu - %{public}zu]",
-                     trieStart_, trieEnd_);
-    }
-    // Fallback: scan for trie after JSON
-    else {
-        // Fallback: skip padding after JSON
+    if (fileSize_ > LARGE_DICT_THRESHOLD) {
+        // Large dictionary - likely Yandex main_ru format with blacklist
+        trieStart_ = YANDEX_RU_TRIE_OFFSET;
+        trieEnd_ = fileSize_;  // Will be refined below
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Large dict detected, using hardcoded trie offset: %{public}zu",
+                     trieStart_);
+    } else {
+        // Small dictionary - trie starts after JSON padding
         trieStart_ = jsonEnd;
+        // Skip padding (nulls and spaces)
         while (trieStart_ < fileSize_ && (data_[trieStart_] == 0 || data_[trieStart_] == ' ')) {
             trieStart_++;
         }
-
-        // Find first TFLite model (TFL3 signature) as end marker
-        const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
         trieEnd_ = fileSize_;
-
-        for (size_t i = trieStart_; i < fileSize_ - 4; i++) {
-            if (memcmp(data_ + i, tfl3, 4) == 0) {
-                trieEnd_ = i - 4;  // FlatBuffer size is before signature
-                break;
-            }
-        }
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Fallback heuristic: trie [%{public}zu - %{public}zu]",
-                     trieStart_, trieEnd_);
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Small dict, trie after JSON at offset: %{public}zu",
+                     trieStart_);
     }
+
+    // Find TFLite model (TFL3 signature) as end marker if present
+    const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
+    for (size_t i = trieStart_; i < fileSize_ - 4; i++) {
+        if (memcmp(data_ + i, tfl3, 4) == 0) {
+            trieEnd_ = i - 4;  // FlatBuffer size is before signature
+            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Found TFL3 marker, trie ends at: %{public}zu", trieEnd_);
+            break;
+        }
+    }
+
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Final trie region: [%{public}zu - %{public}zu] (%{public}zu bytes)",
+                 trieStart_, trieEnd_, trieEnd_ - trieStart_);
 
     // Find max frequency for normalization (sample first 1000 words)
     maxFrequency_ = 1;
