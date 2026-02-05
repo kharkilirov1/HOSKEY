@@ -172,11 +172,7 @@ bool CompTrieReader::parseStructure() {
     std::string jsonConfig(reinterpret_cast<const char*>(data_ + jsonStart), jsonEnd - jsonStart);
     OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON config length: %{public}zu", jsonConfig.size());
 
-    // Parse DictOffset and DictSize from JSON
-    // Format: "DictOffset":12345,"DictSize":67890
-    size_t dictOffset = 0;
-    size_t dictSize = 0;
-
+    // Parse offsets from JSON
     auto parseJsonInt = [&jsonConfig](const char* key) -> size_t {
         std::string searchKey = std::string("\"") + key + "\":";
         size_t pos = jsonConfig.find(searchKey);
@@ -193,17 +189,62 @@ bool CompTrieReader::parseStructure() {
         return value;
     };
 
-    dictOffset = parseJsonInt("DictOffset");
-    dictSize = parseJsonInt("DictSize");
+    // Dictionary structure from Y1 parser:
+    //   blacklist: offset=10016, size=374455
+    //   trie:      offset=384496, size=4498484
+    //
+    // DictOffset points to blacklist start, NOT trie!
+    // Trie starts AFTER blacklist section.
 
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu",
-                 dictOffset, dictSize);
+    size_t dictOffset = parseJsonInt("DictOffset");
+    size_t dictSize = parseJsonInt("DictSize");
+    size_t blacklistSize = parseJsonInt("BlacklistSize");
+    size_t trieOffset = parseJsonInt("TrieOffset");  // May not exist
+    size_t trieSize = parseJsonInt("TrieSize");      // May not exist
 
-    // Use DictOffset/DictSize if available, otherwise fall back to heuristic
-    if (dictOffset > 0 && dictSize > 0 && dictOffset + dictSize <= fileSize_) {
-        trieStart_ = dictOffset;
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu, BlacklistSize=%{public}zu",
+                 dictOffset, dictSize, blacklistSize);
+
+    // Strategy: find where the actual trie starts (after blacklist)
+    if (trieOffset > 0 && trieSize > 0) {
+        // Direct trie offset available
+        trieStart_ = trieOffset;
+        trieEnd_ = trieOffset + trieSize;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using TrieOffset: [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
+    } else if (dictOffset > 0 && blacklistSize > 0) {
+        // Calculate trie start = after blacklist (with 16-byte alignment)
+        size_t blacklistEnd = dictOffset + blacklistSize;
+        trieStart_ = (blacklistEnd + 15) & ~15;  // Align to 16 bytes
         trieEnd_ = dictOffset + dictSize;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using JSON offsets: trie [%{public}zu - %{public}zu]",
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Calculated after blacklist: [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
+    } else if (dictOffset > 0 && dictSize > 0) {
+        // Fallback: scan for trie signature after blacklist
+        // Blacklist typically ~374KB, trie starts around 384KB
+        // Look for first valid trie node marker after ~380KB
+        size_t searchStart = dictOffset + 370000;  // Skip most of blacklist
+        if (searchStart > fileSize_) searchStart = dictOffset;
+
+        trieStart_ = 0;
+        for (size_t i = searchStart; i < dictOffset + dictSize && i < fileSize_ - 10; i++) {
+            // Look for valid CompactTrie node pattern
+            uint8_t flags = data_[i];
+            if ((flags & 0xC0) == 0xC0 || (flags & 0xC0) == 0x80) {
+                // Potential trie node - verify next bytes look like UTF-8 Cyrillic
+                if (i + 2 < fileSize_ && data_[i+1] == 0xD0 && data_[i+2] >= 0x80) {
+                    trieStart_ = i;
+                    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Found trie signature at %{public}zu", i);
+                    break;
+                }
+            }
+        }
+
+        if (trieStart_ == 0) {
+            trieStart_ = dictOffset;  // Last resort
+        }
+        trieEnd_ = dictOffset + dictSize;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Scanned for trie: [%{public}zu - %{public}zu]",
                      trieStart_, trieEnd_);
     } else {
         // Fallback: skip padding after JSON
