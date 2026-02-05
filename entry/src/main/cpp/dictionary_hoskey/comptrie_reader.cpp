@@ -808,53 +808,6 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
         return validChars > 0;
     };
     
-    // Profanity/slang filter - check if word contains bad substrings
-    auto containsProfanity = [](const std::string& word) -> bool {
-        // Russian profanity filter using explicit UTF-8 hex codes
-        // This ensures correct encoding regardless of source file encoding
-        static const char* badWords[] = {
-            // Core roots with explicit UTF-8 (е=D0B5, б=D0B1, ё=D191, etc.)
-            "\xD0\xB5\xD0\xB1",         // "еб"
-            "\xD1\x91\xD0\xB1",         // "ёб"
-            "\xD0\xBE\xD0\xB5\xD0\xB1", // "оеб" (compound like весело+еб)
-            "\xD0\xB0\xD0\xB5\xD0\xB1", // "аеб"
-            "\xD1\x83\xD0\xB5\xD0\xB1", // "уеб"
-            "\xD1\x8B\xD0\xB5\xD0\xB1", // "ыеб"
-            "\xD1\x8C\xD0\xB5\xD0\xB1", // "ьеб"
-            "\xD1\x8A\xD0\xB5\xD0\xB1", // "ъеб"
-            // хуй variants (х=D185, у=D183, й=D0B9)
-            "\xD1\x85\xD1\x83\xD0\xB9", // "хуй"
-            "\xD1\x85\xD1\x83\xD1\x8F", // "хуя"
-            "\xD1\x85\xD1\x83\xD0\xB5", // "хуе"
-            "\xD1\x85\xD1\x83\xD0\xB8", // "хуи"
-            "\xD1\x85\xD0\xB5\xD1\x80", // "хер"
-            // пизд (п=D0BF, и=D0B8, з=D0B7, д=D0B4)
-            "\xD0\xBF\xD0\xB8\xD0\xB7\xD0\xB4", // "пизд"
-            // бля (б=D0B1, л=D0BB, я=D18F)
-            "\xD0\xB1\xD0\xBB\xD1\x8F", // "бля"
-            "\xD0\xB1\xD0\xBB\xD1\x8F\xD0\xB4", // "бляд"
-            // мат abbreviations
-            "\xD0\xBD\xD0\xB0\xD1\x85", // "нах"
-            "\xD0\xBF\xD0\xBE\xD1\x85", // "пох"
-            // Other offensive (keeping readable for less critical)
-            "пидор", "пидар", "педик", "гомик",
-            "мудак", "мудил", "жопа", "жоп",
-            "говн", "гавн", "дерьм", "срать", "срал",
-            "сука", "сучк", "тварь", "шлюх",
-            "дебил", "идиот", "кретин", "урод",
-            // Prison slang
-            "\xD0\xB2\xD0\xB5\xD1\x80\xD1\x82\xD1\x83\xD1\x85", // "вертух"
-            "петух", "опущ"
-        };
-
-        for (const char* bad : badWords) {
-            if (word.find(bad) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    };
-
     // Common Russian word stems for boosting
     auto isCommonWordPattern = [](const std::string& word) -> bool {
         // Common Russian word beginnings (UTF-8)
@@ -946,27 +899,13 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
     size_t prefixCharLen = countUtf8Chars(prefix);
 
     // Convert foundWords to CompTrieSuggestion with filtering
-    int debugCount = 0;
     for (const auto& rawWord : foundWords) {
         std::string word = extractWord(rawWord);
-
-        // Log first 5 raw results for debugging with hex bytes
-        if (debugCount < 5) {
-            std::string hexBytes;
-            for (size_t i = 0; i < std::min(word.size(), (size_t)20); i++) {
-                char buf[4];
-                snprintf(buf, sizeof(buf), "%02X ", (uint8_t)word[i]);
-                hexBytes += buf;
-            }
-            OH_LOG_DEBUG(LOG_APP, "  processing[%{public}d]: '%{public}s' hex=[%{public}s]",
-                         debugCount, word.c_str(), hexBytes.c_str());
-            debugCount++;
-        }
 
         // Skip empty words
         if (word.empty()) continue;
 
-        // Skip words containing spaces
+        // Skip words containing spaces (n-gram artifacts)
         if (word.find(' ') != std::string::npos) continue;
 
         // Verify prefix match
@@ -974,10 +913,7 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
             continue;
         }
 
-        // Skip profanity
-        if (containsProfanity(word)) continue;
-
-        // Validate UTF-8
+        // Validate UTF-8 structure
         if (!isValidUtf8Word(word)) continue;
 
         // Create suggestion with quality-based score
