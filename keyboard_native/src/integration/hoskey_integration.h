@@ -22,6 +22,10 @@
 
 #include <memory>
 #include <string>
+#include <atomic>
+#include <functional>
+#include <thread>
+#include <future>
 
 namespace keyboard {
 namespace integration {
@@ -64,9 +68,29 @@ public:
     ~HoskeyIntegratedEngine();
 
     /**
-     * Initialize with HOSKEY config
+     * Initialize with HOSKEY config (SYNCHRONOUS - use initAsync for UI thread!)
      */
     bool init(const HoskeyConfig& config);
+
+    /**
+     * Initialize asynchronously (RECOMMENDED for UI thread)
+     * @param config Configuration
+     * @param onComplete Callback called when init completes (may be on different thread)
+     */
+    void initAsync(const HoskeyConfig& config,
+                   std::function<void(bool success)> onComplete = nullptr);
+
+    /**
+     * Check if async init is still in progress
+     */
+    bool isInitializing() const { return initializing_.load(); }
+
+    /**
+     * Wait for async init to complete
+     * @param timeoutMs Max time to wait (0 = infinite)
+     * @return true if init completed, false if timeout
+     */
+    bool waitForInit(int timeoutMs = 0);
 
     /**
      * Shutdown
@@ -74,9 +98,19 @@ public:
     void shutdown();
 
     /**
-     * Check if ready
+     * Check if ready (thread-safe)
      */
-    bool isReady() const;
+    bool isReady() const { return ready_.load(); }
+
+    /**
+     * Check if dictionary is loaded
+     */
+    bool isDictLoaded() const { return dictLoaded_.load(); }
+
+    /**
+     * Check if neural models are loaded
+     */
+    bool isNeuralLoaded() const { return neuralLoaded_.load(); }
 
     // ========================================================================
     // Access to components
@@ -149,10 +183,22 @@ private:
     std::unique_ptr<yandex::NeuralModelManager> modelManager_;
 
     HoskeyConfig config_;
-    bool ready_ = false;
+
+    // Thread-safe state flags
+    std::atomic<bool> ready_{false};
+    std::atomic<bool> initializing_{false};
+    std::atomic<bool> dictLoaded_{false};
+    std::atomic<bool> neuralLoaded_{false};
+
+    // Async init support
+    std::future<bool> initFuture_;
+    mutable std::mutex componentMutex_;  // Protects component access
 
     // Load neural models based on flags
     int loadNeuralModels(int flags);
+
+    // Internal init (runs on worker thread for async)
+    bool initInternal(const HoskeyConfig& config);
 };
 
 /**
@@ -161,9 +207,17 @@ private:
 HoskeyIntegratedEngine& getGlobalEngine();
 
 /**
- * Initialize global engine (call once at startup)
+ * Initialize global engine (SYNCHRONOUS - blocks until complete)
  */
 bool initGlobalEngine(const HoskeyConfig& config);
+
+/**
+ * Initialize global engine ASYNCHRONOUSLY (recommended for UI thread)
+ * @param config Configuration
+ * @param onComplete Callback when init completes (may be on different thread!)
+ */
+void initGlobalEngineAsync(const HoskeyConfig& config,
+                           std::function<void(bool success)> onComplete = nullptr);
 
 /**
  * Shutdown global engine

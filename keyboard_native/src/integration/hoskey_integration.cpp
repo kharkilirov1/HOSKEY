@@ -1,6 +1,12 @@
 /**
  * HOSKEY Integration Implementation
  *
+ * Fixed bugs:
+ * - Added async initialization to prevent ANR
+ * - Made ready_ atomic for thread safety
+ * - Added proper result initialization
+ * - Added component mutex for thread-safe access
+ *
  * Copyright (c) 2024-2026 HOSKEY Project
  * Licensed under the Apache License, Version 2.0
  */
@@ -10,6 +16,7 @@
 
 #include <mutex>
 #include <cstring>
+#include <chrono>
 
 namespace keyboard {
 namespace integration {
@@ -29,49 +36,114 @@ HoskeyIntegratedEngine::~HoskeyIntegratedEngine() {
     platform::logInfo(TAG, "HoskeyIntegratedEngine destroyed");
 }
 
+// ============================================================================
+// Synchronous init (blocking - use initAsync for UI thread!)
+// ============================================================================
+
 bool HoskeyIntegratedEngine::init(const HoskeyConfig& config) {
+    return initInternal(config);
+}
+
+// ============================================================================
+// Asynchronous init (recommended for UI thread)
+// ============================================================================
+
+void HoskeyIntegratedEngine::initAsync(const HoskeyConfig& config,
+                                        std::function<void(bool success)> onComplete) {
+    if (initializing_.load()) {
+        platform::logWarn(TAG, "initAsync: already initializing");
+        if (onComplete) onComplete(false);
+        return;
+    }
+
+    initializing_ = true;
+
+    // Launch async init
+    initFuture_ = std::async(std::launch::async, [this, config, onComplete]() {
+        bool success = initInternal(config);
+        initializing_ = false;
+
+        if (onComplete) {
+            onComplete(success);
+        }
+
+        return success;
+    });
+
+    platform::logInfo(TAG, "initAsync: started background initialization");
+}
+
+bool HoskeyIntegratedEngine::waitForInit(int timeoutMs) {
+    if (!initFuture_.valid()) {
+        return ready_.load();
+    }
+
+    if (timeoutMs <= 0) {
+        initFuture_.wait();
+        return initFuture_.get();
+    } else {
+        auto status = initFuture_.wait_for(std::chrono::milliseconds(timeoutMs));
+        if (status == std::future_status::ready) {
+            return initFuture_.get();
+        }
+        return false;
+    }
+}
+
+// ============================================================================
+// Internal init (runs on worker thread for async)
+// ============================================================================
+
+bool HoskeyIntegratedEngine::initInternal(const HoskeyConfig& config) {
     config_ = config;
 
     platform::logInfo(TAG, "Initializing HOSKEY integrated engine...");
 
-    // 1. Initialize YandexDict
+    // 1. Initialize YandexDict (uses mmap - fast!)
     if (!config.dictPath.empty()) {
+        std::lock_guard<std::mutex> lock(componentMutex_);
         yandexDict_ = std::make_unique<yandex::YandexDict>();
 
         if (!yandexDict_->load(config.dictPath)) {
             platform::logError(TAG, "Failed to load YandexDict from: %s",
                               config.dictPath.c_str());
-            // Continue without dictionary - neural can still work
         } else {
-            platform::logInfo(TAG, "YandexDict loaded: %zu words",
+            dictLoaded_ = true;
+            platform::logInfo(TAG, "YandexDict loaded: %zu words (mmap)",
                              yandexDict_->getWordCount());
         }
     }
 
-    // 2. Initialize NeuralModelManager
+    // 2. Initialize NeuralModelManager (can be slow!)
     if (config.useNeural && !config.modelsDir.empty()) {
+        std::lock_guard<std::mutex> lock(componentMutex_);
         modelManager_ = std::make_unique<yandex::NeuralModelManager>();
         modelManager_->setModelsDirectory(config.modelsDir);
 
         int loadedCount = loadNeuralModels(config.modelsToLoad);
+        if (loadedCount > 0) {
+            neuralLoaded_ = true;
+        }
         platform::logInfo(TAG, "Loaded %d neural models", loadedCount);
     }
 
     // 3. Initialize keyboard_native engine
-    engine_ = std::make_unique<core::Engine>();
+    {
+        std::lock_guard<std::mutex> lock(componentMutex_);
+        engine_ = std::make_unique<core::Engine>();
 
-    KBEngineConfig kbConfig;
-    kb_config_init_default(&kbConfig);
+        KBEngineConfig kbConfig;
+        kb_config_init_default(&kbConfig);
 
-    // Don't load dict/model through engine - we manage them directly
-    kbConfig.useNeural = 0;  // We use NeuralModelManager directly
-    kbConfig.cacheSize = static_cast<uint32_t>(config.cacheSize);
-    kbConfig.maxInferMs = static_cast<uint32_t>(config.maxInferMs);
+        kbConfig.useNeural = 0;
+        kbConfig.cacheSize = static_cast<uint32_t>(config.cacheSize);
+        kbConfig.maxInferMs = static_cast<uint32_t>(config.maxInferMs);
 
-    auto err = engine_->init(kbConfig);
-    if (err != KB_OK) {
-        platform::logError(TAG, "Failed to init keyboard_native engine");
-        return false;
+        auto err = engine_->init(kbConfig);
+        if (err != KB_OK) {
+            platform::logError(TAG, "Failed to init keyboard_native engine");
+            return false;
+        }
     }
 
     ready_ = true;
@@ -81,7 +153,16 @@ bool HoskeyIntegratedEngine::init(const HoskeyConfig& config) {
 }
 
 void HoskeyIntegratedEngine::shutdown() {
+    if (initFuture_.valid()) {
+        initFuture_.wait();
+    }
+
     ready_ = false;
+    initializing_ = false;
+    dictLoaded_ = false;
+    neuralLoaded_ = false;
+
+    std::lock_guard<std::mutex> lock(componentMutex_);
 
     if (engine_) {
         engine_->shutdown();
@@ -96,10 +177,6 @@ void HoskeyIntegratedEngine::shutdown() {
     yandexDict_.reset();
 
     platform::logInfo(TAG, "HOSKEY integrated engine shutdown");
-}
-
-bool HoskeyIntegratedEngine::isReady() const {
-    return ready_ && engine_;
 }
 
 int HoskeyIntegratedEngine::loadNeuralModels(int flags) {
@@ -135,26 +212,31 @@ int HoskeyIntegratedEngine::loadNeuralModels(int flags) {
 
 KeyboardErrorCode HoskeyIntegratedEngine::predict(const KBPredictContext& ctx,
                                                    KBPredictResult& result) {
-    if (!ready_) {
+    if (!ready_.load()) {
         return KB_ERR_NOT_INITIALIZED;
     }
 
-    // Get prefix from context
+    // Initialize result to zero (BUG FIX)
+    std::memset(&result, 0, sizeof(result));
+
     std::string prefix;
     if (ctx.inputText && ctx.inputLength > 0) {
         prefix = std::string(ctx.inputText, ctx.inputLength);
     }
 
+    // Thread-safe access to components
+    std::lock_guard<std::mutex> lock(componentMutex_);
+
     // 1. Get candidates from YandexDict
     std::vector<yandex::Suggestion> suggestions;
-    if (yandexDict_) {
+    if (yandexDict_ && dictLoaded_.load()) {
         suggestions = yandexDict_->getSuggestions(prefix,
             static_cast<int>(ctx.maxResults > 0 ? ctx.maxResults * 2 : 20));
     }
 
     // 2. Score with neural models if available
     std::vector<yandex::ScoredWord> scored;
-    if (modelManager_ && modelManager_->getLoadedModelCount() > 0 && !suggestions.empty()) {
+    if (modelManager_ && neuralLoaded_.load() && !suggestions.empty()) {
         std::vector<yandex::ScoringCandidate> candidates;
         candidates.reserve(suggestions.size());
 
@@ -180,8 +262,18 @@ KeyboardErrorCode HoskeyIntegratedEngine::predict(const KBPredictContext& ctx,
         count = ctx.maxResults;
     }
 
+    // Handle empty results (BUG FIX)
+    if (count == 0) {
+        result.candidateCount = 0;
+        result.candidates = nullptr;
+        return KB_OK;
+    }
+
     result.candidateCount = static_cast<uint32_t>(count);
     result.candidates = new KBCandidate[count];
+
+    // Zero-initialize all candidates (BUG FIX)
+    std::memset(result.candidates, 0, sizeof(KBCandidate) * count);
 
     if (!scored.empty()) {
         for (size_t i = 0; i < count; ++i) {
@@ -213,16 +305,25 @@ KeyboardErrorCode HoskeyIntegratedEngine::predict(const KBPredictContext& ctx,
 }
 
 KeyboardErrorCode HoskeyIntegratedEngine::learn(const KBLearnEvent& event) {
-    if (!ready_ || !engine_) {
+    if (!ready_.load()) {
         return KB_ERR_NOT_INITIALIZED;
     }
 
-    // Delegate to engine's learning system
+    std::lock_guard<std::mutex> lock(componentMutex_);
+    if (!engine_) {
+        return KB_ERR_NOT_INITIALIZED;
+    }
+
     return engine_->learn(event);
 }
 
 KeyboardErrorCode HoskeyIntegratedEngine::resetSession() {
-    if (!ready_ || !engine_) {
+    if (!ready_.load()) {
+        return KB_ERR_NOT_INITIALIZED;
+    }
+
+    std::lock_guard<std::mutex> lock(componentMutex_);
+    if (!engine_) {
         return KB_ERR_NOT_INITIALIZED;
     }
 
@@ -232,7 +333,8 @@ KeyboardErrorCode HoskeyIntegratedEngine::resetSession() {
 std::vector<yandex::Suggestion> HoskeyIntegratedEngine::getYandexSuggestions(
     const std::string& prefix, int limit) {
 
-    if (!yandexDict_) {
+    std::lock_guard<std::mutex> lock(componentMutex_);
+    if (!yandexDict_ || !dictLoaded_.load()) {
         return {};
     }
 
@@ -243,7 +345,8 @@ std::vector<yandex::ScoredWord> HoskeyIntegratedEngine::scoreWithNeural(
     const std::vector<std::string>& candidates,
     const std::string& context) {
 
-    if (!modelManager_ || modelManager_->getLoadedModelCount() == 0) {
+    std::lock_guard<std::mutex> lock(componentMutex_);
+    if (!modelManager_ || !neuralLoaded_.load()) {
         return {};
     }
 
@@ -264,11 +367,13 @@ std::vector<yandex::ScoredWord> HoskeyIntegratedEngine::scoreWithNeural(
 HoskeyIntegratedEngine::Stats HoskeyIntegratedEngine::getStats() const {
     Stats stats;
 
-    if (yandexDict_) {
+    std::lock_guard<std::mutex> lock(componentMutex_);
+
+    if (yandexDict_ && dictLoaded_.load()) {
         stats.dictWordCount = yandexDict_->getWordCount();
     }
 
-    if (modelManager_) {
+    if (modelManager_ && neuralLoaded_.load()) {
         auto mstats = modelManager_->getStats();
         stats.loadedModels = mstats.loadedModels;
         stats.primaryDevice = mstats.primaryDevice;
@@ -306,6 +411,17 @@ bool initGlobalEngine(const HoskeyConfig& config) {
     }
 
     return g_globalEngine->init(config);
+}
+
+void initGlobalEngineAsync(const HoskeyConfig& config,
+                           std::function<void(bool success)> onComplete) {
+    std::lock_guard<std::mutex> lock(g_globalMutex);
+
+    if (!g_globalEngine) {
+        g_globalEngine = std::make_unique<HoskeyIntegratedEngine>();
+    }
+
+    g_globalEngine->initAsync(config, onComplete);
 }
 
 void shutdownGlobalEngine() {
