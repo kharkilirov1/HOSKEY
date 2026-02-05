@@ -189,22 +189,41 @@ bool CompTrieReader::parseStructure() {
         return value;
     };
 
-    // Yandex dictionary format:
-    // - JSON config contains section NAMES (e.g. "LM":"trie", "Blacklist":"blacklist")
-    // - Trie data starts immediately after JSON + padding
-    // - Blacklist words are embedded IN the trie (not a separate section)
-    // - TFLite models (TFL3 signature) follow the trie data
+    // Yandex dictionary format varies by size:
+    //
+    // LARGE (main_ru, ~137MB): Has separate blacklist section before trie
+    //   - JSON config at offset 32
+    //   - Blacklist: offset ~10016, size ~374KB (vulgar words filter)
+    //   - Trie: offset 384496 (0x5DE30), size ~4.5MB
+    //   - TFLite models after trie
+    //
+    // SMALL (main_en, ~33MB): Blacklist embedded in trie
+    //   - JSON config at offset 32
+    //   - Trie: starts immediately after JSON padding
+    //   - TFLite models after trie
 
-    // Trie always starts after JSON padding
-    trieStart_ = jsonEnd;
-    // Skip padding (nulls, spaces, newlines)
-    while (trieStart_ < fileSize_ &&
-           (data_[trieStart_] == 0 || data_[trieStart_] == ' ' ||
-            data_[trieStart_] == '\n' || data_[trieStart_] == '\r')) {
-        trieStart_++;
+    // Threshold: files >100MB likely have separate blacklist section
+    constexpr size_t LARGE_DICT_THRESHOLD = 100000000;  // 100MB
+    constexpr size_t YANDEX_RU_TRIE_OFFSET = 384496;    // 0x5DE30 - known offset for main_ru
+
+    if (fileSize_ > LARGE_DICT_THRESHOLD) {
+        // Large dictionary (main_ru format) - skip blacklist section
+        trieStart_ = YANDEX_RU_TRIE_OFFSET;
+        trieEnd_ = fileSize_;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Large dict (%{public}zu MB), using trie offset %{public}zu",
+                     fileSize_ / 1000000, trieStart_);
+    } else {
+        // Small dictionary (main_en format) - trie after JSON padding
+        trieStart_ = jsonEnd;
+        while (trieStart_ < fileSize_ &&
+               (data_[trieStart_] == 0 || data_[trieStart_] == ' ' ||
+                data_[trieStart_] == '\n' || data_[trieStart_] == '\r')) {
+            trieStart_++;
+        }
+        trieEnd_ = fileSize_;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Small dict (%{public}zu MB), trie after JSON at %{public}zu",
+                     fileSize_ / 1000000, trieStart_);
     }
-    trieEnd_ = fileSize_;
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Trie starts after JSON at offset: %{public}zu", trieStart_);
 
     // Find TFLite model (TFL3 signature) as end marker if present
     const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
