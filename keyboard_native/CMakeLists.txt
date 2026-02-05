@@ -72,6 +72,8 @@ if(PLATFORM STREQUAL "ohos")
 else()
     message(STATUS "Building for desktop (test mode)")
     add_definitions(-DDESKTOP_BUILD)
+    # Include stub headers for HarmonyOS APIs
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 endif()
 
 # ============================================================================
@@ -96,9 +98,14 @@ endif()
 # Include Directories
 # ============================================================================
 
+# Existing HOSKEY sources path
+set(HOSKEY_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../entry/src/main/cpp")
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    # Include existing HOSKEY infrastructure
+    ${HOSKEY_CPP_DIR}
 )
 
 # ============================================================================
@@ -115,6 +122,11 @@ set(CORE_SOURCES
 set(NN_SOURCES
     src/nn/neural_engine_ms.cpp
     src/nn/feature_builder.cpp
+    src/nn/neural_engine_nnrt_adapter.cpp
+)
+
+set(INTEGRATION_SOURCES
+    src/integration/hoskey_integration.cpp
 )
 
 set(DICT_SOURCES
@@ -123,11 +135,24 @@ set(DICT_SOURCES
 
 set(PLATFORM_SOURCES
     src/platform/harmony_log.cpp
+    src/error_codes.cpp
 )
 
 set(NAPI_SOURCES
     src/bridge_napi/napi_module.cpp
     src/bridge_napi/napi_utils.cpp
+)
+
+# ============================================================================
+# Existing HOSKEY Sources (for integration)
+# ============================================================================
+
+set(HOSKEY_DICT_SOURCES
+    ${HOSKEY_CPP_DIR}/dictionary_hoskey/yandex_trie.cpp
+    ${HOSKEY_CPP_DIR}/dictionary_hoskey/neural_model_manager.cpp
+    ${HOSKEY_CPP_DIR}/dictionary_hoskey/nnrt_scorer.cpp
+    ${HOSKEY_CPP_DIR}/dictionary_hoskey/comptrie_reader.cpp
+    ${HOSKEY_CPP_DIR}/dictionary_hoskey/trie_pooled.cpp
 )
 
 # ============================================================================
@@ -139,6 +164,8 @@ add_library(keyboard_core STATIC
     ${NN_SOURCES}
     ${DICT_SOURCES}
     ${PLATFORM_SOURCES}
+    ${INTEGRATION_SOURCES}
+    ${HOSKEY_DICT_SOURCES}
 )
 
 target_include_directories(keyboard_core PUBLIC

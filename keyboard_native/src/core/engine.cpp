@@ -6,6 +6,8 @@
  */
 
 #include "engine.h"
+#include "ngram_engine.h"
+#include "rule_engine.h"
 #include "../platform/harmony_log.h"
 #include "../dict/dict_engine.h"
 
@@ -712,9 +714,9 @@ const std::vector<KBCandidate>* Engine::getCached(const std::string& key) const 
 
     // Move to front (LRU)
     auto listIt = it->second;
-    if (listIt != cacheList_.begin()) {
-        const_cast<std::list<CacheEntry>&>(cacheList_).splice(
-            cacheList_.begin(), cacheList_, listIt);
+    auto& mutableList = const_cast<std::list<CacheEntry>&>(cacheList_);
+    if (listIt != mutableList.begin()) {
+        mutableList.splice(mutableList.begin(), mutableList, listIt);
     }
 
     {
@@ -722,7 +724,7 @@ const std::vector<KBCandidate>* Engine::getCached(const std::string& key) const 
         const_cast<uint64_t&>(cacheHits_)++;
     }
 
-    return &cacheList_.front().candidates;
+    return &mutableList.front().candidates;
 }
 
 void Engine::addToCache(const std::string& key,

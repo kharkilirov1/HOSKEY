@@ -30,9 +30,9 @@ constexpr uint8_t MARKER_NODE_H = 0x48;    // H - node with property
 constexpr uint8_t MARKER_END = 0x50;       // P - end of word
 constexpr uint8_t MARKER_TERMINAL = 0x58;  // X - terminal node
 
-// UTF-8 Cyrillic prefixes
-constexpr uint8_t UTF8_CYR_D0 = 0xD0;  // а-п, А-Я
-constexpr uint8_t UTF8_CYR_D1 = 0xD1;  // р-я
+// UTF-8 Cyrillic prefixes (defined in comptrie_reader.h)
+// constexpr uint8_t UTF8_CYR_D0 = 0xD0;  // а-п, А-Я
+// constexpr uint8_t UTF8_CYR_D1 = 0xD1;  // р-я
 
 /**
  * Trie node for prefix tree (built from extracted words)
