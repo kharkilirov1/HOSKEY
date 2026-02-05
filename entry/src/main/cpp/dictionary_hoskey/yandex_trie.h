@@ -22,7 +22,11 @@ namespace yandex {
 // File format constants (YANDEX_MAGIC defined in comptrie_reader.h)
 constexpr size_t HEADER_SIZE = 32;
 constexpr size_t JSON_START = 32;
-constexpr size_t TRIE_START = 0x2720;
+// Dictionary structure (from Y1 parser analysis):
+//   blacklist: offset=0x2720 (10016), size=374455
+//   trie:      offset=0x5DE30 (384496), size=4498484
+constexpr size_t BLACKLIST_START = 0x2720;   // 10016 - where blacklist begins
+constexpr size_t TRIE_START = 0x5DE30;       // 384496 - where main trie begins
 
 // Inline marker bytes (from Ghidra analysis)
 constexpr uint8_t MARKER_NODE = 0x40;      // @ - regular node
