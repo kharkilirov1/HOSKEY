@@ -50,10 +50,12 @@ struct TrailRenderParams {
 
 /**
  * Trail interpolation parameters (like Yandex TrailParams)
+ * Aligned with Yandex json_config.json Swipe parameters
  */
 struct TrailParams {
     // Minimum distance between sampled points
-    float minSamplingDistance = 3.0f;
+    // Yandex SamplingDistance = 0.1, we use 0.5 for balance
+    float minSamplingDistance = 0.5f;
 
     // Maximum angle change before adding interpolation points
     float maxAngleRadians = 0.2618f;  // ~15 degrees
@@ -63,6 +65,10 @@ struct TrailParams {
 
     // Maximum interpolation steps per segment
     int maxInterpolationSteps = 10;
+    
+    // Yandex Swipe/Rule parameters
+    float keyDistanceWeightX = 0.8f;   // StartKeyDistanceWeightX
+    float keyDistanceWeightY = 1.4f;   // StartKeyDistanceWeightY
 };
 
 /**

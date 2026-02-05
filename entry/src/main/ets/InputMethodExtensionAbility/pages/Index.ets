@@ -11,7 +11,12 @@ import {
   symbolsLayout1,
   symbolsLayout2,
   persianLayout,
-  russianLayout
+  russianLayout,
+  ukrainianLayout,
+  kazakhLayout,
+  germanLayout,
+  frenchLayout,
+  spanishLayout
 } from '../model/KeyboardKeyData';
 import keyboardController from '../model/KeyboardController';
 import nativeDictionary, { SuggestResult } from '../model/NativeDictionary';
@@ -22,19 +27,20 @@ import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
 import { Logger } from '../utils/logger';
 import { swipeEngine, SwipePoint, KeyBounds, SwipeResult } from '../model/SwipeEngine';
+import { preferencesManager } from '../model/PreferencesManager';
 
 const logger = new Logger('Index');
-const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, action: KeyAction.EMOJI_PANEL, flex: 1.2, shiftValue: undefined };
+// Emoji key removed from keyboard - now in suggestion bar
 
 // TYPE DEFINITIONS
 interface Position { x: number; y: number; }
 interface AreaWithGlobalPosition { globalPosition?: Position; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
-type LanguageCode = 'en' | 'it' | 'pl' | 'ru';
+type LanguageCode = 'en' | 'it' | 'pl' | 'ru' | 'uk' | 'kk' | 'de' | 'fr' | 'es';
 enum LayoutSwipeDirection { Left, Right }
 enum InputMode { Tap, Swipe } // iOS-style input mode
-const ALLOWED_LANGUAGES: string[] = ['en', 'it', 'pl', 'ru'];  // Only languages with native dictionaries
+const ALLOWED_LANGUAGES: string[] = ['en', 'ru', 'uk', 'kk', 'de', 'fr', 'es', 'it', 'pl'];  // Supported languages
 const EMOJI_CATEGORIES: string[] = ['Recents', 'Smileys & Emotion', 'People', 'Animals & Nature', 'Food & Drink', 'Activity & Event', 'Travel & Places', 'Objects', 'Symbols', 'Flags'];
 // iOS-style category icons
 const EMOJI_CATEGORY_ICONS: Record<string, string> = {
@@ -71,9 +77,14 @@ interface SpeechRecognitionResult {
 function getLanguageName(code: LanguageCode): string {
   switch (code) {
     case 'en': return 'English';
-    case 'it': return 'Italian';
-    case 'pl': return 'Polish';
     case 'ru': return 'Русский';
+    case 'uk': return 'Українська';
+    case 'kk': return 'Қазақша';
+    case 'de': return 'Deutsch';
+    case 'fr': return 'Français';
+    case 'es': return 'Español';
+    case 'it': return 'Italiano';
+    case 'pl': return 'Polski';
     default: return 'English';
   }
 }
@@ -81,9 +92,14 @@ function getLanguageName(code: LanguageCode): string {
 function getVoiceDictationStatus(code: LanguageCode): string {
   switch (code) {
     case 'en': return 'Voice typing...';
-    case 'pl': return 'Piszenie głosem...';
-    case 'it': return 'Digitazione vocale...';
     case 'ru': return 'Голосовой ввод...';
+    case 'uk': return 'Голосовий введення...';
+    case 'kk': return 'Дауыспен теру...';
+    case 'de': return 'Spracheingabe...';
+    case 'fr': return 'Saisie vocale...';
+    case 'es': return 'Dictado por voz...';
+    case 'it': return 'Digitazione vocale...';
+    case 'pl': return 'Pisanie głosem...';
     default: return 'Voice typing...';
   }
 }
@@ -92,9 +108,14 @@ function getVoiceDictationStatus(code: LanguageCode): string {
 function getVoiceInterruptionMessage(code: LanguageCode): string {
   switch (code) {
     case 'en': return 'Voice input interrupted';
-    case 'pl': return 'Wprowadzanie głosowe przerwane';
-    case 'it': return 'Inserimento vocale interrotto';
     case 'ru': return 'Голосовой ввод прерван';
+    case 'uk': return 'Голосовий ввід перервано';
+    case 'kk': return 'Дауыспен енгізу тоқтатылды';
+    case 'de': return 'Spracheingabe unterbrochen';
+    case 'fr': return 'Saisie vocale interrompue';
+    case 'es': return 'Entrada de voz interrumpida';
+    case 'it': return 'Inserimento vocale interrotto';
+    case 'pl': return 'Wprowadzanie głosowe przerwane';
     default: return 'Voice input interrupted';
   }
 }
@@ -102,9 +123,14 @@ function getVoiceInterruptionMessage(code: LanguageCode): string {
 function getVoicePermissionError(code: LanguageCode): string {
   switch (code) {
     case 'en': return 'Microphone permission denied';
-    case 'pl': return 'Odmowa uprawnień do mikrofonu';
-    case 'it': return 'Permesso microfono negato';
     case 'ru': return 'Доступ к микрофону запрещен';
+    case 'uk': return 'Доступ до мікрофона заборонено';
+    case 'kk': return 'Микрофонға рұқсат жоқ';
+    case 'de': return 'Mikrofonberechtigung verweigert';
+    case 'fr': return 'Autorisation micro refusée';
+    case 'es': return 'Permiso de micrófono denegado';
+    case 'it': return 'Permesso microfono negato';
+    case 'pl': return 'Odmowa uprawnień do mikrofonu';
     default: return 'Microphone permission denied';
   }
 }
@@ -112,9 +138,14 @@ function getVoicePermissionError(code: LanguageCode): string {
 function getVoiceRecognitionError(code: LanguageCode): string {
   switch (code) {
     case 'en': return 'Speech recognition failed';
-    case 'pl': return 'Rozpoznawanie mowy nie powiodło się';
-    case 'it': return 'Riconoscimento vocale fallito';
     case 'ru': return 'Распознавание речи не удалось';
+    case 'uk': return 'Не вдалося розпізнати мову';
+    case 'kk': return 'Сөйлеуді тану сәтсіз';
+    case 'de': return 'Spracherkennung fehlgeschlagen';
+    case 'fr': return 'Reconnaissance vocale échouée';
+    case 'es': return 'Error de reconocimiento de voz';
+    case 'it': return 'Riconoscimento vocale fallito';
+    case 'pl': return 'Rozpoznawanie mowy nie powiodło się';
     default: return 'Speech recognition failed';
   }
 }
@@ -536,7 +567,8 @@ interface GeneratedTypeLiteralInterface_1 {
 @Entry
 @Component
 struct Index {
-  @State currentLanguage: LanguageCode = 'ru';
+  // Initialize from PreferencesManager to match InputMethodService
+  @State currentLanguage: LanguageCode = (preferencesManager.getEnabledLanguages()[0] || 'en') as LanguageCode;
   @State isDictionaryLoading: boolean = false;
   @State shiftState: ShiftState = ShiftState.Off;
   @State lastShiftTapTs: number = 0;
@@ -871,9 +903,21 @@ struct Index {
     this.enableAutoCapitalization();
 
     // Initialize NativeDictionary for current language
-    nativeDictionary.initialize(this.currentLanguage).catch((err: Error) => {
-      console.error('[HOSKEY] Failed to initialize dictionary on start:', err);
-    });
+    nativeDictionary.initialize(this.currentLanguage)
+      .then(() => {
+        // Load swipe/neural models after dictionary is ready
+        return nativeDictionary.initializeModels();
+      })
+      .then((modelsLoaded) => {
+        if (modelsLoaded) {
+          console.info('[HOSKEY] Swipe/neural models loaded successfully');
+        } else {
+          console.warn('[HOSKEY] Swipe/neural models not loaded - swipe may be less accurate');
+        }
+      })
+      .catch((err: Error) => {
+        console.error('[HOSKEY] Failed to initialize dictionary on start:', err);
+      });
   }
 
   // === SWIPE TYPING METHODS ===
@@ -1709,9 +1753,16 @@ struct Index {
       // Defer dictionary initialization to next tick so UI updates first
       const langToInit = this.currentLanguage;
       setTimeout(() => {
+        console.info(`[HOSKEY] Starting dictionary initialization for '${langToInit}'...`);
         nativeDictionary.initialize(langToInit)
-          .then(() => {
+          .then((success: boolean) => {
+            console.info(`[HOSKEY] Dictionary initialized for '${langToInit}': success=${success}`);
             this.isDictionaryLoading = false;
+            // Trigger suggestion update if user has typed something
+            if (this.currentWord.length > 0) {
+              console.info(`[HOSKEY] Triggering suggestions for currentWord='${this.currentWord}'`);
+              void this.updateSuggestions();
+            }
           })
           .catch((err: Error) => {
             console.error('[HOSKEY] Failed to initialize dictionary:', err);
@@ -1967,8 +2018,8 @@ struct Index {
           .height(18)
           .accessibilityText('Hide keyboard')
       }
-      .width(34)
-      .height(34)
+      .width(36)
+      .height(36)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
       .borderRadius(OpenBoardTheme.radiusSmall)
@@ -1976,46 +2027,70 @@ struct Index {
       .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
-      // SUGGESTIONS (iOS-style: NO preview during swipe)
+      // SUGGESTIONS (Yandex style: 44dp height, horizontal scroll)
       Flex({ justifyContent: FlexAlign.Center, alignItems: ItemAlign.Center }) {
         if (this.isDictionaryLoading) {
           // Loading indicator while dictionary loads
           Text('...')
-            .fontSize(13)
+            .fontSize(14)
             .fontWeight(500)
             .fontColor(OpenBoardTheme.secondaryText)
             .textAlign(TextAlign.Center)
         } else {
-          Row({ space: 8 }) {
+          Row({ space: 4 }) {
             ForEach(
               this.isSwipeActive ? ['', '', '', '', ''] : this.suggestions,
               (suggestion: string, index: number) => {
               if (suggestion) {
-                Column() {
-                  Text(suggestion)
-                    .fontSize(13)
-                    .fontWeight(500)
-                    .fontColor(OpenBoardTheme.primaryText)
-                    .textAlign(TextAlign.Center)
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .accessibilityText(`Suggestion: ${suggestion}`)
-                }
-                .justifyContent(FlexAlign.Center)
-                .alignItems(HorizontalAlign.Center)
-                .padding({ left: 12, right: 12, top: 4, bottom: 4 })
-                .onClick(async () => {
-                  await this.pickSuggestion(suggestion);
-                })
+                // Yandex style: clean text without background/border
+                Text(suggestion)
+                  .fontSize(15)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(OpenBoardTheme.primaryText)
+                  .textAlign(TextAlign.Center)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+                  .accessibilityText(`Suggestion: ${suggestion}`)
+                  .onClick(async () => {
+                    await this.pickSuggestion(suggestion);
+                  })
               }
             })
           }
           .width('100%')
-          .justifyContent(FlexAlign.Center)
+          .justifyContent(FlexAlign.SpaceEvenly)
           .alignItems(VerticalAlign.Center)
         }
       }
       .layoutWeight(1)
+
+      // EMOJI BUTTON - hidden when suggestions are shown (Yandex style)
+      if (!this.hasSuggestions()) {
+        Column() {
+          Image($r('app.media.emoji_icon'))
+            .width(20)
+            .height(20)
+            .fillColor(OpenBoardTheme.primaryText)
+            .accessibilityText('Open emoji panel')
+        }
+        .width(36)
+        .height(36)
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .borderRadius(OpenBoardTheme.radiusSmall)
+        .backgroundColor(OpenBoardTheme.specialKey)
+        .shadow(OpenBoardTheme.shadowKey)
+        .onClick(() => {
+          this.showEmojiPanel = !this.showEmojiPanel;
+          this.resetInactivityTimer();
+        })
+      }
     }
+  }
+
+  // Helper to check if there are any suggestions
+  private hasSuggestions(): boolean {
+    return this.suggestions.some(s => s.length > 0);
   }
 
   @Builder
@@ -2028,8 +2103,8 @@ struct Index {
           .height(18)
           .accessibilityText('Hide keyboard')
       }
-      .width(34)
-      .height(34)
+      .width(36)
+      .height(36)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
       .borderRadius(OpenBoardTheme.radiusSmall)
@@ -2037,25 +2112,28 @@ struct Index {
       .shadow(OpenBoardTheme.shadowKey)
       .onClick(() => { keyboardController.hideKeyboard(); })
 
-      // LEFT SPACER for centering
+      // CENTER SPACER
       Flex().layoutWeight(1)
 
-      // CLIPBOARD ICON - CENTERED
+      // EMOJI ICON (centered)
       Column() {
-        Image($r('app.media.clipboard_icon'))
+        Image($r('app.media.emoji_icon'))
           .width(20)
           .height(20)
           .fillColor(OpenBoardTheme.primaryText)
-          .accessibilityText('Open clipboard panel')
+          .accessibilityText('Open emoji panel')
       }
-      .width(34)
-      .height(34)
+      .width(36)
+      .height(36)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
       .borderRadius(OpenBoardTheme.radiusSmall)
       .backgroundColor(OpenBoardTheme.specialKey)
       .shadow(OpenBoardTheme.shadowKey)
-      .onClick(() => { this.handleClipboardClick(); })
+      .onClick(() => {
+        this.showEmojiPanel = !this.showEmojiPanel;
+        this.resetInactivityTimer();
+      })
 
       // RIGHT SPACER for centering
       Flex().layoutWeight(1)
@@ -2594,8 +2672,8 @@ struct Index {
           }
         }
         .width('100%')
-        .height(46)
-        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .height(44)  // Yandex style: 44dp
+        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
         .backgroundColor(OpenBoardTheme.keyboardBackground)
         .borderRadius(OpenBoardTheme.radiusMedium)
         .shadow(OpenBoardTheme.shadowPanel)
@@ -2829,42 +2907,24 @@ struct Index {
   }
 
   private computeLayout(): KeyData[][] {
-    const insertEmojiKey = (layout: KeyData[][] | undefined): KeyData[][] => {
-      if (!layout || layout.length < 4) return layout || [];
-      const lastRow = layout[layout.length - 1].slice();
-      const symbolsIndex = lastRow.findIndex(k => k.action === KeyAction.SwitchSymbols);
-      if (symbolsIndex !== -1 && lastRow[symbolsIndex + 1]?.action === KeyAction.Space) {
-        lastRow.splice(symbolsIndex + 1, 0, EMOJI_KEY_DATA);
-        const originalSpaceKey = lastRow[symbolsIndex + 2];
-        if (originalSpaceKey) {
-          const newSpaceKey: KeyData = {
-            mainValue: originalSpaceKey.mainValue,
-            shiftValue: originalSpaceKey.shiftValue,
-            secondaryValue: originalSpaceKey.secondaryValue,
-            action: originalSpaceKey.action,
-            flex: Math.max(originalSpaceKey.flex - EMOJI_KEY_DATA.flex + 0.5, 3.5)
-          };
-          lastRow[symbolsIndex + 2] = newSpaceKey;
-        }
-        const newLayout = layout.slice(0, layout.length - 1);
-        newLayout.push(lastRow);
-        return newLayout;
-      }
-      return layout;
-    };
-
+    // Emoji key removed - now in suggestion toolbar (Yandex style)
     switch (this.keyboardLayout) {
       case KeyboardLayout.Alphabet:
         switch (this.currentLanguage) {
-          case 'en': return insertEmojiKey(englishLayout);
-          case 'it': return insertEmojiKey(italianLayout);
-          case 'pl': return insertEmojiKey(polishLayout);
-          case 'ru': return insertEmojiKey(russianLayout);
-          default: return insertEmojiKey(englishLayout);
+          case 'en': return englishLayout;
+          case 'ru': return russianLayout;
+          case 'uk': return ukrainianLayout;
+          case 'kk': return kazakhLayout;
+          case 'de': return germanLayout;
+          case 'fr': return frenchLayout;
+          case 'es': return spanishLayout;
+          case 'it': return italianLayout;
+          case 'pl': return polishLayout;
+          default: return englishLayout;
         }
       case KeyboardLayout.Symbols1: return symbolsLayout1;
       case KeyboardLayout.Symbols2: return symbolsLayout2;
-      default: return insertEmojiKey(englishLayout);
+      default: return englishLayout;
     }
   }
 

@@ -11,3 +11,8 @@
 **/.test
 /.appanalyzerlog.txt
 log.txt
+tmp/
+
+# Large files
+entry/src/main/resources/rawfile/main_ru.dict
+decompiled/ALL_FUNCTIONS.c

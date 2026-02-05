@@ -1,5 +1,5 @@
 // File location: entry/src/main/ets/InputMethodExtensionAbility/model/Theme.ets
-// OpenBoard Theme using custom theme colors
+// HOSKEY Theme - Yandex-inspired design
 
 interface ShadowStyle {
   radius: number;
@@ -8,7 +8,7 @@ interface ShadowStyle {
   offsetY: number;
 }
 
-export class OpenBoardTheme {
+export class HOSKEYTheme {
   // Main backgrounds - using custom theme colors
   static readonly background = $r('app.color.theme_colors_backgroundPrimary');
   static readonly backgroundDark = $r('app.color.theme_colors_backgroundSecondary');
@@ -57,3 +57,6 @@ export class OpenBoardTheme {
     offsetY: 4 
   };
 }
+
+// Alias for backward compatibility
+export const OpenBoardTheme = HOSKEYTheme;

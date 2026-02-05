@@ -83,6 +83,7 @@ export const englishLayout: KeyData[][] = [
   ],
   [
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
     SPACE_KEY,
     { mainValue: '.', shiftValue: '>', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -129,6 +130,7 @@ export const arabicLayout: KeyData[][] = [
   ],
   [
     SYMBOLS_KEY,
+    { mainValue: '،', secondaryValue: '؛,؟,!', action: KeyAction.Char, flex: 1 },
     SPACE_KEY,
     { mainValue: '.', secondaryValue: '!,?,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -220,6 +222,7 @@ export const polishLayout: KeyData[][] = [
   ],
   [
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
     SPACE_KEY,
     { mainValue: '.', secondaryValue: '?,!,#,;,\',:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -332,6 +335,7 @@ export const persianLayout: KeyData[][] = [
   ],
   [
     SYMBOLS_KEY,
+    { mainValue: '،', secondaryValue: '؛,؟,!', action: KeyAction.Char, flex: 1 },
     SPACE_KEY,
     { mainValue: '.', secondaryValue: '!,?,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
@@ -380,8 +384,251 @@ export const russianLayout: KeyData[][] = [
   ],
   [
     SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
     SPACE_KEY_RU,
     { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    ENTER_KEY,
+  ]
+];
+
+// Ukrainian layout (based on Russian with і, ї, є, ґ)
+const SPACE_KEY_UK: KeyData = { mainValue: 'пробіл', action: KeyAction.Space, flex: 5 };
+export const ukrainianLayout: KeyData[][] = [
+  [
+    { mainValue: 'й', shiftValue: 'Й', secondaryValue: '1', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ц', shiftValue: 'Ц', secondaryValue: '2', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'у', shiftValue: 'У', secondaryValue: '3', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'к', shiftValue: 'К', secondaryValue: '4', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'е', shiftValue: 'Е', secondaryValue: '5', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'н', shiftValue: 'Н', secondaryValue: '6', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'г', shiftValue: 'Г', secondaryValue: '7,ґ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ш', shiftValue: 'Ш', secondaryValue: '8', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'щ', shiftValue: 'Щ', secondaryValue: '9', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'з', shiftValue: 'З', secondaryValue: '0', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'х', shiftValue: 'Х', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    { mainValue: 'ф', shiftValue: 'Ф', secondaryValue: '@', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'і', shiftValue: 'І', secondaryValue: '#,ї', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'в', shiftValue: 'В', secondaryValue: '$,₴', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'а', shiftValue: 'А', secondaryValue: '%', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'п', shiftValue: 'П', secondaryValue: '&', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'р', shiftValue: 'Р', secondaryValue: '-', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'о', shiftValue: 'О', secondaryValue: '+', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'л', shiftValue: 'Л', secondaryValue: '(', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'д', shiftValue: 'Д', secondaryValue: ')', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ж', shiftValue: 'Ж', secondaryValue: '/', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'є', shiftValue: 'Є', secondaryValue: '~', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    SHIFT_KEY_RU,
+    { mainValue: 'я', shiftValue: 'Я', secondaryValue: '*', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ч', shiftValue: 'Ч', secondaryValue: '"', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'с', shiftValue: 'С', secondaryValue: '\'', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'м', shiftValue: 'М', secondaryValue: ':', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'и', shiftValue: 'И', secondaryValue: ';', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'т', shiftValue: 'Т', secondaryValue: '!', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ь', shiftValue: 'Ь', secondaryValue: '?', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'б', shiftValue: 'Б', secondaryValue: '\\', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ю', shiftValue: 'Ю', secondaryValue: '_', action: KeyAction.Char, flex: 1 },
+    BACKSPACE_KEY_RU,
+  ],
+  [
+    SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
+    SPACE_KEY_UK,
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    ENTER_KEY,
+  ]
+];
+
+// Kazakh layout (Russian-based with additional Kazakh letters)
+const SPACE_KEY_KZ: KeyData = { mainValue: 'бос орын', action: KeyAction.Space, flex: 5 };
+export const kazakhLayout: KeyData[][] = [
+  [
+    { mainValue: 'й', shiftValue: 'Й', secondaryValue: '1', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ц', shiftValue: 'Ц', secondaryValue: '2', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'у', shiftValue: 'У', secondaryValue: '3,ұ,ү', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'к', shiftValue: 'К', secondaryValue: '4,қ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'е', shiftValue: 'Е', secondaryValue: '5,ё', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'н', shiftValue: 'Н', secondaryValue: '6,ң', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'г', shiftValue: 'Г', secondaryValue: '7,ғ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ш', shiftValue: 'Ш', secondaryValue: '8', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'щ', shiftValue: 'Щ', secondaryValue: '9', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'з', shiftValue: 'З', secondaryValue: '0', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'х', shiftValue: 'Х', secondaryValue: 'һ', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    { mainValue: 'ф', shiftValue: 'Ф', secondaryValue: '@', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ы', shiftValue: 'Ы', secondaryValue: '#,і', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'в', shiftValue: 'В', secondaryValue: '$,₸', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'а', shiftValue: 'А', secondaryValue: '%,ә', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'п', shiftValue: 'П', secondaryValue: '&', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'р', shiftValue: 'Р', secondaryValue: '-', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'о', shiftValue: 'О', secondaryValue: '+,ө', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'л', shiftValue: 'Л', secondaryValue: '(', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'д', shiftValue: 'Д', secondaryValue: ')', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ж', shiftValue: 'Ж', secondaryValue: '/', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'э', shiftValue: 'Э', secondaryValue: '~', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    SHIFT_KEY_RU,
+    { mainValue: 'я', shiftValue: 'Я', secondaryValue: '*', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ч', shiftValue: 'Ч', secondaryValue: '"', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'с', shiftValue: 'С', secondaryValue: '\'', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'м', shiftValue: 'М', secondaryValue: ':', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'и', shiftValue: 'И', secondaryValue: ';', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'т', shiftValue: 'Т', secondaryValue: '!', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ь', shiftValue: 'Ь', secondaryValue: '?,ъ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'б', shiftValue: 'Б', secondaryValue: '\\', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'ю', shiftValue: 'Ю', secondaryValue: '_', action: KeyAction.Char, flex: 1 },
+    BACKSPACE_KEY_RU,
+  ],
+  [
+    SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
+    SPACE_KEY_KZ,
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    ENTER_KEY,
+  ]
+];
+
+// German QWERTZ layout
+export const germanLayout: KeyData[][] = [
+  [
+    { mainValue: 'q', shiftValue: 'Q', secondaryValue: '1', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'w', shiftValue: 'W', secondaryValue: '2', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'e', shiftValue: 'E', secondaryValue: '3,é,è,ê,ë,€', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'r', shiftValue: 'R', secondaryValue: '4', action: KeyAction.Char, flex: 1 },
+    { mainValue: 't', shiftValue: 'T', secondaryValue: '5', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'z', shiftValue: 'Z', secondaryValue: '6', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'u', shiftValue: 'U', secondaryValue: '7,ü,ú,ù,û', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'i', shiftValue: 'I', secondaryValue: '8,í,ì,î,ï', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'o', shiftValue: 'O', secondaryValue: '9,ö,ó,ò,ô', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'p', shiftValue: 'P', secondaryValue: '0', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    SPACER_LEFT_KEY,
+    { mainValue: 'a', shiftValue: 'A', secondaryValue: '@,ä,á,à,â', action: KeyAction.Char, flex: 1 },
+    { mainValue: 's', shiftValue: 'S', secondaryValue: '#,ß', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'd', shiftValue: 'D', secondaryValue: '$', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'f', shiftValue: 'F', secondaryValue: '%', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'g', shiftValue: 'G', secondaryValue: '&', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'h', shiftValue: 'H', secondaryValue: '-', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'j', shiftValue: 'J', secondaryValue: '+', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'k', shiftValue: 'K', secondaryValue: '(', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'l', shiftValue: 'L', secondaryValue: ')', action: KeyAction.Char, flex: 1 },
+    SPACER_RIGHT_KEY,
+  ],
+  [
+    SHIFT_KEY,
+    { mainValue: 'y', shiftValue: 'Y', secondaryValue: '*', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'x', shiftValue: 'X', secondaryValue: '"', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'c', shiftValue: 'C', secondaryValue: '\'', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'v', shiftValue: 'V', secondaryValue: ':', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'b', shiftValue: 'B', secondaryValue: ';', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'n', shiftValue: 'N', secondaryValue: '!', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'm', shiftValue: 'M', secondaryValue: '?', action: KeyAction.Char, flex: 1 },
+    BACKSPACE_KEY,
+  ],
+  [
+    SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
+    SPACE_KEY,
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    ENTER_KEY,
+  ]
+];
+
+// French AZERTY layout
+export const frenchLayout: KeyData[][] = [
+  [
+    { mainValue: 'a', shiftValue: 'A', secondaryValue: '1,à,â,æ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'z', shiftValue: 'Z', secondaryValue: '2', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'e', shiftValue: 'E', secondaryValue: '3,é,è,ê,ë,€', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'r', shiftValue: 'R', secondaryValue: '4', action: KeyAction.Char, flex: 1 },
+    { mainValue: 't', shiftValue: 'T', secondaryValue: '5', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'y', shiftValue: 'Y', secondaryValue: '6,ÿ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'u', shiftValue: 'U', secondaryValue: '7,ù,û,ü', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'i', shiftValue: 'I', secondaryValue: '8,î,ï', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'o', shiftValue: 'O', secondaryValue: '9,ô,œ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'p', shiftValue: 'P', secondaryValue: '0', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    { mainValue: 'q', shiftValue: 'Q', secondaryValue: '@', action: KeyAction.Char, flex: 1 },
+    { mainValue: 's', shiftValue: 'S', secondaryValue: '#', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'd', shiftValue: 'D', secondaryValue: '€', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'f', shiftValue: 'F', secondaryValue: '%', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'g', shiftValue: 'G', secondaryValue: '&', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'h', shiftValue: 'H', secondaryValue: '-', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'j', shiftValue: 'J', secondaryValue: '+', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'k', shiftValue: 'K', secondaryValue: '(', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'l', shiftValue: 'L', secondaryValue: ')', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'm', shiftValue: 'M', secondaryValue: '/', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    SHIFT_KEY,
+    { mainValue: 'w', shiftValue: 'W', secondaryValue: '*', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'x', shiftValue: 'X', secondaryValue: '"', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'c', shiftValue: 'C', secondaryValue: '\',ç', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'v', shiftValue: 'V', secondaryValue: ':', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'b', shiftValue: 'B', secondaryValue: ';', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'n', shiftValue: 'N', secondaryValue: '!', action: KeyAction.Char, flex: 1 },
+    { mainValue: '\'', secondaryValue: '?,«,»', action: KeyAction.Char, flex: 1 },
+    BACKSPACE_KEY,
+  ],
+  [
+    SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,?,;,:', action: KeyAction.Char, flex: 1 },
+    SPACE_KEY,
+    { mainValue: '.', secondaryValue: '?,!,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
+    ENTER_KEY,
+  ]
+];
+
+// Spanish layout
+export const spanishLayout: KeyData[][] = [
+  [
+    { mainValue: 'q', shiftValue: 'Q', secondaryValue: '1', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'w', shiftValue: 'W', secondaryValue: '2', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'e', shiftValue: 'E', secondaryValue: '3,é,€', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'r', shiftValue: 'R', secondaryValue: '4', action: KeyAction.Char, flex: 1 },
+    { mainValue: 't', shiftValue: 'T', secondaryValue: '5', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'y', shiftValue: 'Y', secondaryValue: '6', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'u', shiftValue: 'U', secondaryValue: '7,ú,ü', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'i', shiftValue: 'I', secondaryValue: '8,í', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'o', shiftValue: 'O', secondaryValue: '9,ó', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'p', shiftValue: 'P', secondaryValue: '0', action: KeyAction.Char, flex: 1 },
+  ],
+  [
+    SPACER_LEFT_KEY,
+    { mainValue: 'a', shiftValue: 'A', secondaryValue: '@,á', action: KeyAction.Char, flex: 1 },
+    { mainValue: 's', shiftValue: 'S', secondaryValue: '#', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'd', shiftValue: 'D', secondaryValue: '$', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'f', shiftValue: 'F', secondaryValue: '%', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'g', shiftValue: 'G', secondaryValue: '&', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'h', shiftValue: 'H', secondaryValue: '-', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'j', shiftValue: 'J', secondaryValue: '+', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'k', shiftValue: 'K', secondaryValue: '(', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'l', shiftValue: 'L', secondaryValue: ')', action: KeyAction.Char, flex: 1 },
+    SPACER_RIGHT_KEY,
+  ],
+  [
+    SHIFT_KEY,
+    { mainValue: 'z', shiftValue: 'Z', secondaryValue: '*', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'x', shiftValue: 'X', secondaryValue: '"', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'c', shiftValue: 'C', secondaryValue: '\'', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'v', shiftValue: 'V', secondaryValue: ':', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'b', shiftValue: 'B', secondaryValue: ';', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'n', shiftValue: 'N', secondaryValue: '!,ñ', action: KeyAction.Char, flex: 1 },
+    { mainValue: 'm', shiftValue: 'M', secondaryValue: '?', action: KeyAction.Char, flex: 1 },
+    BACKSPACE_KEY,
+  ],
+  [
+    SYMBOLS_KEY,
+    { mainValue: ',', shiftValue: ';', secondaryValue: '!,¡,?,¿', action: KeyAction.Char, flex: 1 },
+    SPACE_KEY,
+    { mainValue: '.', secondaryValue: '?,¿,!,¡,#,;,\',",:,@', action: KeyAction.Char, flex: 0.8 },
     ENTER_KEY,
   ]
 ];

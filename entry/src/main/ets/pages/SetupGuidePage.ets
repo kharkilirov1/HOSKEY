@@ -1,4 +1,5 @@
 import { OpenBoardTheme } from '../InputMethodExtensionAbility/model/Theme';
+import router from '@ohos.router';
 
 @Entry
 @Component
@@ -114,6 +115,20 @@ struct SetupGuidePage {
       .borderRadius(16)
       .width('90%')
       .margin({ top: 24 })
+
+      // Settings button
+      Button('⚙️ Настройки')
+        .fontSize(16)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#FFFFFF')
+        .backgroundColor('#4E66FF')
+        .borderRadius(12)
+        .width('90%')
+        .height(50)
+        .margin({ top: 24 })
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/SettingsPage' });
+        })
 
       Blank()
 

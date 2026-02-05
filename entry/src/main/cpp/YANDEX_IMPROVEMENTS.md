@@ -107,7 +107,46 @@ batchOps.applyAutocorrectRule(word: string): string
 
 ### napi_init.cpp
 - Include `batch_operations_napi.h`
+- Include `suggest/multi_predictor.h`
 - Регистрация `batchOps` namespace в exports
+- Регистрация `multiPredictor` namespace в exports
+
+**Новые multiPredictor NAPI функции:**
+```typescript
+// Инициализация
+native_dict.multiPredictor.init(): boolean
+
+// Добавление предикторов
+native_dict.multiPredictor.addDictionaryPredictor(): boolean
+native_dict.multiPredictor.addNgramPredictor(): boolean
+
+// Управление предикторами
+native_dict.multiPredictor.removePredictor(sourceId: number): boolean
+native_dict.multiPredictor.setPredictorEnabled(sourceId: number, enabled: boolean): void
+native_dict.multiPredictor.clear(): void
+
+// Получение предсказаний
+native_dict.multiPredictor.getPredictions(
+  currentWord: string,
+  prevWord?: string,
+  maxResults?: number
+): Suggestion[]
+
+// Статистика
+native_dict.multiPredictor.getStats(): { predictorCount: number } | null
+```
+
+**Структура Suggestion:**
+```typescript
+interface Suggestion {
+  word: string;
+  score: number;        // 0.0 - 1.0
+  probability: number;  // Dictionary probability
+  sourceId: number;     // 1=Dictionary, 2=Ngram
+  isExactMatch: boolean;
+  isAutoCorrection: boolean;
+}
+```
 
 ---
 

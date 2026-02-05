@@ -14,7 +14,10 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <limits>
 #include <hilog/log.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #undef LOG_TAG
 #define LOG_TAG "HOSKEY-TRIE-POOLED"
@@ -730,6 +733,240 @@ bool loadBinaryDictPooled(const std::string& path, TriePooled& trie) {
     OH_LOG_INFO(LOG_APP, "loadBinaryDictPooled: DONE - %d words, %zu nodes, %zu bytes, %lld ms total",
                 wordsLoaded, trie.getPool().usedCount(), trie.getMemoryUsage(), totalDurationMs);
 
+    return wordsLoaded > 0;
+}
+
+/**
+ * Load dictionary from file descriptor using memory-mapping (mmap)
+ * This is INSTANT - no file reading, data accessed on-demand by OS
+ * 
+ * @param fd File descriptor (from rawfile)
+ * @param offset Offset within file where data starts
+ * @param length Length of data to map
+ * @return true on success
+ */
+bool TriePooled::loadFromFd(int fd, size_t offset, size_t length) {
+    auto startTime = std::chrono::steady_clock::now();
+
+    OH_LOG_INFO(LOG_APP, "loadFromFd: fd=%d, offset=%zu, length=%zu (%.1f MB)",
+                fd, offset, length, static_cast<double>(length) / (1024 * 1024));
+
+    if (fd < 0 || length == 0) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: invalid fd=%d or length=%zu", fd, length);
+        return false;
+    }
+
+    // Warn if dictionary is very large (>50 MB) - loading will be slow
+    if (length > 50 * 1024 * 1024) {
+        OH_LOG_WARN(LOG_APP, "loadFromFd: WARNING - large dictionary (%.1f MB), loading may take a while",
+                    static_cast<double>(length) / (1024 * 1024));
+    }
+    
+    // mmap offset must be page-aligned.
+    long pageSizeLong = sysconf(_SC_PAGE_SIZE);
+    size_t pageSize = pageSizeLong > 0 ? static_cast<size_t>(pageSizeLong) : static_cast<size_t>(4096);
+    size_t alignedOffset = offset - (offset % pageSize);
+    size_t delta = offset - alignedOffset;
+    if (length > std::numeric_limits<size_t>::max() - delta) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: length overflow after alignment");
+        return false;
+    }
+    size_t mapLength = length + delta;
+
+    // Memory-map the file - this is INSTANT, doesn't read the file.
+    // MAP_PRIVATE = copy-on-write, safe for read-only access.
+    void* mapped = mmap(nullptr, mapLength, PROT_READ, MAP_PRIVATE, fd, alignedOffset);
+    if (mapped == MAP_FAILED) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: mmap failed, errno=%d", errno);
+        return false;
+    }
+    
+    auto mmapTime = std::chrono::steady_clock::now();
+    auto mmapDurationUs = std::chrono::duration_cast<std::chrono::microseconds>(mmapTime - startTime).count();
+    OH_LOG_INFO(LOG_APP, "loadFromFd: mmap completed in %lld us (instant!)", mmapDurationUs);
+    
+    // Advise kernel we'll read sequentially.
+    madvise(mapped, mapLength, MADV_SEQUENTIAL);
+    
+    const uint8_t* data = static_cast<const uint8_t*>(mapped) + delta;
+    size_t fileSize = length;
+    
+    // Parse header (same as loadBinaryDictPooled)
+    if (fileSize < 12) {
+        munmap(mapped, mapLength);
+        return false;
+    }
+    
+    uint32_t magic = readUint32BEPooled(data, 0);
+    if (magic != DICT_MAGIC_NUMBER) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: invalid magic 0x%08X", magic);
+        munmap(mapped, mapLength);
+        return false;
+    }
+    
+    uint32_t headerSize = readUint32BEPooled(data, 8);
+    if (headerSize >= fileSize) {
+        munmap(mapped, mapLength);
+        return false;
+    }
+    
+    clear();
+    
+    // Stack for iterative traversal (same algorithm as loadBinaryDictPooled)
+    struct StackFrame {
+        int nodeArrayPos;
+        std::string prefix;
+        int nodeIndex;
+        int nodeCount;
+        int currentPos;
+    };
+    
+    std::vector<StackFrame> stack;
+    stack.reserve(256);
+    
+    int pos = headerSize;
+    bool ok = true;
+    int nodeCount = readNodeArraySizePooled(data, &pos, fileSize, &ok);
+    
+    if (!ok || nodeCount <= 0) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: failed to read node count");
+        munmap(mapped, mapLength);
+        return false;
+    }
+    
+    stack.push_back({static_cast<int>(headerSize), "", 0, nodeCount, pos});
+
+    // Limits for mobile keyboard - 200k words is plenty, 10 second timeout
+    constexpr int MAX_WORDS = 200000;
+    constexpr int MAX_ITERATIONS = 3000000;
+    constexpr int64_t MAX_LOAD_TIME_MS = 10000;  // 10 seconds max
+    int wordsLoaded = 0;
+    int iterations = 0;
+
+    OH_LOG_INFO(LOG_APP, "loadFromFd: starting parse loop, headerSize=%u, nodeCount=%d (max %d words, %d ms timeout)",
+                headerSize, nodeCount, MAX_WORDS, static_cast<int>(MAX_LOAD_TIME_MS));
+
+    try {
+        auto loopStartTime = std::chrono::steady_clock::now();
+
+        while (!stack.empty() && wordsLoaded < MAX_WORDS && iterations < MAX_ITERATIONS) {
+            iterations++;
+
+            // Check time limit every 10000 iterations
+            if (iterations % 10000 == 0) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - loopStartTime).count();
+                if (elapsed > MAX_LOAD_TIME_MS) {
+                    OH_LOG_WARN(LOG_APP, "loadFromFd: TIME LIMIT reached (%lld ms), stopping at %d words",
+                                elapsed, wordsLoaded);
+                    break;
+                }
+            }
+
+            if (stack.size() > 64) {
+                stack.pop_back();
+                continue;
+            }
+
+            StackFrame& frame = stack.back();
+
+            if (frame.nodeIndex >= frame.nodeCount) {
+                stack.pop_back();
+                continue;
+            }
+
+            if (frame.currentPos < 0 || frame.currentPos >= static_cast<int>(fileSize)) {
+                stack.pop_back();
+                continue;
+            }
+
+            PtNodeInfoPooled nodeInfo = readPtNodePooled(data, frame.currentPos, fileSize);
+
+            if (!nodeInfo.isValid || nodeInfo.word.empty()) {
+                frame.nodeIndex++;
+                if (nodeInfo.siblingPos > frame.currentPos && nodeInfo.siblingPos < static_cast<int>(fileSize)) {
+                    frame.currentPos = nodeInfo.siblingPos;
+                } else {
+                    frame.currentPos++;
+                }
+                continue;
+            }
+
+            std::string fullWord = frame.prefix + nodeInfo.word;
+
+            if (nodeInfo.isTerminal && !nodeInfo.isNotAWord && !fullWord.empty()) {
+                insert(fullWord, nodeInfo.probability);
+                wordsLoaded++;
+
+                // Progress logging - more frequent at start, then every 50k
+                if (wordsLoaded == 1000 || wordsLoaded == 5000 || wordsLoaded == 10000 ||
+                    wordsLoaded == 25000 || wordsLoaded % 50000 == 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+                    OH_LOG_INFO(LOG_APP, "loadFromFd: %d words, %zu nodes, %lld ms",
+                                wordsLoaded, pool_.usedCount(), elapsed);
+                }
+            }
+
+            frame.nodeIndex++;
+            if (nodeInfo.siblingPos > frame.currentPos && nodeInfo.siblingPos < static_cast<int>(fileSize)) {
+                frame.currentPos = nodeInfo.siblingPos;
+            } else {
+                frame.currentPos++;
+            }
+
+            if (nodeInfo.childrenPos != NOT_A_DICT_POS &&
+                nodeInfo.childrenPos > 0 &&
+                nodeInfo.childrenPos < static_cast<int>(fileSize)) {
+
+                int childPos = nodeInfo.childrenPos;
+                bool childOk = true;
+                int childNodeCount = readNodeArraySizePooled(data, &childPos, fileSize, &childOk);
+
+                if (childOk && childNodeCount > 0 && childNodeCount <= 10000) {
+                    stack.push_back({nodeInfo.childrenPos, fullWord, 0, childNodeCount, childPos});
+                }
+            }
+        }
+
+        // Log why the loop exited
+        const char* exitReason = "unknown";
+        if (stack.empty()) {
+            exitReason = "completed (all nodes parsed)";
+        } else if (wordsLoaded >= MAX_WORDS) {
+            exitReason = "MAX_WORDS limit reached";
+        } else if (iterations >= MAX_ITERATIONS) {
+            exitReason = "MAX_ITERATIONS limit reached";
+        } else {
+            exitReason = "TIME_LIMIT reached";
+        }
+        OH_LOG_INFO(LOG_APP, "loadFromFd: loop exited - %s, words=%d, iter=%d",
+                    exitReason, wordsLoaded, iterations);
+
+    } catch (const std::bad_alloc& e) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: MEMORY ALLOCATION FAILED at %d words, %zu nodes: %s",
+                     wordsLoaded, pool_.usedCount(), e.what());
+        munmap(mapped, mapLength);
+        return false;
+    } catch (const std::exception& e) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: EXCEPTION at %d words: %s", wordsLoaded, e.what());
+        munmap(mapped, mapLength);
+        return false;
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP, "loadFromFd: UNKNOWN EXCEPTION at %d words", wordsLoaded);
+        munmap(mapped, mapLength);
+        return false;
+    }
+    
+    // Unmap the file
+    munmap(mapped, mapLength);
+    
+    auto endTime = std::chrono::steady_clock::now();
+    auto totalDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+    
+    OH_LOG_INFO(LOG_APP, "loadFromFd: DONE - %d words, %zu nodes, %lld ms (mmap: %lld us)",
+                wordsLoaded, pool_.usedCount(), totalDurationMs, mmapDurationUs);
+    
     return wordsLoaded > 0;
 }
 

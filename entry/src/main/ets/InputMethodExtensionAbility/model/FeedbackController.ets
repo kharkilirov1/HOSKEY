@@ -8,7 +8,8 @@ export enum FeedbackType {
 }
 
 class FeedbackController {
-  private hapticEnabled: boolean = true;
+  // Disabled by default - vibrator API broken in InputMethodExtensionAbility
+  private hapticEnabled: boolean = false;
   private soundEnabled: boolean = true;
 
   // Enable/disable haptic feedback
@@ -43,10 +44,12 @@ class FeedbackController {
       }
 
       // Use preset vibration effect for better UX
+      // HarmonyOS API 12+ requires id parameter
       await vibrator.startVibration({
         type: 'time',
         duration: duration
       }, {
+        id: 0,
         usage: 'touch'
       });
     } catch (err) {

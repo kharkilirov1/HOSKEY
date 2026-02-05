@@ -2,11 +2,11 @@
  * HOSKEY Native Dictionary Engine
  * N-API bridge for high-performance text prediction
  *
- * Based on OpenBoard architecture:
- * - Patricia Trie for fast prefix search
- * - Weighted Levenshtein for autocorrection
- * - Proximity-aware scoring
- * - OpenBoard Suggest engine for swipe/gesture input
+ * Architecture: Yandex-style dictionary with mmap-based CompTrie
+ * - Instant dictionary loading via mmap
+ * - Neural model scoring (MindSpore/NNRt)
+ * - Beam search for swipe/gesture input
+ * - Multi-predictor score fusion
  */
 
 #include "napi/native_api.h"
@@ -15,12 +15,14 @@
 #include <memory>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <cstdio>
 #include <mutex>
 #include <set>
 #include <unordered_map>
 #include <tuple>
+#include <unistd.h>
 
 // HarmonyOS logging
 #include <hilog/log.h>
@@ -31,39 +33,31 @@
 #define LOG_DOMAIN 0x0001
 #define LOG_TAG "HOSKEY-NATIVE"
 
-#include "dictionary_hoskey/trie.h"
-#include "dictionary_hoskey/trie_pooled.h"
-#include "dictionary_hoskey/flat_trie.h"
-#include "dictionary_hoskey/suggest_engine.h"
-
-// Feature flag: Use optimized pooled trie for 10x faster loading
-// Set to 1 to enable TriePooled, 0 to use original Trie
-#ifndef USE_POOLED_TRIE
-#define USE_POOLED_TRIE 1
-#endif
-
-// OpenBoard suggest engine
-#include "suggest/core/suggest.h"
-#include "suggest/core/suggest_options.h"
-#include "suggest/core/session/dic_traverse_session.h"
-#include "suggest/core/layout/proximity_info.h"
-#include "suggest/core/result/suggestion_results.h"
-#include "suggest/policyimpl/gesture/gesture_suggest_policy_factory.h"
-#include "dictionary/interface/dictionary_structure_with_buffer_policy.h"
+// Yandex-style dictionary (primary)
+#include "dictionary_hoskey/yandex_trie.h"
+#include "dictionary_hoskey/nnrt_scorer.h"  // NNRt + CANNKit neural scoring
+#include "dictionary_hoskey/neural_model_manager.h"  // All 15 neural models
 
 // Include constants
 #include "constants.h"
 
-// Include binary dictionary NAPI
-#include "binary_dictionary_napi.h"
-// Include proximity info NAPI
-#include "proximity_info_napi.h"
-// Include dic traverse session NAPI
-#include "dic_traverse_session_napi.h"
+// Include Yandex-style beam search for swipe
+#include "swipe_beam_search.h"
+
+// Include multi-predictor system (Yandex-style score fusion)
+#include "suggest/multi_predictor.h"
+
 // Include batch operations NAPI
 #include "batch_operations_napi.h"
 
-// Keyboard layout for NAPI swipe
+// Include proximity info NAPI (for keyboard geometry)
+#include "proximity_info_napi.h"
+
+// Include legacy OpenBoard NAPI (kept for compatibility)
+#include "binary_dictionary_napi.h"
+#include "dic_traverse_session_napi.h"
+
+// Keyboard layout for swipe gesture recognition
 struct KeyBounds {
     std::string key;
     float centerX, centerY;
@@ -72,22 +66,47 @@ struct KeyBounds {
 
 static std::vector<KeyBounds> g_keyboardLayout;
 
-// Global instances with mutex protection
-// Global instances - shared with batch_operations_napi.cpp
-std::mutex g_trieMutex;  // Protects g_trie and g_suggestEngine
+// ============================================================================
+// Global Instances (Yandex-style architecture)
+// ============================================================================
 
-#if USE_POOLED_TRIE
-// Optimized pooled trie: 10x faster loading (5000ms -> 400-500ms)
-std::unique_ptr<hoskey::TriePooled> g_trie;
-#else
-// Original trie implementation
-std::unique_ptr<hoskey::Trie> g_trie;
-#endif
+// Primary dictionary: Yandex mmap-based CompTrie
+std::unique_ptr<yandex::YandexDict> g_yandexDict;
+std::mutex g_yandexMutex;
 
-std::unique_ptr<hoskey::SuggestEngine> g_suggestEngine;
+// Neural Model Manager - manages ALL 15 neural models
+std::unique_ptr<yandex::NeuralModelManager> g_modelManager;
+std::mutex g_modelManagerMutex;
+bool g_neuralModelsEnabled = false;
 
-// FlatTrie for instant loading (<50ms) - optional
-std::unique_ptr<hoskey::FlatTrie> g_flatTrie;
+// Legacy single scorer (kept for backward compatibility)
+std::unique_ptr<yandex::NNRtScorer> g_neuralScorer;
+std::mutex g_neuralScorerMutex;
+bool g_neuralScorerEnabled = false;
+
+// Multi-predictor for score fusion (Yandex-style)
+std::unique_ptr<latinime::MultiPredictor> g_multiPredictor;
+std::mutex g_multiPredictorMutex;
+
+// Beam search for swipe/gesture recognition
+std::unique_ptr<hoskey::SwipeBeamSearch> g_beamSearch;
+std::mutex g_beamSearchMutex;
+
+// MindSpore models for neural scoring
+// Models are loaded on demand for better startup performance
+struct ModelPaths {
+    std::string tapModelRanker;    // tap_model_ranker.ms - primary tap scoring (USED)
+    std::string treeAutocorrect;   // tree_autocorrect_model.ms - neural autocorrect
+    std::string nnlmModel;         // nnlm_model.ms - neural language model
+    std::string swipeBlocker;      // swipe_blocker.ms - validates swipe vs tap
+    std::string lemmer;            // lemmer_mhash.ms - morphology
+
+    // Loading state
+    bool rankerLoaded = false;
+    bool autocorrectLoaded = false;
+    bool nnlmLoaded = false;
+};
+static ModelPaths g_modelPaths;
 
 // ============================================================================
 // API 22 Optimization: Cached property keys for faster object creation
@@ -105,7 +124,7 @@ static bool g_keysInitialized = false;
 
 struct SuggestionCacheEntry {
     std::string prefix;
-    std::vector<hoskey::SuggestResult> results;
+    std::vector<yandex::Suggestion> results;
 };
 
 // LRU list (front = most recent)
@@ -122,7 +141,7 @@ static int64_t g_cacheMissCount = 0;
 /**
  * Get cached suggestions for prefix - O(1) lookup
  */
-static const std::vector<hoskey::SuggestResult>* GetCachedSuggestions(const std::string& prefix) {
+static const std::vector<yandex::Suggestion>* GetCachedSuggestions(const std::string& prefix) {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
 
     auto mapIt = g_cacheMap.find(prefix);
@@ -145,7 +164,7 @@ static const std::vector<hoskey::SuggestResult>* GetCachedSuggestions(const std:
 /**
  * Add suggestions to cache - O(1)
  */
-static void CacheSuggestions(const std::string& prefix, const std::vector<hoskey::SuggestResult>& results) {
+static void CacheSuggestions(const std::string& prefix, const std::vector<yandex::Suggestion>& results) {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
 
     // Already in cache?
@@ -395,37 +414,26 @@ struct LoadDictionaryAsyncData {
 
 /**
  * Execute callback - runs on worker thread (thread pool)
- * Does the actual heavy lifting of loading the dictionary
+ * Loads YandexDict from file path
  */
 static void LoadDictionaryExecute(napi_env env, void* data) {
     LoadDictionaryAsyncData* asyncData = static_cast<LoadDictionaryAsyncData*>(data);
 
     OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: loading from path=%{public}s", asyncData->path.c_str());
 
-    // Load into LOCAL trie first (no lock needed - this is the slow part)
-#if USE_POOLED_TRIE
-    OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: using POOLED TRIE (10x faster)");
-    auto newTrie = std::make_unique<hoskey::TriePooled>();
-#else
-    auto newTrie = std::make_unique<hoskey::Trie>();
-#endif
-    bool success = newTrie->loadFromFile(asyncData->path);
+    auto newDict = std::make_unique<yandex::YandexDict>();
+    bool success = newDict->load(asyncData->path);
 
     if (success) {
-        asyncData->wordCount = newTrie->getWordCount();
+        asyncData->wordCount = static_cast<int>(newDict->getWordCount());
         OH_LOG_INFO(LOG_APP, "loadDictionary [ASYNC]: SUCCESS - loaded %d words", asyncData->wordCount);
 
-        // Quick swap under mutex (only lock during fast pointer swap)
         {
-            std::lock_guard<std::mutex> lock(g_trieMutex);
-            g_suggestEngine.reset();  // Reset first (holds ref to old trie)
-            g_trie = std::move(newTrie);  // Fast move, old trie deleted
-            g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
+            std::lock_guard<std::mutex> lock(g_yandexMutex);
+            g_yandexDict = std::move(newDict);
         }
 
-        // Clear suggestion cache (old results are invalid now)
         ClearSuggestionCache();
-
         asyncData->success = true;
     } else {
         OH_LOG_ERROR(LOG_APP, "loadDictionary [ASYNC]: FAILED to load from %{public}s", asyncData->path.c_str());
@@ -506,19 +514,13 @@ static napi_value LoadDictionary(napi_env env, napi_callback_info info) {
 
 /**
  * loadDictionarySync(path: string): boolean
- * Load binary dictionary SYNCHRONOUSLY - no libuv overhead
- * Use this for faster loading when UI blocking is acceptable (e.g., splash screen)
- *
- * With optimized TrieNode (unordered_map instead of children_[256]):
- * - Memory: 800MB -> ~20MB
- * - Load time: ~20s -> ~1-2s (expected)
+ * Load YandexDict SYNCHRONOUSLY from file path
  */
 static napi_value LoadDictionarySync(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    // Validate arguments
     if (!ValidateArgCount(env, argc, 1, "loadDictionarySync")) {
         return nullptr;
     }
@@ -530,30 +532,20 @@ static napi_value LoadDictionarySync(napi_env env, napi_callback_info info) {
 
     OH_LOG_INFO(LOG_APP, "loadDictionarySync: loading from path=%{public}s", path.c_str());
 
-    // Load into LOCAL trie first
-#if USE_POOLED_TRIE
-    OH_LOG_INFO(LOG_APP, "loadDictionarySync: using POOLED TRIE (10x faster)");
-    auto newTrie = std::make_unique<hoskey::TriePooled>();
-#else
-    auto newTrie = std::make_unique<hoskey::Trie>();
-#endif
-    bool success = newTrie->loadFromFile(path);
+    auto newDict = std::make_unique<yandex::YandexDict>();
+    bool success = newDict->load(path);
 
     if (success) {
-        int wordCount = newTrie->getWordCount();
-        size_t memUsage = newTrie->getMemoryUsage();
-        OH_LOG_INFO(LOG_APP, "loadDictionarySync: SUCCESS - loaded %{public}d words, memory=%{public}zu bytes",
+        int wordCount = static_cast<int>(newDict->getWordCount());
+        size_t memUsage = newDict->getMemoryUsage();
+        OH_LOG_INFO(LOG_APP, "loadDictionarySync: SUCCESS - %{public}d words, %{public}zu bytes",
                     wordCount, memUsage);
 
-        // Quick swap under mutex
         {
-            std::lock_guard<std::mutex> lock(g_trieMutex);
-            g_suggestEngine.reset();
-            g_trie = std::move(newTrie);
-            g_suggestEngine = std::make_unique<hoskey::SuggestEngine>(g_trie.get());
+            std::lock_guard<std::mutex> lock(g_yandexMutex);
+            g_yandexDict = std::move(newDict);
         }
 
-        // Clear suggestion cache (old results are invalid now)
         ClearSuggestionCache();
     } else {
         OH_LOG_ERROR(LOG_APP, "loadDictionarySync: FAILED to load from %{public}s", path.c_str());
@@ -561,6 +553,251 @@ static napi_value LoadDictionarySync(napi_env env, napi_callback_info info) {
 
     napi_value result;
     napi_get_boolean(env, success, &result);
+    return result;
+}
+
+// ============================================================================
+// Async LoadDictionaryFromFd Implementation (ANR fix)
+// ============================================================================
+
+/**
+ * Async work data for loadDictionaryFromFd
+ */
+struct LoadDictionaryFromFdAsyncData {
+    napi_async_work work;
+    napi_deferred deferred;
+    int fd;
+    size_t offset;
+    size_t length;
+    bool success;
+    int wordCount;
+};
+
+/**
+ * Check if file is in Yandex format (has JSON config at offset 32)
+ */
+static bool isYandexFormat(int fd, size_t offset) {
+    // Save current position
+    off_t savedPos = lseek(fd, 0, SEEK_CUR);
+    if (savedPos < 0) {
+        return false;
+    }
+
+    // Seek to offset and read first 64 bytes
+    if (lseek(fd, static_cast<off_t>(offset), SEEK_SET) < 0) {
+        return false;
+    }
+
+    uint8_t header[64];
+    ssize_t bytesRead = read(fd, header, sizeof(header));
+
+    // Restore position
+    lseek(fd, savedPos, SEEK_SET);
+
+    if (bytesRead < 64) {
+        return false;
+    }
+
+    // Check magic (same bytes, different endianness interpretation)
+    // Yandex: 9b c1 3a fe (LE reads as 0xfe3ac19b)
+    // Both formats use same magic bytes
+    uint32_t magic = *reinterpret_cast<uint32_t*>(header);
+    if (magic != 0xfe3ac19b && magic != 0x9bc13afe) {
+        return false;
+    }
+
+    // Yandex format has JSON starting at offset 32 (first char is '{')
+    // OpenBoard format has binary trie data
+    return header[32] == '{';
+}
+
+/**
+ * Execute callback - runs on worker thread (thread pool)
+ * Uses mmap-based YandexDict for instant loading
+ */
+static void LoadDictionaryFromFdExecute(napi_env env, void* data) {
+    LoadDictionaryFromFdAsyncData* asyncData = static_cast<LoadDictionaryFromFdAsyncData*>(data);
+
+    OH_LOG_INFO(LOG_APP, "loadDictionaryFromFd [ASYNC]: fd=%d, offset=%zu, length=%zu",
+                asyncData->fd, asyncData->offset, asyncData->length);
+
+    // Load using YandexDict (mmap-based, instant loading)
+    auto yandexDict = std::make_unique<yandex::YandexDict>();
+    bool success = yandexDict->loadFromFd(asyncData->fd, asyncData->offset, asyncData->length);
+
+    if (success) {
+        asyncData->wordCount = static_cast<int>(yandexDict->getWordCount());
+        OH_LOG_INFO(LOG_APP, "loadDictionaryFromFd [ASYNC]: SUCCESS - %d words (mmap instant!)",
+                    asyncData->wordCount);
+
+        // Test specific words to verify dictionary content
+        const char* testWords[] = {"привет", "пока", "спасибо", "прив", "при"};
+        for (const char* word : testWords) {
+            bool exists = yandexDict->contains(word);
+            uint64_t freq = yandexDict->getFrequency(word);
+            OH_LOG_INFO(LOG_APP, "loadDictionaryFromFd TEST: '%s' exists=%d freq=%llu",
+                        word, exists ? 1 : 0, (unsigned long long)freq);
+        }
+
+        // Store in global dict
+        {
+            std::lock_guard<std::mutex> lock(g_yandexMutex);
+            g_yandexDict = std::move(yandexDict);
+        }
+
+        // Clear suggestion cache (old results are invalid)
+        ClearSuggestionCache();
+        asyncData->success = true;
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadDictionaryFromFd [ASYNC]: FAILED to load dictionary");
+        asyncData->success = false;
+    }
+}
+
+/**
+ * Complete callback - runs on main JS thread after execute completes
+ * Resolves the promise
+ */
+static void LoadDictionaryFromFdComplete(napi_env env, napi_status status, void* data) {
+    LoadDictionaryFromFdAsyncData* asyncData = static_cast<LoadDictionaryFromFdAsyncData*>(data);
+
+    napi_value result;
+    napi_get_boolean(env, asyncData->success, &result);
+
+    // Resolve the promise
+    napi_resolve_deferred(env, asyncData->deferred, result);
+
+    // Clean up
+    napi_delete_async_work(env, asyncData->work);
+    delete asyncData;
+}
+
+/**
+ * loadDictionaryFromFd(fd: number, offset: number, length: number): Promise<boolean>
+ * Load dictionary using memory-mapping from file descriptor ASYNCHRONOUSLY
+ * Returns a Promise to avoid blocking the main thread (ANR fix)
+ *
+ * Use this for rawfile resources where fd is available
+ */
+static napi_value LoadDictionaryFromFd(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (!ValidateArgCount(env, argc, 3, "loadDictionaryFromFd")) {
+        return nullptr;
+    }
+    if (!ValidateNumber(env, args[0], "fd") ||
+        !ValidateNumber(env, args[1], "offset") ||
+        !ValidateNumber(env, args[2], "length")) {
+        return nullptr;
+    }
+
+    int32_t fd = -1;
+    int64_t offset = -1;
+    int64_t length = -1;
+    if (napi_get_value_int32(env, args[0], &fd) != napi_ok ||
+        napi_get_value_int64(env, args[1], &offset) != napi_ok ||
+        napi_get_value_int64(env, args[2], &length) != napi_ok) {
+        napi_throw_type_error(env, "EINVAL", "loadDictionaryFromFd: invalid numeric arguments");
+        return nullptr;
+    }
+    if (fd < 0 || offset < 0 || length <= 0) {
+        napi_throw_range_error(env, "EINVAL",
+                               "loadDictionaryFromFd: fd must be >= 0, offset >= 0, length > 0");
+        return nullptr;
+    }
+    if (static_cast<uint64_t>(offset) > std::numeric_limits<size_t>::max() ||
+        static_cast<uint64_t>(length) > std::numeric_limits<size_t>::max()) {
+        napi_throw_range_error(env, "EINVAL", "loadDictionaryFromFd: offset/length out of range");
+        return nullptr;
+    }
+
+    // Create async data
+    LoadDictionaryFromFdAsyncData* asyncData = new LoadDictionaryFromFdAsyncData();
+    asyncData->fd = fd;
+    asyncData->offset = static_cast<size_t>(offset);
+    asyncData->length = static_cast<size_t>(length);
+    asyncData->success = false;
+    asyncData->wordCount = 0;
+
+    // Create promise
+    napi_value promise;
+    napi_create_promise(env, &asyncData->deferred, &promise);
+
+    // Create async work name
+    napi_value resourceName;
+    napi_create_string_utf8(env, "loadDictionaryFromFd", NAPI_AUTO_LENGTH, &resourceName);
+
+    // Create async work
+    napi_create_async_work(
+        env,
+        nullptr,
+        resourceName,
+        LoadDictionaryFromFdExecute,
+        LoadDictionaryFromFdComplete,
+        asyncData,
+        &asyncData->work
+    );
+
+    // Queue async work
+    napi_queue_async_work(env, asyncData->work);
+
+    OH_LOG_INFO(LOG_APP, "loadDictionaryFromFd: async work queued for fd=%d, offset=%ld, length=%ld",
+                fd, (long)offset, (long)length);
+
+    return promise;
+}
+
+/**
+ * loadTextDictionaryFromFd(fd: number, offset: number, length: number): boolean
+ * Load dictionary from text file (word=X,f=Y format) via file descriptor
+ * This is a SYNCHRONOUS function for simplicity (text parsing is fast)
+ */
+static napi_value LoadTextDictionaryFromFd(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 3) {
+        napi_throw_error(env, nullptr, "loadTextDictionaryFromFd requires 3 arguments");
+        return nullptr;
+    }
+
+    int fd;
+    double offsetD, lengthD;
+    napi_get_value_int32(env, args[0], &fd);
+    napi_get_value_double(env, args[1], &offsetD);
+    napi_get_value_double(env, args[2], &lengthD);
+
+    size_t offset = static_cast<size_t>(offsetD);
+    size_t length = static_cast<size_t>(lengthD);
+
+    OH_LOG_INFO(LOG_APP, "loadTextDictionaryFromFd: fd=%d, offset=%zu, length=%zu", fd, offset, length);
+
+    auto yandexDict = std::make_unique<yandex::YandexDict>();
+    bool success = yandexDict->loadFromTextFd(fd, offset, length);
+
+    napi_value result;
+    if (success) {
+        int wordCount = static_cast<int>(yandexDict->getWordCount());
+        OH_LOG_INFO(LOG_APP, "loadTextDictionaryFromFd: SUCCESS - %d words loaded (in-memory trie)", wordCount);
+
+        // Store in global dict
+        {
+            std::lock_guard<std::mutex> lock(g_yandexMutex);
+            g_yandexDict = std::move(yandexDict);
+        }
+
+        // Clear suggestion cache
+        ClearSuggestionCache();
+
+        napi_get_boolean(env, true, &result);
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadTextDictionaryFromFd: FAILED to load dictionary");
+        napi_get_boolean(env, false, &result);
+    }
+
     return result;
 }
 
@@ -583,12 +820,12 @@ static napi_value Contains(napi_env env, napi_callback_info info) {
 
     std::string word = NapiValueToString(env, args[0]);
 
-    // Lock and check trie
+    // Check in YandexDict
     bool found = false;
     {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_trie) {
-            found = g_trie->contains(word);
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_yandexDict && g_yandexDict->isLoaded()) {
+            found = g_yandexDict->contains(word);
         }
     }
 
@@ -599,7 +836,7 @@ static napi_value Contains(napi_env env, napi_callback_info info) {
 
 /**
  * getFrequency(word: string): number
- * Get frequency/probability of word
+ * Get frequency/probability of word (0-255)
  */
 static napi_value GetFrequency(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -616,12 +853,12 @@ static napi_value GetFrequency(napi_env env, napi_callback_info info) {
 
     std::string word = NapiValueToString(env, args[0]);
 
-    // Lock and check trie
+    // Get frequency from YandexDict
     int frequency = 0;
     {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_trie) {
-            frequency = g_trie->getFrequency(word);
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_yandexDict && g_yandexDict->isLoaded()) {
+            frequency = g_yandexDict->getFrequency(word);
         }
     }
 
@@ -632,17 +869,14 @@ static napi_value GetFrequency(napi_env env, napi_callback_info info) {
 
 /**
  * SuggestResult interface:
- * { word: string, score: number, errorType: number }
- * Creates a JavaScript object from C++ SuggestResult
+ * { word: string, score: number }
+ * Creates a JavaScript object from yandex::Suggestion
  *
  * OPTIMIZED for API 22:
  * - Uses cached property keys (avoids string internalization overhead)
  * - Uses napi_set_property with cached keys instead of napi_set_named_property
- * - ~30% faster than original implementation
- *
- * Returns nullptr on error (caller must handle)
  */
-static napi_value CreateSuggestResult(napi_env env, const hoskey::SuggestResult& sr) {
+static napi_value CreateSuggestResult(napi_env env, const yandex::Suggestion& s) {
     if (env == nullptr) {
         return nullptr;
     }
@@ -656,45 +890,35 @@ static napi_value CreateSuggestResult(napi_env env, const hoskey::SuggestResult&
     // Get cached property keys (faster than creating strings each time)
     napi_value wordKey = GetCachedKey(env, g_cachedWordKey);
     napi_value scoreKey = GetCachedKey(env, g_cachedScoreKey);
-    napi_value errorTypeKey = GetCachedKey(env, g_cachedErrorTypeKey);
 
     // Fallback to named properties if cache not initialized
-    if (!wordKey || !scoreKey || !errorTypeKey) {
-        // Original slow path
-        napi_value word = StringToNapiValue(env, sr.word);
+    if (!wordKey || !scoreKey) {
+        napi_value word = StringToNapiValue(env, s.word);
         if (word) napi_set_named_property(env, obj, "word", word);
 
         napi_value score;
-        napi_create_double(env, sr.score, &score);
+        napi_create_double(env, s.score, &score);
         napi_set_named_property(env, obj, "score", score);
-
-        napi_value errorType;
-        napi_create_int32(env, static_cast<int>(sr.errorType), &errorType);
-        napi_set_named_property(env, obj, "errorType", errorType);
 
         return obj;
     }
 
     // Fast path: use cached keys with napi_set_property
-    napi_value wordVal = StringToNapiValue(env, sr.word);
+    napi_value wordVal = StringToNapiValue(env, s.word);
     if (wordVal) {
         napi_set_property(env, obj, wordKey, wordVal);
     }
 
     napi_value scoreVal;
-    napi_create_double(env, sr.score, &scoreVal);
+    napi_create_double(env, s.score, &scoreVal);
     napi_set_property(env, obj, scoreKey, scoreVal);
-
-    napi_value errorTypeVal;
-    napi_create_int32(env, static_cast<int>(sr.errorType), &errorTypeVal);
-    napi_set_property(env, obj, errorTypeKey, errorTypeVal);
 
     return obj;
 }
 
 /**
  * getSuggestions(prefix: string, limit: number): SuggestResult[]
- * Get word suggestions with scores
+ * Get word suggestions with scores from YandexDict
  */
 static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -712,15 +936,6 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // GUARDRAIL: Return empty array if engine not initialized (safe, no crash)
-    // GUARDRAIL: Return empty array if engine not initialized
-    if (!g_suggestEngine) {
-        napi_value emptyResult;
-        napi_create_array(env, &emptyResult);
-        OH_LOG_WARN(LOG_APP, "getSuggestions: called but dictionary not loaded - returning empty array");
-        return emptyResult;
-    }
-
     std::string prefix = NapiValueToString(env, args[0]);
 
     int32_t limit = 10;
@@ -729,33 +944,77 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
     if (limit < 1) limit = 1;
     if (limit > 100) limit = 100;
 
-    // DEBUG logging disabled for performance - uncomment if needed
-    // OH_LOG_DEBUG(LOG_APP, "getSuggestions: prefix=\"%{public}s\" len=%{public}zu", prefix.c_str(), prefix.length());
+    std::vector<yandex::Suggestion> suggestions;
 
-    // API 22 Optimization: Check LRU cache first
-    const std::vector<hoskey::SuggestResult>* cachedResults = GetCachedSuggestions(prefix);
-    std::vector<hoskey::SuggestResult> suggestions;
+    // Check LRU cache first
+    const std::vector<yandex::Suggestion>* cachedResults = GetCachedSuggestions(prefix);
 
     if (cachedResults) {
-        // Cache hit - use cached results
+        // Cache hit
         suggestions = *cachedResults;
         if (static_cast<int32_t>(suggestions.size()) > limit) {
             suggestions.resize(limit);
         }
         OH_LOG_DEBUG(LOG_APP, "getSuggestions: cache HIT, %{public}zu results", suggestions.size());
     } else {
-        // Cache miss - get from engine and cache
-        suggestions = g_suggestEngine->getSuggestions(prefix, limit);
+        // Cache miss - get from YandexDict
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_yandexDict && g_yandexDict->isLoaded()) {
+            suggestions = g_yandexDict->getSuggestions(prefix, limit * 2); // Get more for re-ranking
+            OH_LOG_DEBUG(LOG_APP, "getSuggestions: got %{public}zu candidates from dict", suggestions.size());
+        } else {
+            // No dictionary loaded
+            napi_value emptyResult;
+            napi_create_array(env, &emptyResult);
+            OH_LOG_WARN(LOG_APP, "getSuggestions: no dictionary loaded - returning empty array");
+            return emptyResult;
+        }
+
+        // ====================================================================
+        // Neural re-ranking: Use NeuralModelManager for multi-model scoring
+        // Uses: TAP_RANKER (primary), RANKER_V2 (fallback), NNLM (context)
+        // ====================================================================
+        if (g_neuralModelsEnabled && g_modelManager && !suggestions.empty()) {
+            std::lock_guard<std::mutex> scorerLock(g_modelManagerMutex);
+
+            // Convert to scoring candidates
+            std::vector<yandex::ScoringCandidate> candidates;
+            candidates.reserve(suggestions.size());
+            for (const auto& s : suggestions) {
+                yandex::ScoringCandidate c;
+                c.word = s.word;
+                c.baseScore = s.score;
+                candidates.push_back(c);
+            }
+
+            // Run multi-model neural scoring (TAP_RANKER + NNLM context)
+            std::vector<yandex::ScoredWord> scored = g_modelManager->scoreTapSuggestions(candidates, "");
+
+            // Convert back to Suggestion format with neural scores
+            suggestions.clear();
+            for (const auto& sw : scored) {
+                yandex::Suggestion s;
+                s.word = sw.word;
+                s.score = sw.score;  // Combined score from neural models + freq
+                suggestions.push_back(s);
+            }
+
+            OH_LOG_DEBUG(LOG_APP, "getSuggestions: neural re-ranked %{public}zu results (multi-model)", suggestions.size());
+        }
+
+        // Trim to requested limit
+        if (static_cast<int32_t>(suggestions.size()) > limit) {
+            suggestions.resize(limit);
+        }
+
         CacheSuggestions(prefix, suggestions);
-        // OH_LOG_DEBUG for performance - uncomment if needed
-        // OH_LOG_DEBUG(LOG_APP, "getSuggestions: cache MISS, %{public}zu results", suggestions.size());
     }
 
-    // API 22 Optimization: Create array with known size (avoids reallocation)
+    // Create array with known size
     napi_value result;
     napi_create_array_with_length(env, suggestions.size(), &result);
 
-    // Populate array with suggestion objects (uses cached property keys)
+    // Populate array
     for (size_t i = 0; i < suggestions.size(); i++) {
         napi_value item = CreateSuggestResult(env, suggestions[i]);
         if (item != nullptr) {
@@ -768,7 +1027,12 @@ static napi_value GetSuggestions(napi_env env, napi_callback_info info) {
 
 /**
  * findAutocorrection(word: string, threshold: number): SuggestResult | null
- * Find best autocorrection candidate
+ * Find best autocorrection candidate using YandexDict
+ *
+ * Simple algorithm:
+ * 1. If word exists in dictionary with high frequency, no correction needed
+ * 2. Get suggestions for the word
+ * 3. If top suggestion has much higher score than input, use it
  */
 static napi_value FindAutocorrection(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -786,30 +1050,54 @@ static napi_value FindAutocorrection(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // Return null if engine not initialized
-    if (!g_suggestEngine) {
-        napi_value result;
-        napi_get_null(env, &result);
-        return result;
-    }
-
     std::string word = NapiValueToString(env, args[0]);
 
-    double threshold = 0.185; // Default OpenBoard threshold
+    double threshold = 0.185;
     napi_get_value_double(env, args[1], &threshold);
-    // Clamp threshold to valid range [0.0, 1.0]
     if (threshold < 0.0) threshold = 0.0;
     if (threshold > 1.0) threshold = 1.0;
 
-    auto correction = g_suggestEngine->findAutocorrection(word, threshold);
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
 
-    if (correction.word.empty()) {
+    // Return null if dictionary not loaded
+    if (!g_yandexDict || !g_yandexDict->isLoaded()) {
         napi_value result;
         napi_get_null(env, &result);
         return result;
     }
 
-    return CreateSuggestResult(env, correction);
+    // If word exists in dictionary with decent frequency, no correction needed
+    if (g_yandexDict->contains(word)) {
+        uint8_t freq = g_yandexDict->getFrequency(word);
+        if (freq > 50) {  // High enough frequency = valid word
+            napi_value result;
+            napi_get_null(env, &result);
+            return result;
+        }
+    }
+
+    // Get suggestions
+    auto suggestions = g_yandexDict->getSuggestions(word, 5);
+
+    if (suggestions.empty()) {
+        napi_value result;
+        napi_get_null(env, &result);
+        return result;
+    }
+
+    // Check if top suggestion is significantly better
+    const auto& top = suggestions[0];
+
+    // Only autocorrect if:
+    // 1. Top suggestion is different from input
+    // 2. Score is above threshold
+    if (top.word != word && top.score > threshold) {
+        return CreateSuggestResult(env, top);
+    }
+
+    napi_value result;
+    napi_get_null(env, &result);
+    return result;
 }
 
 /**
@@ -863,11 +1151,13 @@ static napi_value GetStats(napi_env env, napi_callback_info info) {
 
     int wordCount = 0;
     size_t memoryUsage = 0;
+    bool isLoaded = false;
     {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_trie) {
-            wordCount = g_trie->getWordCount();
-            memoryUsage = g_trie->getMemoryUsage();
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_yandexDict && g_yandexDict->isLoaded()) {
+            wordCount = static_cast<int>(g_yandexDict->getWordCount());
+            memoryUsage = g_yandexDict->getMemoryUsage();
+            isLoaded = true;
         }
     }
 
@@ -878,6 +1168,10 @@ static napi_value GetStats(napi_env env, napi_callback_info info) {
     napi_value memoryVal;
     napi_create_int64(env, static_cast<int64_t>(memoryUsage), &memoryVal);
     napi_set_named_property(env, obj, "memoryUsage", memoryVal);
+
+    napi_value loadedVal;
+    napi_get_boolean(env, isLoaded, &loadedVal);
+    napi_set_named_property(env, obj, "isLoaded", loadedVal);
 
     // Add cache statistics
     size_t cacheSize;
@@ -949,39 +1243,62 @@ static float DistanceToKey(float x, float y, const KeyBounds& key) {
  * Returns: vector of (key, proximity_score) pairs, sorted by distance
  * Proximity score: 1.0 = on key center, 0.0 = far away
  */
+/**
+ * Get nearest keys with proximity scores
+ * Uses Yandex-style weighted distance calculation
+ * 
+ * Yandex parameters (from json_config.json):
+ * - StartKeyDistanceWeightX = 0.8
+ * - StartKeyDistanceWeightY = 1.4  
+ * - KeySquaredDistanceLimit = 3000
+ */
 static std::vector<std::pair<std::string, float>> GetNearestKeysWithScores(
     float x, float y, size_t topN = 3) {
+    
+    // Yandex weights from Swipe/Rule config
+    constexpr float WEIGHT_X = 0.8f;   // StartKeyDistanceWeightX
+    constexpr float WEIGHT_Y = 1.4f;   // StartKeyDistanceWeightY
+    constexpr float KEY_SQUARED_DIST_LIMIT = 3000.0f;  // KeySquaredDistanceLimit
     
     std::vector<std::pair<std::string, float>> result;
     if (g_keyboardLayout.empty()) return result;
     
-    // Calculate distances to all keys
+    // Calculate weighted distances to all keys
     std::vector<std::tuple<std::string, float, float>> keysWithDist;
     for (const auto& key : g_keyboardLayout) {
         if (key.key.length() != 1) continue;  // Only single characters
         
         float dx = x - key.centerX;
         float dy = y - key.centerY;
-        float dist = std::sqrt(dx * dx + dy * dy);
+        
+        // Yandex-style weighted squared distance
+        float weightedDistSq = (dx * dx * WEIGHT_X * WEIGHT_X) + 
+                               (dy * dy * WEIGHT_Y * WEIGHT_Y);
+        
+        // Skip if beyond distance limit
+        if (weightedDistSq > KEY_SQUARED_DIST_LIMIT) continue;
+        
+        float dist = std::sqrt(weightedDistSq);
         
         // Normalize by key size (larger keys have larger "hitbox")
         float keyRadius = std::sqrt(key.width * key.width + key.height * key.height) / 2.0f;
         float normalizedDist = dist / keyRadius;
         
-        keysWithDist.emplace_back(key.key, dist, normalizedDist);
+        keysWithDist.emplace_back(key.key, weightedDistSq, normalizedDist);
     }
     
-    // Sort by distance
+    // Sort by weighted squared distance (Yandex uses squared distance for speed)
     std::sort(keysWithDist.begin(), keysWithDist.end(),
         [](const auto& a, const auto& b) { return std::get<1>(a) < std::get<1>(b); });
     
     // Convert to proximity scores (Gaussian-like falloff)
     for (size_t i = 0; i < std::min(topN, keysWithDist.size()); ++i) {
-        const auto& [key, dist, normDist] = keysWithDist[i];
+        const auto& [key, distSq, normDist] = keysWithDist[i];
         
-        // Gaussian proximity score: exp(-dist²/2σ²), σ based on key size
-        float sigma = 1.5f;  // Tunable parameter
-        float score = std::exp(-(normDist * normDist) / (2.0f * sigma * sigma));
+        // Proximity score: higher when closer to key center
+        // Score = 1 - (distSq / limit), clamped to [0, 1]
+        float score = 1.0f - (distSq / KEY_SQUARED_DIST_LIMIT);
+        score = std::max(0.0f, std::min(1.0f, score));
         
         if (score > 0.01f) {  // Filter out very low scores
             result.emplace_back(key, score);
@@ -1110,6 +1427,33 @@ static napi_value SetSwipeKeyboardLayout(napi_env env, napi_callback_info info) 
 
         g_keyboardLayout.push_back({key, (float)centerX, (float)centerY, (float)width, (float)height});
     }
+    
+    // Initialize Yandex-style Beam Search with layout
+    {
+        std::lock_guard<std::mutex> lock(g_beamSearchMutex);
+        
+        // Create beam search with Yandex parameters (tuned for HOSKEY)
+        hoskey::SwipeParams params;
+        params.beamWidth = 500;  // Increased from 300 for better exploration
+        params.keySquaredDistanceLimit = 6000.0f;  // Increased from 3000 (~77px radius)
+        params.maxTransitionSquaredDistance = 15000.0f;  // Increased from 10000
+        params.weightX = 0.9f;  // Slightly more balanced X/Y
+        params.weightY = 1.2f;  // Reduced Y weight
+        params.topK = 30;  // Increased from 24
+        params.minSamplingDistance = 3.0f;  // Increased from 0.5 for less dense sampling
+        
+        g_beamSearch = std::make_unique<hoskey::SwipeBeamSearch>(params);
+        
+        // Convert layout to beam search format
+        std::vector<hoskey::KeyInfo> beamLayout;
+        beamLayout.reserve(g_keyboardLayout.size());
+        for (const auto& key : g_keyboardLayout) {
+            beamLayout.push_back({key.key, key.centerX, key.centerY, key.width, key.height});
+        }
+        g_beamSearch->setLayout(beamLayout);
+        
+        OH_LOG_INFO(LOG_APP, "setSwipeKeyboardLayout: BeamSearch initialized with %{public}zu keys", beamLayout.size());
+    }
 
     napi_value result;
     napi_get_boolean(env, true, &result);
@@ -1142,8 +1486,8 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
 
     // Return null if prerequisites not met (not an error, just not ready)
     {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_keyboardLayout.empty() || !g_trie) {
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_keyboardLayout.empty() || !g_yandexDict || !g_yandexDict->isLoaded()) {
             napi_value result;
             napi_get_null(env, &result);
             return result;
@@ -1161,13 +1505,22 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
 
     // =========================================================================
     // STEP 1: Extract touch points into GestureStroke for processing
+    // Yandex-style parameters from json_config.json
     // =========================================================================
     latinime::GestureParams params;
-    params.minSamplingDistance = 3.0f;
-    params.maxAngleRadians = 0.2618f;  // ~15 degrees
-    params.maxSegmentLength = 20.0f;
-    params.maxInterpolationSteps = 10;
-    params.adaptiveSamplingSpeedThreshold = 300.0f;
+    // Tuned parameters for better swipe recognition
+    params.minSamplingDistance = 3.0f;  // Increased for less noise
+    params.maxAngleRadians = 0.35f;  // ~20 degrees - more tolerant
+    params.maxSegmentLength = 30.0f;  // Increased segment length
+    params.maxInterpolationSteps = 8;  // Reduced interpolation
+    params.adaptiveSamplingSpeedThreshold = 400.0f;  // More adaptive
+    // Tuned Swipe/Rule parameters
+    params.keyDistanceWeightX = 0.9f;   // More balanced X
+    params.keyDistanceWeightY = 1.2f;   // Less Y bias
+    params.keySquaredDistanceLimit = 6000.0f;  // Increased radius (~77px)
+    params.maxTransitionSquaredDistance = 15000.0f;  // Allow larger transitions
+    params.beamWidth = 500;  // Wider beam
+    params.topK = 30;  // More candidates
     
     latinime::GestureStroke stroke(params);
 
@@ -1212,8 +1565,96 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
     }
 
     // =========================================================================
-    // STEP 3: Extract key sequence with proximity-aware key detection
+    // STEP 3: Yandex-style Beam Search Decode
     // =========================================================================
+    
+    // Convert processed path to beam search format
+    std::vector<hoskey::SwipePoint> beamPath;
+    beamPath.reserve(processedPath.size());
+    for (const auto& pt : processedPath) {
+        beamPath.push_back({pt.x, pt.y, (int64_t)pt.timestamp});
+    }
+    
+    // Try beam search first (Yandex-style)
+    std::vector<hoskey::SwipeCandidate> beamCandidates;
+    {
+        std::lock_guard<std::mutex> beamLock(g_beamSearchMutex);
+        std::lock_guard<std::mutex> yandexLock(g_yandexMutex);
+
+        if (g_beamSearch && g_yandexDict && g_yandexDict->isLoaded()) {
+            // Dictionary access functions using Yandex
+            auto contains = [](const std::string& word) -> bool {
+                return g_yandexDict->contains(word);
+            };
+            auto getFrequency = [](const std::string& word) -> int {
+                return static_cast<int>(g_yandexDict->getFrequency(word));
+            };
+            auto getSuggestions = [](const std::string& prefix, int limit) -> std::vector<std::string> {
+                std::vector<std::string> result;
+                if (g_yandexDict && g_yandexDict->isLoaded()) {
+                    auto suggestions = g_yandexDict->getSuggestions(prefix, limit);
+                    for (const auto& s : suggestions) {
+                        result.push_back(s.word);
+                    }
+                }
+                return result;
+            };
+
+            beamCandidates = g_beamSearch->decode(beamPath, contains, getFrequency, getSuggestions);
+            OH_LOG_DEBUG(LOG_APP, "processSwipePath: BeamSearch returned %{public}zu candidates", beamCandidates.size());
+        }
+    }
+    
+    // If beam search succeeded, use its results
+    if (!beamCandidates.empty()) {
+        // Build result from beam search candidates
+        napi_value obj;
+        napi_create_object(env, &obj);
+        
+        // bestWord
+        napi_value bestWordValue = SafeStringToNapi(env, beamCandidates[0].word);
+        napi_set_named_property(env, obj, "bestWord", bestWordValue);
+        
+        // alternatives
+        size_t altCount = (beamCandidates.size() > 1) ? std::min((size_t)5, beamCandidates.size() - 1) : 0;
+        napi_value alternatives;
+        napi_create_array_with_length(env, altCount, &alternatives);
+        for (size_t i = 0; i < altCount; i++) {
+            napi_value alt = SafeStringToNapi(env, beamCandidates[i + 1].word);
+            napi_set_element(env, alternatives, i, alt);
+        }
+        napi_set_named_property(env, obj, "alternatives", alternatives);
+        
+        // confidence
+        float confidence = std::max(0.0f, std::min(1.0f, beamCandidates[0].score));
+        napi_value confidenceValue;
+        napi_create_double(env, confidence, &confidenceValue);
+        napi_set_named_property(env, obj, "confidence", confidenceValue);
+        
+        // rawSequence (extract from path)
+        std::string rawSeq;
+        std::string lastKey;
+        for (const auto& pt : beamPath) {
+            auto nearestKeys = GetNearestKeysWithScores(pt.x, pt.y, 1);
+            if (!nearestKeys.empty() && nearestKeys[0].first != lastKey) {
+                rawSeq += nearestKeys[0].first;
+                lastKey = nearestKeys[0].first;
+            }
+        }
+        napi_value rawSeqValue = SafeStringToNapi(env, rawSeq);
+        napi_set_named_property(env, obj, "rawSequence", rawSeqValue);
+        
+        OH_LOG_INFO(LOG_APP, "processSwipePath: BeamSearch result '%{public}s' (confidence=%.2f)",
+                    beamCandidates[0].word.c_str(), confidence);
+        
+        return obj;
+    }
+    
+    // =========================================================================
+    // STEP 3b: Fallback - Extract key sequence with proximity-aware key detection
+    // =========================================================================
+    OH_LOG_DEBUG(LOG_APP, "processSwipePath: BeamSearch failed, using fallback");
+    
     std::string keySequence;
     std::string lastKey;
     
@@ -1242,7 +1683,7 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
     }
 
     // =========================================================================
-    // STEP 4: Get candidate words from dictionary
+    // STEP 4: Get candidate words from dictionary (fallback path)
     // =========================================================================
     std::vector<std::string> candidates;
     std::string firstLetter = keySequence.substr(0, 1);
@@ -1260,14 +1701,19 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
         }
     }
     
-    // Get suggestions for each potential first letter
-    for (const auto& fl : firstLetterCandidates) {
-        auto suggestions = g_suggestEngine->getSuggestions(fl, 100);
-        for (const auto& suggestion : suggestions) {
-            // Allow some length variance
-            if (suggestion.word.length() >= keySequence.length() - 2 &&
-                suggestion.word.length() <= keySequence.length() + 3) {
-                candidates.push_back(suggestion.word);
+    // Get suggestions for each potential first letter (Yandex)
+    {
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_yandexDict && g_yandexDict->isLoaded()) {
+            for (const auto& fl : firstLetterCandidates) {
+                auto suggestions = g_yandexDict->getSuggestions(fl, 100);
+                for (const auto& suggestion : suggestions) {
+                    // Allow some length variance
+                    if (suggestion.word.length() >= keySequence.length() - 2 &&
+                        suggestion.word.length() <= keySequence.length() + 3) {
+                        candidates.push_back(suggestion.word);
+                    }
+                }
             }
         }
     }
@@ -1312,12 +1758,12 @@ static napi_value ProcessSwipePath(napi_env env, napi_callback_info info) {
         int lenDiff = std::abs(static_cast<int>(word.length()) - static_cast<int>(keySequence.length()));
         float lengthPenalty = lenDiff * 0.05f;
         
-        // 5d. Frequency boost
+        // 5d. Frequency boost (Yandex)
         cand.frequency = 0;
         {
-            std::lock_guard<std::mutex> lock(g_trieMutex);
-            if (g_trie) {
-                cand.frequency = g_trie->getFrequency(word);
+            std::lock_guard<std::mutex> lock(g_yandexMutex);
+            if (g_yandexDict && g_yandexDict->isLoaded()) {
+                cand.frequency = static_cast<int>(g_yandexDict->getFrequency(word));
             }
         }
         float freqBoost = std::min(0.2f, cand.frequency * 0.001f);
@@ -1768,19 +2214,10 @@ static napi_value AddLearnedWordSimple(napi_env env, napi_callback_info info) {
     if (frequency < 1) frequency = 1;
     if (frequency > 255) frequency = 255;
 
+    // TODO: Implement learned words in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->addLearnedWord(word, frequency);
-            if (success) {
-                ClearSuggestionCache();  // Invalidate cache
-            }
-        }
-    }
-
-    OH_LOG_INFO(LOG_APP, "addLearnedWordSimple: word=%{public}s, freq=%d, success=%s",
-                word.c_str(), frequency, success ? "true" : "false");
+    OH_LOG_DEBUG(LOG_APP, "addLearnedWordSimple: word=%{public}s, freq=%d - NOT IMPLEMENTED (Yandex)",
+                word.c_str(), frequency);
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -1805,13 +2242,9 @@ static napi_value RecordWordUsage(napi_env env, napi_callback_info info) {
 
     std::string word = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->recordWordUsage(word);
-        }
-    }
+    OH_LOG_DEBUG(LOG_APP, "recordWordUsage: word=%{public}s - NOT IMPLEMENTED (Yandex)", word.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -1836,16 +2269,9 @@ static napi_value SaveUserDict(napi_env env, napi_callback_info info) {
 
     std::string path = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->saveUserDict(path);
-        }
-    }
-
-    OH_LOG_INFO(LOG_APP, "saveUserDict: path=%{public}s, success=%s",
-                path.c_str(), success ? "true" : "false");
+    OH_LOG_DEBUG(LOG_APP, "saveUserDict: path=%{public}s - NOT IMPLEMENTED (Yandex)", path.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -1870,19 +2296,9 @@ static napi_value LoadUserDict(napi_env env, napi_callback_info info) {
 
     std::string path = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->loadUserDict(path);
-            if (success) {
-                ClearSuggestionCache();  // Invalidate cache
-            }
-        }
-    }
-
-    OH_LOG_INFO(LOG_APP, "loadUserDict: path=%{public}s, success=%s",
-                path.c_str(), success ? "true" : "false");
+    OH_LOG_DEBUG(LOG_APP, "loadUserDict: path=%{public}s - NOT IMPLEMENTED (Yandex)", path.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -1894,13 +2310,8 @@ static napi_value LoadUserDict(napi_env env, napi_callback_info info) {
  * Get count of learned words in user dictionary
  */
 static napi_value GetLearnedWordsCount(napi_env env, napi_callback_info info) {
+    // TODO: Implement in YandexDict
     int count = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            count = g_suggestEngine->getLearnedWordsCount();
-        }
-    }
 
     napi_value result;
     napi_create_int32(env, count, &result);
@@ -1925,19 +2336,9 @@ static napi_value RemoveLearnedWord(napi_env env, napi_callback_info info) {
 
     std::string word = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->removeLearnedWord(word);
-            if (success) {
-                ClearSuggestionCache();  // Invalidate cache
-            }
-        }
-    }
-
-    OH_LOG_INFO(LOG_APP, "removeLearnedWord: word=%{public}s, success=%s",
-                word.c_str(), success ? "true" : "false");
+    OH_LOG_DEBUG(LOG_APP, "removeLearnedWord: word=%{public}s - NOT IMPLEMENTED (Yandex)", word.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -1981,18 +2382,9 @@ static napi_value AddLearnedWordWithContext(napi_env env, napi_callback_info inf
         }
     }
 
-    // Add to suggest engine
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            g_suggestEngine->addLearnedWordWithContext(word, prevWord, count);
-            OH_LOG_DEBUG(LOG_APP, "addLearnedWord: word=\"%{public}s\" prevWord=\"%{public}s\" count=%d",
-                        word.c_str(), prevWord.c_str(), count);
-        }
-    }
-
-    // Clear suggestion cache (learned word may affect results)
-    ClearSuggestionCache();
+    // TODO: Implement in YandexDict
+    OH_LOG_DEBUG(LOG_APP, "addLearnedWordWithContext: word=\"%{public}s\" prevWord=\"%{public}s\" count=%d - NOT IMPLEMENTED (Yandex)",
+                word.c_str(), prevWord.c_str(), count);
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -2022,13 +2414,8 @@ static napi_value GetLearnedBoost(napi_env env, napi_callback_info info) {
     std::string word = NapiValueToString(env, args[0]);
     std::string prevWord = NapiValueToString(env, args[1]);
 
+    // TODO: Implement in YandexDict
     int boost = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            boost = g_suggestEngine->getLearnedBoost(word, prevWord);
-        }
-    }
 
     napi_value result;
     napi_create_int32(env, boost, &result);
@@ -2054,15 +2441,9 @@ static napi_value SaveUserDictionary(napi_env env, napi_callback_info info) {
 
     std::string path = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->saveUserDictionary(path);
-            OH_LOG_INFO(LOG_APP, "saveUserDictionary: path=\"%{public}s\" success=%{public}s",
-                       path.c_str(), success ? "true" : "false");
-        }
-    }
+    OH_LOG_DEBUG(LOG_APP, "saveUserDictionary: path=\"%{public}s\" - NOT IMPLEMENTED (Yandex)", path.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -2088,20 +2469,9 @@ static napi_value LoadUserDictionary(napi_env env, napi_callback_info info) {
 
     std::string path = NapiValueToString(env, args[0]);
 
+    // TODO: Implement in YandexDict
     bool success = false;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            success = g_suggestEngine->loadUserDictionary(path);
-            OH_LOG_INFO(LOG_APP, "loadUserDictionary: path=\"%{public}s\" success=%{public}s",
-                       path.c_str(), success ? "true" : "false");
-        }
-    }
-
-    // Clear suggestion cache (new learned words loaded)
-    if (success) {
-        ClearSuggestionCache();
-    }
+    OH_LOG_DEBUG(LOG_APP, "loadUserDictionary: path=\"%{public}s\" - NOT IMPLEMENTED (Yandex)", path.c_str());
 
     napi_value result;
     napi_get_boolean(env, success, &result);
@@ -2113,16 +2483,8 @@ static napi_value LoadUserDictionary(napi_env env, napi_callback_info info) {
  * Clear all bigram-aware learned words
  */
 static napi_value ClearLearnedWords(napi_env env, napi_callback_info info) {
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            g_suggestEngine->clearLearnedWords();
-            OH_LOG_INFO(LOG_APP, "clearLearnedWords: cleared all learned words");
-        }
-    }
-
-    // Clear suggestion cache
-    ClearSuggestionCache();
+    // TODO: Implement in YandexDict
+    OH_LOG_DEBUG(LOG_APP, "clearLearnedWords - NOT IMPLEMENTED (Yandex)");
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -2134,13 +2496,8 @@ static napi_value ClearLearnedWords(napi_env env, napi_callback_info info) {
  * Get count of bigram-aware learned words
  */
 static napi_value GetBigramLearnedWordsCount(napi_env env, napi_callback_info info) {
+    // TODO: Implement in YandexDict
     int count = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        if (g_suggestEngine) {
-            count = g_suggestEngine->getBigramLearnedWordsCount();
-        }
-    }
 
     napi_value result;
     napi_create_int32(env, count, &result);
@@ -2156,36 +2513,12 @@ static napi_value GetBigramLearnedWordsCount(napi_env env, napi_callback_info in
  * Load pre-serialized .flat dictionary for instant loading
  */
 static napi_value LoadFlatDictionary(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    if (!ValidateArgCount(env, argc, 1, "loadFlatDictionary")) {
-        return nullptr;
-    }
-    if (!ValidateString(env, args[0], "path")) {
-        return nullptr;
-    }
-
-    std::string path = NapiValueToString(env, args[0]);
-    OH_LOG_INFO(LOG_APP, "loadFlatDictionary: loading from %{public}s", path.c_str());
-
-    auto newFlatTrie = std::make_unique<hoskey::FlatTrie>();
-    bool success = newFlatTrie->load(path);
-
-    if (success) {
-        OH_LOG_INFO(LOG_APP, "loadFlatDictionary: SUCCESS - loaded %d words in <50ms",
-                    newFlatTrie->getWordCount());
-
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-        g_flatTrie = std::move(newFlatTrie);
-        ClearSuggestionCache();
-    } else {
-        OH_LOG_ERROR(LOG_APP, "loadFlatDictionary: FAILED to load from %{public}s", path.c_str());
-    }
+    // DEPRECATED: FlatTrie is legacy OpenBoard format
+    // Use loadDictionaryFromFd with Yandex format instead
+    OH_LOG_WARN(LOG_APP, "loadFlatDictionary: DEPRECATED - use loadDictionaryFromFd instead");
 
     napi_value result;
-    napi_get_boolean(env, success, &result);
+    napi_get_boolean(env, false, &result);
     return result;
 }
 
@@ -2194,45 +2527,11 @@ static napi_value LoadFlatDictionary(napi_env env, napi_callback_info info) {
  * Convert .dict file to optimized .flat format
  */
 static napi_value ConvertToFlatFormat(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    if (!ValidateArgCount(env, argc >= 2 ? 2 : argc, 2, "convertToFlatFormat")) {
-        return nullptr;
-    }
-    if (!ValidateString(env, args[0], "inputPath")) {
-        return nullptr;
-    }
-    if (!ValidateString(env, args[1], "outputPath")) {
-        return nullptr;
-    }
-
-    std::string inputPath = NapiValueToString(env, args[0]);
-    std::string outputPath = NapiValueToString(env, args[1]);
-    std::string locale = "";
-
-    if (argc >= 3) {
-        napi_valuetype type;
-        napi_typeof(env, args[2], &type);
-        if (type == napi_string) {
-            locale = NapiValueToString(env, args[2]);
-        }
-    }
-
-    OH_LOG_INFO(LOG_APP, "convertToFlatFormat: %{public}s -> %{public}s (locale=%{public}s)",
-                inputPath.c_str(), outputPath.c_str(), locale.c_str());
-
-    bool success = hoskey::FlatTrieBuilder::convert(inputPath, outputPath, locale);
-
-    if (success) {
-        OH_LOG_INFO(LOG_APP, "convertToFlatFormat: SUCCESS");
-    } else {
-        OH_LOG_ERROR(LOG_APP, "convertToFlatFormat: FAILED");
-    }
+    // DEPRECATED: FlatTrie is legacy OpenBoard format
+    OH_LOG_WARN(LOG_APP, "convertToFlatFormat: DEPRECATED - Yandex format doesn't require conversion");
 
     napi_value result;
-    napi_get_boolean(env, success, &result);
+    napi_get_boolean(env, false, &result);
     return result;
 }
 
@@ -2241,9 +2540,285 @@ static napi_value ConvertToFlatFormat(napi_env env, napi_callback_info info) {
  * Get statistics from loaded FlatTrie
  */
 static napi_value GetFlatTrieStats(napi_env env, napi_callback_info info) {
-    std::lock_guard<std::mutex> lock(g_trieMutex);
+    // DEPRECATED: FlatTrie is legacy OpenBoard format
+    // Use getStats() for YandexDict stats
+    OH_LOG_WARN(LOG_APP, "getFlatTrieStats: DEPRECATED - use getStats() instead");
 
-    if (!g_flatTrie || !g_flatTrie->isLoaded()) {
+    napi_value nullVal;
+    napi_get_null(env, &nullVal);
+    return nullVal;
+}
+
+// ============================================================================
+// MultiPredictor NAPI Functions (Yandex-style multi-source prediction)
+// ============================================================================
+
+/**
+ * initMultiPredictor(): boolean
+ * Initialize the multi-predictor system with default predictors
+ * Requires dictionary to be loaded first
+ */
+static napi_value InitMultiPredictor(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    g_multiPredictor = std::make_unique<latinime::MultiPredictor>();
+
+    OH_LOG_INFO(LOG_APP, "initMultiPredictor: initialized empty multi-predictor");
+
+    napi_value result;
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+/**
+ * addDictionaryPredictor(): boolean
+ * Add dictionary-based predictor to the pipeline
+ * Note: Currently a stub - full implementation would require Dictionary pointer
+ */
+static napi_value AddDictionaryPredictor(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (!g_multiPredictor) {
+        OH_LOG_ERROR(LOG_APP, "addDictionaryPredictor: multi-predictor not initialized");
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    // Note: DictionaryPredictor requires a Dictionary* which we don't have in this context
+    // This is a placeholder - full implementation would use OpenBoard's Dictionary class
+    auto predictor = std::make_unique<latinime::DictionaryPredictor>(nullptr);
+    g_multiPredictor->addPredictor(std::move(predictor));
+
+    OH_LOG_INFO(LOG_APP, "addDictionaryPredictor: added (count=%zu)",
+                g_multiPredictor->getPredictorCount());
+
+    napi_value result;
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+/**
+ * addNgramPredictor(): boolean
+ * Add n-gram based predictor for contextual suggestions
+ */
+static napi_value AddNgramPredictor(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (!g_multiPredictor) {
+        OH_LOG_ERROR(LOG_APP, "addNgramPredictor: multi-predictor not initialized");
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    auto predictor = std::make_unique<latinime::NgramPredictor>(nullptr);
+    g_multiPredictor->addPredictor(std::move(predictor));
+
+    OH_LOG_INFO(LOG_APP, "addNgramPredictor: added (count=%zu)",
+                g_multiPredictor->getPredictorCount());
+
+    napi_value result;
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+/**
+ * removePredictor(sourceId: number): boolean
+ * Remove a predictor by its source ID
+ */
+static napi_value RemovePredictor(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (!ValidateArgCount(env, argc, 1, "removePredictor")) {
+        return nullptr;
+    }
+
+    int32_t sourceId = 0;
+    napi_get_value_int32(env, args[0], &sourceId);
+
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (!g_multiPredictor) {
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    size_t prevCount = g_multiPredictor->getPredictorCount();
+    g_multiPredictor->removePredictor(sourceId);
+
+    bool removed = (g_multiPredictor->getPredictorCount() < prevCount);
+    OH_LOG_INFO(LOG_APP, "removePredictor: sourceId=%d removed=%d", sourceId, removed);
+
+    napi_value result;
+    napi_get_boolean(env, removed, &result);
+    return result;
+}
+
+/**
+ * setPredictorEnabled(sourceId: number, enabled: boolean): void
+ * Enable or disable a predictor
+ */
+static napi_value SetPredictorEnabled(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (!ValidateArgCount(env, argc, 2, "setPredictorEnabled")) {
+        return nullptr;
+    }
+
+    int32_t sourceId = 0;
+    bool enabled = true;
+    napi_get_value_int32(env, args[0], &sourceId);
+    napi_get_value_bool(env, args[1], &enabled);
+
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (g_multiPredictor) {
+        g_multiPredictor->setPredictorEnabled(sourceId, enabled);
+        OH_LOG_DEBUG(LOG_APP, "setPredictorEnabled: sourceId=%d enabled=%d", sourceId, enabled);
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * getMultiPredictions(currentWord: string, prevWord?: string, maxResults?: number): Suggestion[]
+ * Get combined predictions from all enabled predictors
+ */
+static napi_value GetMultiPredictions(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        napi_throw_error(env, nullptr, "getMultiPredictions requires at least 1 argument");
+        return nullptr;
+    }
+
+    std::string currentWord = NapiValueToString(env, args[0]);
+    std::string prevWord = "";
+    int maxResults = latinime::MultiPredictor::DEFAULT_MAX_RESULTS;
+
+    if (argc >= 2) {
+        napi_valuetype type;
+        napi_typeof(env, args[1], &type);
+        if (type == napi_string) {
+            prevWord = NapiValueToString(env, args[1]);
+        }
+    }
+
+    if (argc >= 3) {
+        napi_valuetype type;
+        napi_typeof(env, args[2], &type);
+        if (type == napi_number) {
+            napi_get_value_int32(env, args[2], &maxResults);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (!g_multiPredictor) {
+        // Return empty array if not initialized
+        napi_value result;
+        napi_create_array_with_length(env, 0, &result);
+        return result;
+    }
+
+    // Convert strings to code points
+    std::vector<int> inputCodePoints;
+    for (char c : currentWord) {
+        inputCodePoints.push_back(static_cast<int>(static_cast<unsigned char>(c)));
+    }
+
+    std::vector<int> prevCodePoints;
+    for (char c : prevWord) {
+        prevCodePoints.push_back(static_cast<int>(static_cast<unsigned char>(c)));
+    }
+
+    // Build prediction input
+    latinime::PredictionInput input;
+    input.inputCodePoints = inputCodePoints.data();
+    input.inputLength = static_cast<int>(inputCodePoints.size());
+    input.prevWordCodePoints = prevCodePoints.empty() ? nullptr : prevCodePoints.data();
+    input.prevWordLength = static_cast<int>(prevCodePoints.size());
+    input.isGesture = false;
+
+    // Get suggestions
+    std::vector<latinime::Suggestion> suggestions;
+    g_multiPredictor->getSuggestions(input, maxResults, suggestions);
+
+    // Build result array
+    napi_value result;
+    napi_create_array_with_length(env, suggestions.size(), &result);
+
+    for (size_t i = 0; i < suggestions.size(); ++i) {
+        const auto& s = suggestions[i];
+
+        napi_value obj;
+        napi_create_object(env, &obj);
+
+        // Convert code points back to string
+        std::string word;
+        for (int cp : s.codePoints) {
+            word += static_cast<char>(cp);
+        }
+
+        napi_value wordVal = SafeStringToNapi(env, word);
+        napi_value scoreVal, probVal, sourceIdVal, isExactVal, isAutoVal;
+        napi_create_double(env, s.score, &scoreVal);
+        napi_create_int32(env, s.probability, &probVal);
+        napi_create_int32(env, s.sourceId, &sourceIdVal);
+        napi_get_boolean(env, s.isExactMatch, &isExactVal);
+        napi_get_boolean(env, s.isAutoCorrection, &isAutoVal);
+
+        napi_set_named_property(env, obj, "word", wordVal);
+        napi_set_named_property(env, obj, "score", scoreVal);
+        napi_set_named_property(env, obj, "probability", probVal);
+        napi_set_named_property(env, obj, "sourceId", sourceIdVal);
+        napi_set_named_property(env, obj, "isExactMatch", isExactVal);
+        napi_set_named_property(env, obj, "isAutoCorrection", isAutoVal);
+
+        napi_set_element(env, result, i, obj);
+    }
+
+    OH_LOG_DEBUG(LOG_APP, "getMultiPredictions: input='%s' results=%zu",
+                 currentWord.c_str(), suggestions.size());
+
+    return result;
+}
+
+/**
+ * clearMultiPredictor(): void
+ * Clear all predictors
+ */
+static napi_value ClearMultiPredictor(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (g_multiPredictor) {
+        g_multiPredictor->clearPredictors();
+        OH_LOG_INFO(LOG_APP, "clearMultiPredictor: cleared all predictors");
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * getMultiPredictorStats(): { predictorCount: number } | null
+ * Get multi-predictor statistics
+ */
+static napi_value GetMultiPredictorStats(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+
+    if (!g_multiPredictor) {
         napi_value nullVal;
         napi_get_null(env, &nullVal);
         return nullVal;
@@ -2252,17 +2827,662 @@ static napi_value GetFlatTrieStats(napi_env env, napi_callback_info info) {
     napi_value result;
     napi_create_object(env, &result);
 
-    napi_value wordCount, memUsage, locale;
-    napi_create_int32(env, g_flatTrie->getWordCount(), &wordCount);
-    napi_create_int64(env, static_cast<int64_t>(g_flatTrie->getMemoryUsage()), &memUsage);
-    napi_create_string_utf8(env, g_flatTrie->getLocale().c_str(), NAPI_AUTO_LENGTH, &locale);
-
-    napi_set_named_property(env, result, "wordCount", wordCount);
-    napi_set_named_property(env, result, "memoryUsage", memUsage);
-    napi_set_named_property(env, result, "locale", locale);
+    napi_value countVal;
+    napi_create_int32(env, static_cast<int32_t>(g_multiPredictor->getPredictorCount()), &countVal);
+    napi_set_named_property(env, result, "predictorCount", countVal);
 
     return result;
 }
+
+// ============================================================================
+// Yandex-style Filtering API (Blacklist, Autocorrect Blocker)
+// ============================================================================
+
+/**
+ * addToBlacklist(word: string): void
+ * Add word to blacklist (won't appear in suggestions)
+ */
+static napi_value AddToBlacklist(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+
+    std::string word = NapiValueToString(env, args[0]);
+    
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+    if (g_multiPredictor) {
+        g_multiPredictor->addToBlacklist(word);
+        OH_LOG_DEBUG(LOG_APP, "addToBlacklist: %{public}s", word.c_str());
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * removeFromBlacklist(word: string): void
+ */
+static napi_value RemoveFromBlacklist(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc >= 1) {
+        std::string word = NapiValueToString(env, args[0]);
+        std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+        if (g_multiPredictor) {
+            g_multiPredictor->removeFromBlacklist(word);
+        }
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * addToAutocorrectBlocker(word: string): void
+ * Add word to autocorrect blocker (won't be auto-replaced)
+ */
+static napi_value AddToAutocorrectBlocker(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc >= 1) {
+        std::string word = NapiValueToString(env, args[0]);
+        std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+        if (g_multiPredictor) {
+            g_multiPredictor->addToAutocorrectBlocker(word);
+            OH_LOG_DEBUG(LOG_APP, "addToAutocorrectBlocker: %{public}s", word.c_str());
+        }
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * removeFromAutocorrectBlocker(word: string): void
+ */
+static napi_value RemoveFromAutocorrectBlocker(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc >= 1) {
+        std::string word = NapiValueToString(env, args[0]);
+        std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+        if (g_multiPredictor) {
+            g_multiPredictor->removeFromAutocorrectBlocker(word);
+        }
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * setFusionParams(params: FusionParams): void
+ * Configure score fusion weights (Yandex-style)
+ */
+static napi_value SetFusionParams(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+
+    latinime::FusionParams params;
+    
+    napi_value val;
+    if (napi_get_named_property(env, args[0], "dictionaryWeight", &val) == napi_ok) {
+        napi_get_value_double(env, val, reinterpret_cast<double*>(&params.dictionaryWeight));
+    }
+    if (napi_get_named_property(env, args[0], "neuralWeight", &val) == napi_ok) {
+        napi_get_value_double(env, val, reinterpret_cast<double*>(&params.neuralWeight));
+    }
+    if (napi_get_named_property(env, args[0], "personalWeight", &val) == napi_ok) {
+        napi_get_value_double(env, val, reinterpret_cast<double*>(&params.personalWeight));
+    }
+    if (napi_get_named_property(env, args[0], "ngramWeight", &val) == napi_ok) {
+        napi_get_value_double(env, val, reinterpret_cast<double*>(&params.ngramWeight));
+    }
+    if (napi_get_named_property(env, args[0], "autocorrectThreshold", &val) == napi_ok) {
+        napi_get_value_double(env, val, reinterpret_cast<double*>(&params.autocorrectThreshold));
+    }
+
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+    if (g_multiPredictor) {
+        g_multiPredictor->setFusionParams(params);
+        OH_LOG_INFO(LOG_APP, "setFusionParams: dict=%.2f neural=%.2f personal=%.2f ngram=%.2f",
+                    params.dictionaryWeight, params.neuralWeight, 
+                    params.personalWeight, params.ngramWeight);
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * getFusionParams(): FusionParams
+ */
+static napi_value GetFusionParams(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_create_object(env, &result);
+
+    std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+    
+    latinime::FusionParams params;
+    if (g_multiPredictor) {
+        params = g_multiPredictor->getFusionParams();
+    }
+
+    napi_value val;
+    napi_create_double(env, params.dictionaryWeight, &val);
+    napi_set_named_property(env, result, "dictionaryWeight", val);
+    napi_create_double(env, params.neuralWeight, &val);
+    napi_set_named_property(env, result, "neuralWeight", val);
+    napi_create_double(env, params.personalWeight, &val);
+    napi_set_named_property(env, result, "personalWeight", val);
+    napi_create_double(env, params.ngramWeight, &val);
+    napi_set_named_property(env, result, "ngramWeight", val);
+    napi_create_double(env, params.autocorrectThreshold, &val);
+    napi_set_named_property(env, result, "autocorrectThreshold", val);
+    napi_create_double(env, params.maxRelativeScoreGap, &val);
+    napi_set_named_property(env, result, "maxRelativeScoreGap", val);
+
+    return result;
+}
+
+// ============================================================================
+// Yandex Neural Dictionary API
+// ============================================================================
+
+/**
+ * loadYandexDict(path: string): boolean
+ * Load Yandex dictionary from main_ru file
+ */
+static napi_value LoadYandexDict(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (!ValidateArgCount(env, argc, 1, "loadYandexDict")) {
+        return nullptr;
+    }
+    if (!ValidateString(env, args[0], "path")) {
+        return nullptr;
+    }
+
+    std::string pathStr = NapiValueToString(env, args[0]);
+    if (pathStr.empty()) {
+        napi_throw_error(env, "EINVAL", "loadYandexDict: path must not be empty");
+        return nullptr;
+    }
+
+    OH_LOG_INFO(LOG_APP, "loadYandexDict: loading from %{public}s", pathStr.c_str());
+
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
+
+    g_yandexDict = std::make_unique<yandex::YandexDict>();
+
+    // Auto-detect format: *.txt = text format, otherwise binary.
+    std::string lowerPath = pathStr;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    bool isTextFormat = lowerPath.size() >= 4 && lowerPath.substr(lowerPath.size() - 4) == ".txt";
+    
+    bool success;
+    if (isTextFormat) {
+        OH_LOG_INFO(LOG_APP, "loadYandexDict: using TEXT format");
+        success = g_yandexDict->loadFromTextFile(pathStr);
+    } else {
+        OH_LOG_INFO(LOG_APP, "loadYandexDict: using BINARY format (main_ru)");
+        success = g_yandexDict->load(pathStr);
+    }
+
+    if (success) {
+        OH_LOG_INFO(LOG_APP, "loadYandexDict: SUCCESS - %{public}zu words loaded",
+                    g_yandexDict->getWordCount());
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadYandexDict: FAILED to load from %{public}s", pathStr.c_str());
+        g_yandexDict.reset();
+    }
+
+    napi_value result;
+    napi_get_boolean(env, success, &result);
+    return result;
+}
+
+/**
+ * loadNeuralModel(path: string): boolean
+ * Load MindSpore model for neural scoring
+ */
+static napi_value LoadNeuralModel(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        OH_LOG_ERROR(LOG_APP, "loadNeuralModel: missing path argument");
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+
+    char path[512];
+    size_t pathLen;
+    napi_get_value_string_utf8(env, args[0], path, sizeof(path), &pathLen);
+
+    OH_LOG_INFO(LOG_APP, "loadNeuralModel: loading from %{public}s", path);
+
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
+
+    g_neuralScorer = std::make_unique<yandex::NNRtScorer>();
+    bool success = g_neuralScorer->loadModel(path);
+
+    if (success) {
+        OH_LOG_INFO(LOG_APP, "loadNeuralModel: SUCCESS");
+    } else {
+        OH_LOG_ERROR(LOG_APP, "loadNeuralModel: FAILED to load from %{public}s", path);
+        g_neuralScorer.reset();
+    }
+
+    napi_value result;
+    napi_get_boolean(env, success, &result);
+    return result;
+}
+
+/**
+ * loadModels(modelsDir: string): object
+ * Load ALL 15 neural models from the specified directory
+ *
+ * Models loaded:
+ *   TAP RANKING: tap_model_ranker.ms, tap_model_ranker_v2.ms, ranker.ms, ranker_v2.ms, ranker_exp.ms
+ *   SWIPE RANKING: ranker_swipe.ms, ranker_swipe_v2.ms, swipe_blocker.ms
+ *   LANGUAGE: nnlm_model.ms, neural_model.ms, char_model.ms
+ *   AUTOCORRECT: tree_autocorrect_model.ms, lemmer_mhash.ms
+ *   EMOJI: emoji_suggest.ms, search_emoji_model.ms
+ *
+ * @param modelsDir - Directory containing all .ms model files
+ * @returns { loaded: number, total: number, models: string[] }
+ */
+static napi_value LoadModels(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        OH_LOG_ERROR(LOG_APP, "loadModels: missing modelsDir argument");
+        napi_value result;
+        napi_create_object(env, &result);
+
+        napi_value loadedVal, totalVal;
+        napi_create_int32(env, 0, &loadedVal);
+        napi_create_int32(env, 15, &totalVal);
+        napi_set_named_property(env, result, "loaded", loadedVal);
+        napi_set_named_property(env, result, "total", totalVal);
+        return result;
+    }
+
+    // Get models directory path
+    char modelsDir[512];
+    size_t dirLen;
+    napi_get_value_string_utf8(env, args[0], modelsDir, sizeof(modelsDir), &dirLen);
+
+    OH_LOG_INFO(LOG_APP, "loadModels: Loading ALL 15 models from %{public}s", modelsDir);
+
+    // ========================================================================
+    // Initialize NeuralModelManager and load ALL models
+    // ========================================================================
+    int loadedCount = 0;
+    std::vector<std::string> loadedNames;
+    std::vector<std::string> failedNames;
+
+    {
+        std::lock_guard<std::mutex> lock(g_modelManagerMutex);
+
+        // Create manager if not exists
+        if (!g_modelManager) {
+            g_modelManager = std::make_unique<yandex::NeuralModelManager>();
+        }
+
+        // Set models directory
+        g_modelManager->setModelsDirectory(modelsDir);
+
+        // Load ALL 15 models
+        loadedCount = g_modelManager->loadAllModels();
+
+        // Get stats
+        auto stats = g_modelManager->getStats();
+        loadedNames = stats.loadedNames;
+        failedNames = stats.failedNames;
+
+        g_neuralModelsEnabled = (loadedCount > 0);
+
+        OH_LOG_INFO(LOG_APP, "loadModels: %{public}d/15 models loaded, device: %{public}s",
+                    loadedCount, stats.primaryDevice.c_str());
+    }
+
+    // Also load primary ranker in legacy scorer for backward compatibility
+    {
+        std::lock_guard<std::mutex> lock(g_neuralScorerMutex);
+        if (!g_neuralScorer) {
+            g_neuralScorer = std::make_unique<yandex::NNRtScorer>();
+        }
+        std::string primaryPath = std::string(modelsDir) + "/tap_model_ranker.ms";
+        if (g_neuralScorer->loadModel(primaryPath)) {
+            g_neuralScorerEnabled = true;
+            OH_LOG_INFO(LOG_APP, "loadModels: Legacy scorer also loaded");
+        }
+    }
+
+    // Create result object
+    napi_value result;
+    napi_create_object(env, &result);
+
+    // loaded count
+    napi_value loadedVal;
+    napi_create_int32(env, loadedCount, &loadedVal);
+    napi_set_named_property(env, result, "loaded", loadedVal);
+
+    // total count
+    napi_value totalVal;
+    napi_create_int32(env, 15, &totalVal);
+    napi_set_named_property(env, result, "total", totalVal);
+
+    // success flag
+    napi_value successVal;
+    napi_get_boolean(env, loadedCount > 0, &successVal);
+    napi_set_named_property(env, result, "success", successVal);
+
+    // loaded model names array
+    napi_value modelsArray;
+    napi_create_array_with_length(env, loadedNames.size(), &modelsArray);
+    for (size_t i = 0; i < loadedNames.size(); i++) {
+        napi_value nameVal;
+        napi_create_string_utf8(env, loadedNames[i].c_str(), loadedNames[i].length(), &nameVal);
+        napi_set_element(env, modelsArray, static_cast<uint32_t>(i), nameVal);
+    }
+    napi_set_named_property(env, result, "models", modelsArray);
+
+    // failed model names array
+    napi_value failedArray;
+    napi_create_array_with_length(env, failedNames.size(), &failedArray);
+    for (size_t i = 0; i < failedNames.size(); i++) {
+        napi_value nameVal;
+        napi_create_string_utf8(env, failedNames[i].c_str(), failedNames[i].length(), &nameVal);
+        napi_set_element(env, failedArray, static_cast<uint32_t>(i), nameVal);
+    }
+    napi_set_named_property(env, result, "failed", failedArray);
+
+    return result;
+}
+
+/**
+ * getModelStats(): object
+ * Get status of loaded models (including NeuralModelManager stats)
+ */
+static napi_value GetModelStats(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_create_object(env, &result);
+
+    // Helper to set boolean property
+    auto setBool = [env, &result](const char* name, bool value) {
+        napi_value v;
+        napi_get_boolean(env, value, &v);
+        napi_set_named_property(env, result, name, v);
+    };
+
+    // Helper to set string property
+    auto setString = [env, &result](const char* name, const std::string& value) {
+        napi_value v;
+        napi_create_string_utf8(env, value.c_str(), value.length(), &v);
+        napi_set_named_property(env, result, name, v);
+    };
+
+    // Helper to set int property
+    auto setInt = [env, &result](const char* name, int value) {
+        napi_value v;
+        napi_create_int32(env, value, &v);
+        napi_set_named_property(env, result, name, v);
+    };
+
+    setBool("yandexDictLoaded", g_yandexDict && g_yandexDict->isLoaded());
+    setBool("neuralModelsEnabled", g_neuralModelsEnabled);
+    setBool("beamSearchReady", g_beamSearch != nullptr);
+
+    // NeuralModelManager stats (ALL 15 models)
+    if (g_modelManager) {
+        std::lock_guard<std::mutex> lock(g_modelManagerMutex);
+        auto stats = g_modelManager->getStats();
+
+        setInt("totalModels", stats.totalModels);
+        setInt("loadedModels", stats.loadedModels);
+        setString("primaryDevice", stats.primaryDevice);
+
+        // Create arrays for loaded/failed model names
+        napi_value loadedArray;
+        napi_create_array_with_length(env, stats.loadedNames.size(), &loadedArray);
+        for (size_t i = 0; i < stats.loadedNames.size(); i++) {
+            napi_value nameVal;
+            napi_create_string_utf8(env, stats.loadedNames[i].c_str(), stats.loadedNames[i].length(), &nameVal);
+            napi_set_element(env, loadedArray, static_cast<uint32_t>(i), nameVal);
+        }
+        napi_set_named_property(env, result, "loadedModelNames", loadedArray);
+
+        napi_value failedArray;
+        napi_create_array_with_length(env, stats.failedNames.size(), &failedArray);
+        for (size_t i = 0; i < stats.failedNames.size(); i++) {
+            napi_value nameVal;
+            napi_create_string_utf8(env, stats.failedNames[i].c_str(), stats.failedNames[i].length(), &nameVal);
+            napi_set_element(env, failedArray, static_cast<uint32_t>(i), nameVal);
+        }
+        napi_set_named_property(env, result, "failedModelNames", failedArray);
+    } else {
+        setInt("totalModels", 15);
+        setInt("loadedModels", 0);
+        setString("primaryDevice", "Not initialized");
+    }
+
+    // Legacy scorer status (backward compat)
+    setBool("legacyScorerEnabled", g_neuralScorerEnabled);
+    setBool("legacyScorerLoaded", g_neuralScorer && g_neuralScorer->isLoaded());
+    if (g_neuralScorer) {
+        setString("legacyDevice", g_neuralScorer->getDeviceInfo());
+    }
+
+    return result;
+}
+
+/**
+ * getYandexSuggestions(prefix: string, limit?: number, context?: string): ScoredWord[]
+ * Get neural-scored suggestions from Yandex dictionary
+ */
+static napi_value GetYandexSuggestions(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 1) {
+        OH_LOG_ERROR(LOG_APP, "getYandexSuggestions: missing prefix argument");
+        napi_value result;
+        napi_create_array(env, &result);
+        return result;
+    }
+
+    // Get prefix
+    char prefix[256];
+    size_t prefixLen;
+    napi_get_value_string_utf8(env, args[0], prefix, sizeof(prefix), &prefixLen);
+
+    // Get limit (default: 10)
+    int limit = 10;
+    if (argc >= 2) {
+        napi_valuetype type;
+        napi_typeof(env, args[1], &type);
+        if (type == napi_number) {
+            napi_get_value_int32(env, args[1], &limit);
+        }
+    }
+
+    // Get context (default: empty)
+    char context[512] = "";
+    if (argc >= 3) {
+        napi_valuetype type;
+        napi_typeof(env, args[2], &type);
+        if (type == napi_string) {
+            size_t contextLen;
+            napi_get_value_string_utf8(env, args[2], context, sizeof(context), &contextLen);
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
+
+    // Create result array
+    napi_value result;
+    napi_create_array(env, &result);
+
+    if (!g_yandexDict || !g_yandexDict->isLoaded()) {
+        OH_LOG_WARN(LOG_APP, "getYandexSuggestions: Yandex dict not loaded");
+        return result;
+    }
+
+    // Get suggestions from trie
+    auto suggestions = g_yandexDict->getSuggestions(prefix, limit * 2);  // Get more for neural scoring
+
+    // If neural model is loaded, use it for scoring
+    if (g_neuralScorer && g_neuralScorer->isLoaded()) {
+        // Convert to scoring candidates
+        std::vector<yandex::ScoringCandidate> candidates;
+        candidates.reserve(suggestions.size());
+
+        for (const auto& s : suggestions) {
+            yandex::ScoringCandidate c;
+            c.word = s.word;
+            c.wordId = g_yandexDict->getWordId(s.word);
+            c.baseScore = s.score;
+            candidates.push_back(c);
+        }
+
+        // Score with neural model
+        auto scored = g_neuralScorer->score(candidates, context);
+
+        // Convert to NAPI array
+        uint32_t idx = 0;
+        for (const auto& s : scored) {
+            if (idx >= static_cast<uint32_t>(limit)) break;
+
+            napi_value item;
+            napi_create_object(env, &item);
+
+            napi_value wordVal, scoreVal, neuralVal, freqVal;
+            napi_create_string_utf8(env, s.word.c_str(), s.word.length(), &wordVal);
+            napi_create_double(env, s.score, &scoreVal);
+            napi_create_double(env, s.neuralScore, &neuralVal);
+            napi_create_double(env, s.freqScore, &freqVal);
+
+            napi_set_named_property(env, item, "word", wordVal);
+            napi_set_named_property(env, item, "score", scoreVal);
+            napi_set_named_property(env, item, "neuralScore", neuralVal);
+            napi_set_named_property(env, item, "freqScore", freqVal);
+
+            napi_set_element(env, result, idx++, item);
+        }
+    } else {
+        // No neural model - return raw suggestions
+        uint32_t idx = 0;
+        for (const auto& s : suggestions) {
+            if (idx >= static_cast<uint32_t>(limit)) break;
+
+            napi_value item;
+            napi_create_object(env, &item);
+
+            napi_value wordVal, scoreVal;
+            napi_create_string_utf8(env, s.word.c_str(), s.word.length(), &wordVal);
+            napi_create_double(env, s.score, &scoreVal);
+
+            napi_set_named_property(env, item, "word", wordVal);
+            napi_set_named_property(env, item, "score", scoreVal);
+
+            napi_set_element(env, result, idx++, item);
+        }
+    }
+
+    return result;
+}
+
+/**
+ * getYandexStats(): object
+ * Get Yandex dictionary statistics
+ */
+static napi_value GetYandexStats(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
+
+    napi_value result;
+    napi_create_object(env, &result);
+
+    bool dictLoaded = g_yandexDict && g_yandexDict->isLoaded();
+    bool modelLoaded = g_neuralScorer && g_neuralScorer->isLoaded();
+
+    napi_value dictLoadedVal, modelLoadedVal;
+    napi_get_boolean(env, dictLoaded, &dictLoadedVal);
+    napi_get_boolean(env, modelLoaded, &modelLoadedVal);
+    napi_set_named_property(env, result, "dictLoaded", dictLoadedVal);
+    napi_set_named_property(env, result, "modelLoaded", modelLoadedVal);
+
+    if (dictLoaded) {
+        napi_value wordCountVal, memoryVal;
+        napi_create_int32(env, static_cast<int32_t>(g_yandexDict->getWordCount()), &wordCountVal);
+        napi_create_int64(env, static_cast<int64_t>(g_yandexDict->getMemoryUsage()), &memoryVal);
+        napi_set_named_property(env, result, "wordCount", wordCountVal);
+        napi_set_named_property(env, result, "memoryBytes", memoryVal);
+    }
+
+    return result;
+}
+
+/**
+ * unloadYandex(): void
+ * Unload Yandex dictionary and neural model
+ */
+static napi_value UnloadYandex(napi_env env, napi_callback_info info) {
+    std::lock_guard<std::mutex> lock(g_yandexMutex);
+
+    if (g_neuralScorer) {
+        g_neuralScorer->unload();
+        g_neuralScorer.reset();
+        OH_LOG_INFO(LOG_APP, "unloadYandex: neural model unloaded");
+    }
+
+    if (g_yandexDict) {
+        g_yandexDict.reset();
+        OH_LOG_INFO(LOG_APP, "unloadYandex: dictionary unloaded");
+    }
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+// ============================================================================
+// End Yandex Neural Dictionary API
+// ============================================================================
 
 /**
  * unload(): void
@@ -2284,24 +3504,35 @@ static napi_value Unload(napi_env env, napi_callback_info info) {
     ClearSuggestionCache();
     OH_LOG_DEBUG(LOG_APP, "unload: cleared suggestion cache");
 
-    // Clean up dictionary instances with mutex protection
+    // Clean up MultiPredictor
     {
-        std::lock_guard<std::mutex> lock(g_trieMutex);
-
-        // unique_ptr::reset() is safe even if already null (no double-free)
-        if (g_suggestEngine) {
-            OH_LOG_DEBUG(LOG_APP, "unload: releasing SuggestEngine");
-            g_suggestEngine.reset();  // Safely deletes and sets to nullptr
+        std::lock_guard<std::mutex> lock(g_multiPredictorMutex);
+        if (g_multiPredictor) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing MultiPredictor");
+            g_multiPredictor.reset();
         }
+    }
 
-        if (g_trie) {
-            OH_LOG_DEBUG(LOG_APP, "unload: releasing Trie");
-            g_trie.reset();  // Safely deletes and sets to nullptr
+    // Clean up BeamSearch
+    {
+        std::lock_guard<std::mutex> lock(g_beamSearchMutex);
+        if (g_beamSearch) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing BeamSearch");
+            g_beamSearch.reset();
         }
+    }
 
-        if (g_flatTrie) {
-            OH_LOG_DEBUG(LOG_APP, "unload: releasing FlatTrie");
-            g_flatTrie.reset();  // Safely deletes and sets to nullptr
+    // Clean up Yandex Dictionary and Neural scorer
+    {
+        std::lock_guard<std::mutex> lock(g_yandexMutex);
+        if (g_neuralScorer) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing MindSpore scorer");
+            g_neuralScorer->unload();
+            g_neuralScorer.reset();
+        }
+        if (g_yandexDict) {
+            OH_LOG_DEBUG(LOG_APP, "unload: releasing Yandex dict");
+            g_yandexDict.reset();
         }
     }
 
@@ -2318,13 +3549,13 @@ static napi_value Init(napi_env env, napi_value exports) {
     // API 22 Optimization: Initialize cached property keys for faster object creation
     InitCachedPropertyKeys(env);
 
-    // Add binary dictionary functions to exports
+    // Add binary dictionary functions to exports (legacy OpenBoard - kept for compatibility)
     napi_value binaryDictExports = latinime::RegisterBinaryDictionary(env);
-    
+
     // Add proximity info functions to exports
     napi_value proximityInfoExports = latinime::RegisterProximityInfo(env);
-    
-    // Add dic traverse session functions to exports
+
+    // Add dic traverse session functions to exports (legacy OpenBoard - kept for compatibility)
     napi_value dicTraverseSessionExports = latinime::RegisterDicTraverseSession(env);
     
     // Set binary dictionary as a property of main exports
@@ -2339,11 +3570,37 @@ static napi_value Init(napi_env env, napi_value exports) {
     // Add batch operations functions to exports
     napi_value batchOpsExports = latinime::RegisterBatchOperations(env);
     napi_set_named_property(env, exports, "batchOps", batchOpsExports);
-    
+
+    // Add MultiPredictor namespace (Yandex-style multi-source prediction)
+    napi_value multiPredictorExports;
+    napi_create_object(env, &multiPredictorExports);
+    napi_property_descriptor multiPredictorDesc[] = {
+        { "init", nullptr, InitMultiPredictor, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "addDictionaryPredictor", nullptr, AddDictionaryPredictor, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "addNgramPredictor", nullptr, AddNgramPredictor, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "removePredictor", nullptr, RemovePredictor, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "setPredictorEnabled", nullptr, SetPredictorEnabled, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getPredictions", nullptr, GetMultiPredictions, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "clear", nullptr, ClearMultiPredictor, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getStats", nullptr, GetMultiPredictorStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+        // Yandex-style filtering
+        { "addToBlacklist", nullptr, AddToBlacklist, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "removeFromBlacklist", nullptr, RemoveFromBlacklist, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "addToAutocorrectBlocker", nullptr, AddToAutocorrectBlocker, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "removeFromAutocorrectBlocker", nullptr, RemoveFromAutocorrectBlocker, nullptr, nullptr, nullptr, napi_default, nullptr },
+        // Score fusion params
+        { "setFusionParams", nullptr, SetFusionParams, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getFusionParams", nullptr, GetFusionParams, nullptr, nullptr, nullptr, napi_default, nullptr },
+    };
+    napi_define_properties(env, multiPredictorExports, sizeof(multiPredictorDesc) / sizeof(multiPredictorDesc[0]), multiPredictorDesc);
+    napi_set_named_property(env, exports, "multiPredictor", multiPredictorExports);
+
     // Add other functions to main exports
     napi_property_descriptor desc[] = {
         { "loadDictionary", nullptr, LoadDictionary, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "loadDictionarySync", nullptr, LoadDictionarySync, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "loadDictionaryFromFd", nullptr, LoadDictionaryFromFd, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "loadTextDictionaryFromFd", nullptr, LoadTextDictionaryFromFd, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "contains", nullptr, Contains, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "getFrequency", nullptr, GetFrequency, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "getSuggestions", nullptr, GetSuggestions, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -2379,6 +3636,15 @@ static napi_value Init(napi_env env, napi_value exports) {
         { "resetTrailData", nullptr, ResetTrailData, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setTrailRenderParams", nullptr, SetTrailRenderParams, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "compactTrailBuffers", nullptr, CompactTrailBuffers, nullptr, nullptr, nullptr, napi_default, nullptr },
+        // Yandex Neural Dictionary API
+        { "loadYandexDict", nullptr, LoadYandexDict, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "loadNeuralModel", nullptr, LoadNeuralModel, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getYandexSuggestions", nullptr, GetYandexSuggestions, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getYandexStats", nullptr, GetYandexStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "unloadYandex", nullptr, UnloadYandex, nullptr, nullptr, nullptr, napi_default, nullptr },
+        // Additional Models API (Yandex-style)
+        { "loadModels", nullptr, LoadModels, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getModelStats", nullptr, GetModelStats, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
 
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

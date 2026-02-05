@@ -47,6 +47,9 @@ public:
     bool loadFromFile(const std::string& path);
     bool loadFromTextFile(const std::string& path);
     bool loadFromBinaryFile(const std::string& path);
+    
+    // Memory-mapped loading (instant, no file read into RAM)
+    bool loadFromFd(int fd, size_t offset, size_t length);
 
     // Basic operations
     bool contains(const std::string& word) const;

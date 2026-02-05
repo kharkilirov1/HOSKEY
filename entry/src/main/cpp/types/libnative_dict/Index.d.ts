@@ -2,10 +2,18 @@
  * HOSKEY Native Dictionary Module
  * Type declarations for N-API bridge
  *
+ * Architecture: Yandex-style dictionary with mmap-based CompTrie
+ * - Instant dictionary loading via mmap
+ * - Neural model scoring (MindSpore/NNRt)
+ * - Beam search for swipe/gesture input
+ *
  * All methods validate argument types at runtime and throw
  * TypeError if invalid arguments are provided. Methods that
  * require a loaded dictionary return safe defaults (false, 0,
  * empty array, null) when dictionary is not loaded.
+ *
+ * NOTE: FlatTrie and OpenBoard-based functions are DEPRECATED.
+ * Use loadDictionaryFromFd() with Yandex format instead.
  */
 
 /**
@@ -76,6 +84,7 @@ export declare interface SwipeResult {
 
 /**
  * FlatTrie statistics
+ * @deprecated FlatTrie is legacy OpenBoard format. Use getStats() for Yandex dictionary stats.
  */
 export declare interface FlatTrieStats {
   wordCount: number;
@@ -215,6 +224,18 @@ declare interface NativeDictModule {
   loadDictionarySync(path: string): boolean;
 
   /**
+   * Load dictionary from file descriptor using memory-mapping (mmap)
+   * This is INSTANT - no file reading into RAM, data accessed on-demand
+   * Use this for rawfile resources where fd is available
+   *
+   * @param fd - File descriptor from getRawFd()
+   * @param offset - Offset within file where data starts
+   * @param length - Length of data to map
+   * @returns Promise that resolves to true if loaded successfully
+   */
+  loadDictionaryFromFd(fd: number, offset: number, length: number): Promise<boolean>;
+
+  /**
    * Check if word exists in dictionary
    * @param word - Word to check
    * @returns true if word exists, false if not found or dictionary not loaded
@@ -270,27 +291,30 @@ declare interface NativeDictModule {
    */
   unload(): void;
 
-  // ============ FlatTrie API (instant loading) ============
+  // ============ FlatTrie API (DEPRECATED - use Yandex format) ============
 
   /**
    * Load pre-serialized .flat dictionary for instant loading (<50ms)
+   * @deprecated Use loadDictionaryFromFd() with Yandex format instead. Always returns false.
    * @param path - Path to .flat file
-   * @returns true if loaded successfully
+   * @returns false (deprecated)
    */
   loadFlatDictionary(path: string): boolean;
 
   /**
    * Convert .dict file to optimized .flat format
+   * @deprecated Yandex format doesn't require conversion. Always returns false.
    * @param inputPath - Path to input .dict file
    * @param outputPath - Path to output .flat file
    * @param locale - Optional language code (e.g., 'ru', 'en')
-   * @returns true if conversion successful
+   * @returns false (deprecated)
    */
   convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean;
 
   /**
    * Get FlatTrie statistics
-   * @returns FlatTrie stats or null if not loaded
+   * @deprecated Use getStats() for Yandex dictionary stats. Always returns null.
+   * @returns null (deprecated)
    */
   getFlatTrieStats(): FlatTrieStats | null;
 
@@ -315,10 +339,11 @@ declare interface NativeDictModule {
    */
   processSwipePath(points: Array<TouchPoint>): SwipeResult | null;
 
-  // ============ Learning Methods ============
+  // ============ Learning Methods (STUBBED - TODO: implement in YandexDict) ============
 
   /**
    * Add learned word with bigram context
+   * @stub Currently does nothing. Will be implemented in YandexDict.
    * @param word - Word to learn
    * @param prevWord - Previous word for bigram context
    * @param count - Usage count (default 1)
@@ -327,67 +352,78 @@ declare interface NativeDictModule {
 
   /**
    * Save user dictionary to file
+   * @stub Currently returns false. Will be implemented in YandexDict.
    * @param path - Path to save file
-   * @returns true if saved successfully
+   * @returns false (not implemented)
    */
   saveUserDictionary(path: string): boolean;
 
   /**
    * Load user dictionary from file
+   * @stub Currently returns false. Will be implemented in YandexDict.
    * @param path - Path to load from
-   * @returns true if loaded successfully
+   * @returns false (not implemented)
    */
   loadUserDictionary(path: string): boolean;
 
   /**
    * Clear all learned words
+   * @stub Currently does nothing. Will be implemented in YandexDict.
    */
   clearLearnedWords(): void;
 
   /**
    * Get count of learned words
-   * @returns Number of learned words
+   * @stub Currently returns 0. Will be implemented in YandexDict.
+   * @returns 0 (not implemented)
    */
   getLearnedWordsCount(): number;
 
   /**
    * Remove a learned word
+   * @stub Currently returns false. Will be implemented in YandexDict.
    * @param word - Word to remove
-   * @returns true if removed
+   * @returns false (not implemented)
    */
   removeLearnedWord(word: string): boolean;
 
   /**
    * Get learned boost score for word with context
+   * @stub Currently returns 0. Will be implemented in YandexDict.
    * @param word - Word to check
    * @param prevWord - Previous word for context
-   * @returns Boost score (0 if not learned)
+   * @returns 0 (not implemented)
    */
   getLearnedBoost(word: string, prevWord: string): number;
 
   /**
    * Get count of bigram learned words
-   * @returns Number of bigram entries
+   * @stub Currently returns 0. Will be implemented in YandexDict.
+   * @returns 0 (not implemented)
    */
   getBigramLearnedWordsCount(): number;
 
   /**
    * Legacy: Add learned word simple (no context)
+   * @stub Not implemented
    */
   addLearnedWordSimple(word: string, frequency: number): void;
 
   /**
    * Legacy: Record word usage
+   * @stub Not implemented
    */
   recordWordUsage(word: string): void;
 
   /**
    * Legacy: Save user dict
+   * @stub Not implemented
    */
   saveUserDict(path: string): boolean;
 
   /**
    * Legacy: Load user dict
+   * @stub Not implemented
    */
   loadUserDict(path: string): boolean;
 
@@ -437,6 +473,144 @@ declare interface NativeDictModule {
    * Compact trail buffers to save memory
    */
   compactTrailBuffers(): void;
+
+  // ============ Yandex Neural Dictionary API ============
+
+  /**
+   * Load Yandex dictionary from file
+   * @param path - Path to dictionary (binary main_ru or text .txt)
+   * @returns true if loaded successfully
+   */
+  loadYandexDict(path: string): boolean;
+
+  /**
+   * Load MindSpore neural model for scoring
+   * @param path - Path to .ms model file
+   * @returns true if loaded successfully
+   */
+  loadNeuralModel(path: string): boolean;
+
+  /**
+   * Load ALL 15 MindSpore neural models for Yandex keyboard
+   * Models are loaded from the specified directory.
+   *
+   * TAP RANKING: tap_model_ranker.ms, tap_model_ranker_v2.ms, ranker.ms, ranker_v2.ms, ranker_exp.ms
+   * SWIPE RANKING: ranker_swipe.ms, ranker_swipe_v2.ms, swipe_blocker.ms
+   * LANGUAGE: nnlm_model.ms, neural_model.ms, char_model.ms
+   * AUTOCORRECT: tree_autocorrect_model.ms, lemmer_mhash.ms
+   * EMOJI: emoji_suggest.ms, search_emoji_model.ms
+   *
+   * @param modelsDir - Directory containing all .ms model files
+   * @returns Result object with loaded/failed counts and model names
+   */
+  loadModels(modelsDir: string): LoadModelsResult;
+
+  /**
+   * Get status of loaded models
+   * @returns Model statistics
+   */
+  getModelStats(): ModelStats;
+
+  /**
+   * Get neural-scored suggestions from Yandex dictionary
+   * @param prefix - Input prefix
+   * @param limit - Maximum results (default: 10)
+   * @param context - Previous words for context (optional)
+   * @returns Array of scored suggestions
+   */
+  getYandexSuggestions(prefix: string, limit?: number, context?: string): YandexSuggestion[];
+
+  /**
+   * Get Yandex dictionary statistics
+   * @returns Stats object with dictLoaded, modelLoaded, wordCount, memoryBytes
+   */
+  getYandexStats(): YandexStats;
+
+  /**
+   * Unload Yandex dictionary and neural model
+   */
+  unloadYandex(): void;
+
+  // ============ MultiPredictor namespace ============
+  
+  multiPredictor: {
+    init(): boolean;
+    addDictionaryPredictor(): boolean;
+    addNgramPredictor(): boolean;
+    removePredictor(sourceId: number): void;
+    setPredictorEnabled(sourceId: number, enabled: boolean): void;
+    getPredictions(currentWord: string, prevWord?: string, maxResults?: number): SuggestResult[];
+    clear(): void;
+    getStats(): { predictorCount: number } | null;
+    // Yandex-style filtering
+    addToBlacklist(word: string): void;
+    removeFromBlacklist(word: string): void;
+    addToAutocorrectBlocker(word: string): void;
+    removeFromAutocorrectBlocker(word: string): void;
+    // Score fusion params
+    setFusionParams(params: FusionParams): void;
+    getFusionParams(): FusionParams;
+  };
+}
+
+/**
+ * Yandex suggestion result
+ */
+declare interface YandexSuggestion {
+  word: string;
+  score: number;
+  neuralScore?: number;
+  freqScore?: number;
+}
+
+/**
+ * Yandex dictionary statistics
+ */
+declare interface YandexStats {
+  dictLoaded: boolean;
+  modelLoaded: boolean;
+  wordCount?: number;
+  memoryBytes?: number;
+}
+
+/**
+ * Result of loading all 15 neural models
+ */
+declare interface LoadModelsResult {
+  success: boolean;
+  loaded: number;      // Number of models loaded successfully
+  total: number;       // Total models (15)
+  models: string[];    // Names of loaded models
+  failed: string[];    // Names of failed models
+}
+
+/**
+ * Model statistics (ALL 15 neural models)
+ */
+declare interface ModelStats {
+  yandexDictLoaded: boolean;
+  neuralModelsEnabled: boolean;
+  beamSearchReady: boolean;
+  totalModels: number;         // 15 total
+  loadedModels: number;        // How many loaded
+  primaryDevice: string;       // NPU/NNRT/CPU
+  loadedModelNames: string[];  // Names of loaded models
+  failedModelNames: string[];  // Names of failed models
+  legacyScorerEnabled: boolean;
+  legacyScorerLoaded: boolean;
+  legacyDevice?: string;
+}
+
+/**
+ * Score fusion parameters (Yandex-style)
+ */
+declare interface FusionParams {
+  dictionaryWeight?: number;
+  neuralWeight?: number;
+  personalWeight?: number;
+  ngramWeight?: number;
+  autocorrectThreshold?: number;
+  maxRelativeScoreGap?: number;
 }
 
 /**
@@ -448,6 +622,7 @@ export default nativeDict;
 // Named exports for standalone function usage
 export declare function loadDictionary(path: string): Promise<boolean>;
 export declare function loadDictionarySync(path: string): boolean;
+export declare function loadDictionaryFromFd(fd: number, offset: number, length: number): Promise<boolean>;
 export declare function contains(word: string): boolean;
 export declare function getFrequency(word: string): number;
 export declare function getSuggestions(prefix: string, limit: number): SuggestResult[];
@@ -458,19 +633,30 @@ export declare function unload(): void;
 export declare function setSwipeKeyboardLayout(keys: Array<KeyBounds>): boolean;
 export declare function processSwipePath(points: Array<TouchPoint>): SwipeResult | null;
 
-// FlatTrie functions
+// FlatTrie functions (DEPRECATED - always return false/null)
+/** @deprecated Use loadDictionaryFromFd() with Yandex format */
 export declare function loadFlatDictionary(path: string): boolean;
+/** @deprecated Yandex format doesn't require conversion */
 export declare function convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean;
+/** @deprecated Use getStats() for Yandex dictionary stats */
 export declare function getFlatTrieStats(): FlatTrieStats | null;
 
-// Learning functions
+// Learning functions (STUBBED - TODO: implement in YandexDict)
+/** @stub Not implemented - will be added to YandexDict */
 export declare function addLearnedWord(word: string, prevWord: string, count?: number): void;
+/** @stub Returns false - will be implemented in YandexDict */
 export declare function saveUserDictionary(path: string): boolean;
+/** @stub Returns false - will be implemented in YandexDict */
 export declare function loadUserDictionary(path: string): boolean;
+/** @stub Does nothing - will be implemented in YandexDict */
 export declare function clearLearnedWords(): void;
+/** @stub Returns 0 - will be implemented in YandexDict */
 export declare function getLearnedWordsCount(): number;
+/** @stub Returns false - will be implemented in YandexDict */
 export declare function removeLearnedWord(word: string): boolean;
+/** @stub Returns 0 - will be implemented in YandexDict */
 export declare function getLearnedBoost(word: string, prevWord: string): number;
+/** @stub Returns 0 - will be implemented in YandexDict */
 export declare function getBigramLearnedWordsCount(): number;
 
 // Trail functions (Yandex-style)

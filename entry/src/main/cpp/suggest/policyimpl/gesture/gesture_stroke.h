@@ -47,11 +47,12 @@ struct GestureParams {
     // Bezier smoothing factor (0.0 = no smoothing, 1.0 = maximum)
     float smoothingFactor = 0.3f;
     
-    // === Yandex-style parameters ===
+    // === Yandex-style parameters (from json_config.json) ===
     
     // Minimum distance between sampled points (pixels)
-    // Points closer than this are merged
-    float minSamplingDistance = 3.0f;
+    // Yandex: SamplingDistance = 0.1 (very dense)
+    // We use slightly larger for performance
+    float minSamplingDistance = 0.5f;  // Changed from 3.0f to match Yandex
     
     // Maximum angle change between segments (radians)
     // Controls smoothness of trail curves
@@ -72,6 +73,26 @@ struct GestureParams {
     // Speed threshold for adaptive sampling (pixels/second)
     // Below this speed, more points are sampled
     float adaptiveSamplingSpeedThreshold = 300.0f;
+    
+    // === Yandex Swipe/Rule parameters ===
+    
+    // Key detection X weight (Yandex: StartKeyDistanceWeightX = 0.8)
+    float keyDistanceWeightX = 0.8f;
+    
+    // Key detection Y weight (Yandex: StartKeyDistanceWeightY = 1.4)
+    float keyDistanceWeightY = 1.4f;
+    
+    // Maximum squared distance to consider key hit (Yandex: KeySquaredDistanceLimit = 3000)
+    float keySquaredDistanceLimit = 3000.0f;
+    
+    // Maximum transition squared distance (Yandex: MaxTransitionSquaredDistance = 10000)
+    float maxTransitionSquaredDistance = 10000.0f;
+    
+    // Beam width for candidate search (Yandex: BeamWidth = 300)
+    int beamWidth = 300;
+    
+    // TopK candidates (Yandex: Swipe/Linear TopK = 24)
+    int topK = 24;
 };
 
 /**

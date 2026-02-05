@@ -11,10 +11,10 @@ import { common } from '@kit.AbilityKit';
 const PREFERENCES_NAME = 'hoskey_settings';
 
 // All available languages in the keyboard
-export const ALL_LANGUAGES: string[] = ['en', 'it', 'pl', 'ru'];
+export const ALL_LANGUAGES: string[] = ['en', 'ru', 'uk', 'kk', 'de', 'fr', 'es', 'it', 'pl'];
 
-// Default settings
-const DEFAULT_ENABLED_LANGUAGES: string[] = ['en', 'ru'];
+// Default settings - will be set based on system language
+const DEFAULT_ENABLED_LANGUAGES: string[] = ['ru', 'en'];
 const DEFAULT_KEYBOARD_HEIGHT: number = 260; // Total keyboard height in pixels
 
 // Settings keys

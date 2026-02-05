@@ -1,18 +1,91 @@
 /*
  * Copyright (c) 2024 HOSKEY Project
  * Licensed under the Apache License, Version 2.0
+ * 
+ * Multi-Predictor with Yandex-style Score Fusion
  */
 
 #include "multi_predictor.h"
 #include "suggest/core/dictionary/dictionary.h"
 #include "suggest/core/result/suggestion_results.h"
+#include <cmath>
+#include <codecvt>
+#include <locale>
 
 namespace latinime {
+
+// ==================== Utility Functions ====================
+
+std::string MultiPredictor::codePointsToString(const std::vector<int>& codePoints) {
+    std::string result;
+    result.reserve(codePoints.size() * 2);  // Estimate for UTF-8
+    
+    for (int cp : codePoints) {
+        if (cp < 0x80) {
+            result += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            result += static_cast<char>(0xC0 | (cp >> 6));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            result += static_cast<char>(0xE0 | (cp >> 12));
+            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            result += static_cast<char>(0xF0 | (cp >> 18));
+            result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    return result;
+}
 
 // ==================== MultiPredictor ====================
 
 MultiPredictor::MultiPredictor() {
     mPredictors.reserve(MAX_PREDICTORS);
+    initDefaultBlacklist();
+}
+
+void MultiPredictor::initDefaultBlacklist() {
+    // Russian profanity filter (common swear word roots)
+    // These will not appear in suggestions
+    static const char* profanityWords[] = {
+        // Core obscenities
+        "хуй", "хуя", "хуе", "хуи", "хую", "хуём", "хуёв",
+        "пизд", "пизда", "пиздец", "пизды", "пизду",
+        "блядь", "бляди", "блядей", "блядям", "блядина",
+        "ебать", "ебал", "ебан", "ебу", "ебёт", "ебут", "ёб", "ёбан",
+        "сука", "суки", "сукам", "сучка", "сучки",
+        // Derivatives
+        "мудак", "мудаки", "мудила", "мудило",
+        "пидор", "пидар", "пидорас", "пидары",
+        "залупа", "залупы",
+        "жопа", "жопу", "жопы", "жопой",
+        "говно", "говна", "говну", "говном",
+        "дерьмо", "дерьма",
+        "хер", "херня", "херов",
+        "срать", "срал", "срёт",
+        "ссать", "ссал", "ссыт",
+        "шлюха", "шлюхи",
+        "бля", "блять", "блин",  // Common expletives
+        "нахуй", "нахуя", "нахер",
+        "похуй", "похер",
+        "охуеть", "охуел", "охуенн",
+        "заебал", "заебись", "заёб",
+        "ебанут", "ебанат", "ебанько",
+        "пиздец", "пиздат", "пиздюк",
+        "мудозвон", "долбоёб", "долбоеб",
+        "уёб", "уебок", "уебан",
+        // Compound forms
+        "хуесос", "хуеплёт", "хуйня",
+        "пиздобол", "пиздострадал",
+        "ёбаный", "ебаный", "ёбанный"
+    };
+    
+    for (const char* word : profanityWords) {
+        blacklist_.insert(word);
+    }
 }
 
 MultiPredictor::~MultiPredictor() = default;
@@ -43,6 +116,60 @@ void MultiPredictor::clearPredictors() {
     mPredictors.clear();
 }
 
+void MultiPredictor::setPredictorEnabled(int sourceId, bool enabled) {
+    for (auto& predictor : mPredictors) {
+        if (predictor->getSourceId() == sourceId) {
+            predictor->setEnabled(enabled);
+            break;
+        }
+    }
+}
+
+void MultiPredictor::setPredictorWeight(int sourceId, float weight) {
+    for (auto& predictor : mPredictors) {
+        if (predictor->getSourceId() == sourceId) {
+            predictor->setWeight(weight);
+            break;
+        }
+    }
+}
+
+// ==================== Blacklist/Blocker ====================
+
+void MultiPredictor::addToBlacklist(const std::string& word) {
+    blacklist_.insert(word);
+}
+
+void MultiPredictor::removeFromBlacklist(const std::string& word) {
+    blacklist_.erase(word);
+}
+
+void MultiPredictor::clearBlacklist() {
+    blacklist_.clear();
+}
+
+bool MultiPredictor::isBlacklisted(const std::string& word) const {
+    return blacklist_.find(word) != blacklist_.end();
+}
+
+void MultiPredictor::addToAutocorrectBlocker(const std::string& word) {
+    autocorrectBlocker_.insert(word);
+}
+
+void MultiPredictor::removeFromAutocorrectBlocker(const std::string& word) {
+    autocorrectBlocker_.erase(word);
+}
+
+void MultiPredictor::clearAutocorrectBlocker() {
+    autocorrectBlocker_.clear();
+}
+
+bool MultiPredictor::isAutocorrectBlocked(const std::string& word) const {
+    return autocorrectBlocker_.find(word) != autocorrectBlocker_.end();
+}
+
+// ==================== Main Prediction Logic ====================
+
 void MultiPredictor::getSuggestions(const PredictionInput& input,
                                     int maxResults,
                                     std::vector<Suggestion>& outSuggestions) {
@@ -62,27 +189,84 @@ void MultiPredictor::getSuggestions(const PredictionInput& input,
         }
         
         std::vector<Suggestion> predictorResults;
-        predictorResults.reserve(maxResults);
+        predictorResults.reserve(maxResults * 2);  // Get more for merging
         
-        predictor->predict(input, maxResults, predictorResults);
+        predictor->predict(input, maxResults * 2, predictorResults);
+        
+        // Tag each result with source
+        for (auto& s : predictorResults) {
+            s.sourceId = predictor->getSourceId();
+            s.sourceMask = predictor->getSourceId();
+            
+            // Ensure word string is set
+            if (s.word.empty() && !s.codePoints.empty()) {
+                s.word = codePointsToString(s.codePoints);
+            }
+        }
         
         if (!predictorResults.empty()) {
             allResults.push_back(std::move(predictorResults));
         }
     }
     
-    // Merge all results
+    // Merge all results with score fusion
     mergeSuggestions(allResults, maxResults, outSuggestions);
+    
+    // Apply blacklist filter
+    applyFilters(outSuggestions);
 }
 
-void MultiPredictor::setPredictorEnabled(int sourceId, bool enabled) {
-    for (auto& predictor : mPredictors) {
-        if (predictor->getSourceId() == sourceId) {
-            // Note: Would need to add setEnabled to base class or cast
-            // For now, predictors manage their own enabled state
-            break;
+void MultiPredictor::applyFilters(std::vector<Suggestion>& suggestions) {
+    if (blacklist_.empty()) {
+        return;
+    }
+    
+    suggestions.erase(
+        std::remove_if(suggestions.begin(), suggestions.end(),
+            [this](const Suggestion& s) {
+                return isBlacklisted(s.word);
+            }),
+        suggestions.end());
+}
+
+bool MultiPredictor::shouldAutocorrect(const std::string& input, 
+                                       const std::vector<Suggestion>& suggestions) const {
+    if (suggestions.empty()) {
+        return false;
+    }
+    
+    // Check autocorrect blocker
+    if (isAutocorrectBlocked(input)) {
+        return false;
+    }
+    
+    const auto& top = suggestions[0];
+    
+    // Don't autocorrect to the same word
+    if (top.word == input) {
+        return false;
+    }
+    
+    // Check score threshold
+    if (top.score < fusionParams_.autocorrectThreshold) {
+        return false;
+    }
+    
+    // Check score gap (Yandex-style)
+    if (suggestions.size() > 1) {
+        float gap = top.score - suggestions[1].score;
+        if (gap < fusionParams_.maxRelativeScoreGap) {
+            return false;  // Not confident enough
         }
     }
+    
+    // Check if top result is from multiple sources (higher confidence)
+    int sourceCount = __builtin_popcount(top.sourceMask);
+    if (sourceCount >= 2) {
+        return true;  // Multiple predictors agree
+    }
+    
+    return top.score >= fusionParams_.autocorrectThreshold * 1.1f;
 }
 
 void MultiPredictor::mergeSuggestions(std::vector<std::vector<Suggestion>>& allResults,
@@ -101,53 +285,45 @@ void MultiPredictor::mergeSuggestions(std::vector<std::vector<Suggestion>>& allR
         return;
     }
     
-    // Group duplicates by code points
-    std::vector<std::vector<const Suggestion*>> groups;
-    std::vector<bool> processed;
+    // Group duplicates by word
+    std::unordered_map<std::string, std::vector<const Suggestion*>> groups;
     
-    // Flatten all results with tracking
-    std::vector<const Suggestion*> flatList;
     for (const auto& resultSet : allResults) {
         for (const auto& suggestion : resultSet) {
-            flatList.push_back(&suggestion);
+            groups[suggestion.word].push_back(&suggestion);
         }
     }
-    processed.resize(flatList.size(), false);
     
-    // Find duplicates and group them
-    for (size_t i = 0; i < flatList.size(); ++i) {
-        if (processed[i]) continue;
+    // Create merged suggestions with score fusion
+    for (const auto& [word, group] : groups) {
+        Suggestion merged = *group[0];  // Copy first
         
-        std::vector<const Suggestion*> group;
-        group.push_back(flatList[i]);
-        processed[i] = true;
-        
-        for (size_t j = i + 1; j < flatList.size(); ++j) {
-            if (processed[j]) continue;
-            
-            if (isDuplicate(*flatList[i], *flatList[j])) {
-                group.push_back(flatList[j]);
-                processed[j] = true;
-            }
+        // Combine source masks
+        for (const auto* s : group) {
+            merged.sourceMask |= s->sourceId;
         }
         
-        groups.push_back(std::move(group));
-    }
-    
-    // Create merged suggestions
-    for (const auto& group : groups) {
-        Suggestion merged = *group[0]; // Copy first
-        merged.score = calculateMergedScore(group);
+        // Apply Yandex-style score fusion
+        merged.score = calculateFusedScore(group);
         
         // Boost if appeared in multiple predictors
-        if (group.size() > 1) {
-            merged.score *= (1.0f + 0.1f * (group.size() - 1));
+        int sourceCount = static_cast<int>(group.size());
+        if (sourceCount > 1) {
+            merged.score *= (1.0f + fusionParams_.multiSourceBoost * (sourceCount - 1));
         }
+        
+        // Exact match boost
+        if (merged.isExactMatch) {
+            merged.score *= fusionParams_.exactMatchBoost;
+        }
+        
+        // Clamp to [0, 1]
+        merged.score = std::min(1.0f, std::max(0.0f, merged.score));
         
         outMerged.push_back(std::move(merged));
     }
     
-    // Sort by score
+    // Sort by score (descending)
     std::sort(outMerged.begin(), outMerged.end());
     
     // Limit results
@@ -157,36 +333,71 @@ void MultiPredictor::mergeSuggestions(std::vector<std::vector<Suggestion>>& allR
 }
 
 bool MultiPredictor::isDuplicate(const Suggestion& a, const Suggestion& b) {
-    if (a.codePoints.size() != b.codePoints.size()) {
-        return false;
-    }
-    
-    for (size_t i = 0; i < a.codePoints.size(); ++i) {
-        if (a.codePoints[i] != b.codePoints[i]) {
-            return false;
-        }
-    }
-    
-    return true;
+    return a.word == b.word;
 }
 
-float MultiPredictor::calculateMergedScore(const std::vector<const Suggestion*>& duplicates) {
+float MultiPredictor::calculateFusedScore(const std::vector<const Suggestion*>& duplicates) {
     if (duplicates.empty()) {
         return 0.0f;
     }
     
-    // Use weighted average based on predictor priority
-    float totalScore = 0.0f;
-    float totalWeight = 0.0f;
+    /*
+     * Yandex-style Score Fusion:
+     * 
+     * finalScore = dictWeight * dictScore
+     *            + neuralWeight * neuralScore  
+     *            + personalWeight * personalScore
+     *            + ngramWeight * ngramScore
+     */
     
-    for (const auto* suggestion : duplicates) {
-        // Use source ID as weight approximation (can be improved)
-        float weight = 1.0f;
-        totalScore += suggestion->score * weight;
-        totalWeight += weight;
+    float dictScore = 0.0f;
+    float neuralScore = 0.0f;
+    float personalScore = 0.0f;
+    float ngramScore = 0.0f;
+    
+    float dictWeight = 0.0f;
+    float neuralWeight = 0.0f;
+    float personalWeight = 0.0f;
+    float ngramWeight = 0.0f;
+    
+    for (const auto* s : duplicates) {
+        switch (s->sourceId) {
+            case static_cast<int>(PredictorSource::DICTIONARY):
+                dictScore = std::max(dictScore, s->score);
+                dictWeight = fusionParams_.dictionaryWeight;
+                break;
+            case static_cast<int>(PredictorSource::NEURAL):
+                neuralScore = std::max(neuralScore, s->neuralScore > 0 ? s->neuralScore : s->score);
+                neuralWeight = fusionParams_.neuralWeight;
+                break;
+            case static_cast<int>(PredictorSource::PERSONAL):
+                personalScore = std::max(personalScore, s->personalScore > 0 ? s->personalScore : s->score);
+                personalWeight = fusionParams_.personalWeight;
+                break;
+            case static_cast<int>(PredictorSource::NGRAM):
+                ngramScore = std::max(ngramScore, s->score);
+                ngramWeight = fusionParams_.ngramWeight;
+                break;
+        }
     }
     
-    return totalWeight > 0.0f ? totalScore / totalWeight : 0.0f;
+    float totalWeight = dictWeight + neuralWeight + personalWeight + ngramWeight;
+    if (totalWeight < 0.01f) {
+        // Fallback: use simple average
+        float sum = 0.0f;
+        for (const auto* s : duplicates) {
+            sum += s->score;
+        }
+        return sum / duplicates.size();
+    }
+    
+    // Weighted sum
+    float fusedScore = (dictWeight * dictScore +
+                        neuralWeight * neuralScore +
+                        personalWeight * personalScore +
+                        ngramWeight * ngramScore) / totalWeight;
+    
+    return fusedScore;
 }
 
 // ==================== DictionaryPredictor ====================
@@ -198,10 +409,6 @@ void DictionaryPredictor::predict(const PredictionInput& input,
         return;
     }
     
-    // Use dictionary's getProbability for basic scoring
-    // This is a simplified implementation - full implementation would use
-    // the complete suggestion pipeline
-    
     CodePointArrayView inputView(input.inputCodePoints, input.inputLength);
     int probability = mDictionary->getProbability(inputView);
     
@@ -211,6 +418,7 @@ void DictionaryPredictor::predict(const PredictionInput& input,
                            input.inputCodePoints + input.inputLength);
         s.probability = probability;
         s.score = static_cast<float>(probability) / MAX_PROBABILITY;
+        s.dictScore = s.score;
         s.sourceId = SOURCE_ID;
         s.isExactMatch = true;
         outSuggestions.push_back(std::move(s));
@@ -222,20 +430,50 @@ void DictionaryPredictor::predict(const PredictionInput& input,
 void NgramPredictor::predict(const PredictionInput& input, 
                             int maxResults,
                             std::vector<Suggestion>& outSuggestions) {
-    if (!mDictionary || !mEnabled) {
+    if (!mDictionary || !enabled_) {
         return;
     }
     
-    // N-gram prediction requires previous word context
     if (!input.prevWordCodePoints || input.prevWordLength <= 0) {
         return;
     }
     
-    // Get n-gram predictions using dictionary's bigram capabilities
-    // This is a placeholder - full implementation would query the bigram/trigram data
+    // Placeholder - full implementation would query bigram/trigram data
+}
+
+// ==================== NeuralPredictor ====================
+
+void NeuralPredictor::predict(const PredictionInput& input, 
+                             int maxResults,
+                             std::vector<Suggestion>& outSuggestions) {
+    if (!enabled_ || !scorer_) {
+        return;
+    }
     
-    // For now, just indicate that n-gram predictor was consulted
-    // Real implementation would iterate through ngram candidates
+    // This predictor re-scores existing candidates from other predictors
+    // It needs candidates to be passed in separately
+    // For now, it's a placeholder that will be connected to MindSporeScorer
+}
+
+// ==================== PersonalPredictor ====================
+
+void PersonalPredictor::predict(const PredictionInput& input, 
+                               int maxResults,
+                               std::vector<Suggestion>& outSuggestions) {
+    if (!enabled_ || !lookup_) {
+        return;
+    }
+    
+    auto results = lookup_(input.inputWord, input.prevWord, maxResults);
+    
+    for (const auto& [word, boost] : results) {
+        Suggestion s;
+        s.word = word;
+        s.score = std::min(1.0f, 0.5f + boost * 0.01f);  // Convert boost to score
+        s.personalScore = s.score;
+        s.sourceId = SOURCE_ID;
+        outSuggestions.push_back(std::move(s));
+    }
 }
 
 } // namespace latinime

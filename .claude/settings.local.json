@@ -16,7 +16,19 @@
       "Bash(git push)",
       "Bash(git pull:*)",
       "Bash(git push:*)",
-      "Bash(git rebase:*)"
+      "Bash(git rebase:*)",
+      "Bash(curl:*)",
+      "Bash(hdc shell:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(find:*)",
+      "Bash(python tools/ynnlm_weight_extractor.py:*)",
+      "Bash(python -c:*)",
+      "Bash(python extractor.py:*)",
+      "Bash(grep:*)",
+      "Bash(JAVA_HOME=\"/c/Users/Kharki/Downloads/jdk-21.0.2\" /c/Users/Kharki/Downloads/ghidra_12.0.1_PUBLIC_20260114/ghidra_12.0.1_PUBLIC/support/analyzeHeadless.bat:*)",
+      "Bash(python yandex_trie_decoder.py:*)",
+      "Bash(python3:*)"
     ]
   }
 }

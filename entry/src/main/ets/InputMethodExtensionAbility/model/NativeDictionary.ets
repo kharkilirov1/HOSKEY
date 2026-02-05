@@ -2,10 +2,17 @@
  * Native Dictionary Wrapper for HOSKEY
  * Provides ArkTS interface to native C++ dictionary engine
  *
+ * Architecture: Yandex-style dictionary with mmap-based CompTrie
+ *
  * Features (when native is available):
+ * - Instant dictionary loading via mmap (microseconds, not seconds)
  * - High-performance prefix search (<1ms)
+ * - Neural model scoring (MindSpore/NNRt)
  * - Weighted autocorrection (<5ms)
- * - Proximity-aware suggestions
+ * - Beam search for swipe/gesture input
+ *
+ * NOTE: FlatTrie and OpenBoard-based functions are DEPRECATED.
+ * Use loadDictionaryFromFd() with Yandex format (.dict binary).
  */
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
@@ -34,6 +41,26 @@ export interface SuggestResult {
   word: string;
   score: number;
   errorType: ErrorType;
+}
+
+/**
+ * Yandex neural-scored suggestion result
+ */
+export interface YandexSuggestion {
+  word: string;
+  score: number;         // Combined score [0-1]
+  neuralScore?: number;  // From neural model [0-1]
+  freqScore?: number;    // From frequency [0-1]
+}
+
+/**
+ * Yandex dictionary statistics
+ */
+export interface YandexStats {
+  dictLoaded: boolean;
+  modelLoaded: boolean;
+  wordCount?: number;
+  memoryBytes?: number;
 }
 /**
  * Dictionary statistics (native module returns only wordCount and memoryUsage)
@@ -121,6 +148,34 @@ export interface TrailRenderParams {
 export interface TrailInitParams extends TrailParams, TrailRenderParams {}
 
 /**
+ * Result of loading ALL 15 neural models
+ */
+interface LoadModelsResult {
+  success: boolean;
+  loaded: number;      // Number of models loaded successfully
+  total: number;       // Total models (15)
+  models: string[];    // Names of loaded models
+  failed: string[];    // Names of failed models
+}
+
+/**
+ * Model stats return type (ALL 15 neural models)
+ */
+interface ModelStats {
+  yandexDictLoaded: boolean;
+  neuralModelsEnabled: boolean;
+  beamSearchReady: boolean;
+  totalModels: number;         // 15 total
+  loadedModels: number;        // How many loaded
+  primaryDevice: string;       // NPU/NNRT/CPU
+  loadedModelNames: string[];  // Names of loaded models
+  failedModelNames: string[];  // Names of failed models
+  legacyScorerEnabled: boolean;
+  legacyScorerLoaded: boolean;
+  legacyDevice?: string;
+}
+
+/**
  * Native Dictionary Manager
  * Real implementation using C++ NAPI bridge
  */
@@ -129,6 +184,8 @@ class NativeDictionary {
   private currentLanguage: string = '';
   private isLoaded: boolean = false;
   private nativeAvailable: boolean = false;
+  private loadingLanguage: string | null = null;  // Prevent race conditions
+  private yandexLoaded: boolean = false;  // Track if Yandex dict is active
 
   constructor() {
     // Check if native module is available
@@ -172,6 +229,16 @@ class NativeDictionary {
       return true;
     }
 
+    // Skip if already loading the same language (prevent race condition)
+    if (this.loadingLanguage === lang) {
+      console.info(`[NativeDictionary] Already loading '${lang}', skipping duplicate request`);
+      return true;
+    }
+
+    // Mark as loading
+    this.loadingLanguage = lang;
+    console.info(`[NativeDictionary] Starting load for '${lang}'`);
+
     if (!this.nativeAvailable) {
       console.info(`[NativeDictionary] Native not available for '${lang}', using BaseLexicon`);
       return false;
@@ -191,6 +258,67 @@ class NativeDictionary {
         // Directory may already exist - ignore error
       }
 
+      // ===== Try binary dictionary (main_ru) =====
+      const binaryDictFilename = `main_${lang}`;
+      const binaryDictPath = `${dictDir}/${binaryDictFilename}`;
+      
+      console.info(`[NativeDictionary] Checking binary dict '${binaryDictFilename}'...`);
+      const binaryExists = await this.checkRawfileExists(binaryDictFilename);
+      
+      if (binaryExists) {
+        console.info(`[NativeDictionary] Binary dictionary found for '${lang}'`);
+        
+        // Copy if needed
+        let needsCopyBinary = true;
+        try {
+          const stat = fileIo.statSync(binaryDictPath);
+          console.info(`[NativeDictionary] Binary dict exists in filesDir, size: ${stat.size} bytes`);
+          needsCopyBinary = false;
+        } catch (statErr) {
+          console.info(`[NativeDictionary] Copying binary dict from rawfile...`);
+        }
+        
+        if (needsCopyBinary) {
+          const copied = await this.copyDictFromRawfile(binaryDictFilename, binaryDictPath);
+          if (!copied) {
+            console.error(`[NativeDictionary] Failed to copy binary dict for '${lang}'`);
+          }
+        }
+        
+        // Load binary dictionary ASYNC to avoid ANR
+        // Keyboard works immediately, Yandex suggestions appear after load completes
+        this.loadingLanguage = null;
+        this.currentLanguage = lang;
+        this.isLoaded = true;  // Mark as loaded (basic functionality works)
+        this.yandexLoaded = false;  // Yandex dict not ready yet
+        
+        // Set proximity info first (fast)
+        const layoutName = lang === 'ru' ? 'ru' : 'qwerty';
+        nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
+        
+        // Load Yandex dictionary after UI settles
+        // Main fix was checkRawfileExists using getRawFd instead of getRawFileContent
+        console.info(`[NativeDictionary] Scheduling background load for Yandex dict...`);
+        const dictPathCopy = binaryDictPath;
+        setTimeout(() => {
+          try {
+            console.info(`[NativeDictionary] Background: loading Yandex dict from ${dictPathCopy}`);
+            const binaryLoadResult = this.loadYandexDict(dictPathCopy);
+            if (binaryLoadResult) {
+              this.yandexLoaded = true;
+              console.info(`[NativeDictionary] Background: Yandex dict loaded successfully`);
+            } else {
+              console.error(`[NativeDictionary] Background: Failed to load Yandex dict`);
+            }
+          } catch (err) {
+            console.error(`[NativeDictionary] Background: Exception loading Yandex dict:`, err);
+          }
+        }, 100);  // Short delay - main ANR fix is in checkRawfileExists
+        
+        return true;
+      }
+
+      // ===== Fallback to standard .dict format =====
       // Stage 1: Try to load mini dictionary first (fast startup)
       const miniDictFilename = `main_${lang}_mini.dict`;
       const miniDictPath = `${dictDir}/${miniDictFilename}`;
@@ -233,10 +361,10 @@ class NativeDictionary {
             }
           }
           
-          // Load mini dictionary SYNC for fastest startup
-          console.info(`[NativeDictionary] Calling loadDictionarySync(${miniDictPath})...`);
-          miniLoaded = nativeDict.loadDictionarySync(miniDictPath) as boolean;
-          console.info(`[NativeDictionary] loadDictionarySync returned: ${miniLoaded}`);
+          // Load mini dictionary ASYNC to avoid ANR
+          console.info(`[NativeDictionary] Calling loadDictionary(${miniDictPath}) async...`);
+          miniLoaded = await nativeDict.loadDictionary(miniDictPath) as boolean;
+          console.info(`[NativeDictionary] loadDictionary returned: ${miniLoaded}`);
           
           if (miniLoaded) {
             this.isLoaded = true;
@@ -253,9 +381,29 @@ class NativeDictionary {
         console.warn(`[NativeDictionary] Mini dictionary not available for '${lang}', loading full...`);
       }
 
-      // Stage 2: Load full dictionary (either now or in background)
+      // Stage 2: Load full dictionary using MMAP (instant, no file copy needed)
       const fullDictFilename = `main_${lang}.dict`;
       const fullDictPath = `${dictDir}/${fullDictFilename}`;
+      
+      // Try MMAP first - this is INSTANT and doesn't require file copying
+      console.info(`[NativeDictionary] Stage 2: trying mmap load for '${fullDictFilename}'...`);
+      const mmapLoaded = await this.loadDirectFromRawfile(fullDictFilename);
+      
+      if (mmapLoaded) {
+        console.info(`[NativeDictionary] MMAP load SUCCESS - instant dictionary loading!`);
+        this.isLoaded = true;
+        this.currentLanguage = lang;
+        this.loadingLanguage = null;
+        
+        // Set proximity info
+        const layoutName = lang === 'ru' ? 'ru' : 'qwerty';
+        nativeDict.setProximityInfo(layoutName, keyWidth, keyHeight);
+        
+        return true;
+      }
+      
+      // Fallback: Copy and load (slower, legacy method)
+      console.info(`[NativeDictionary] MMAP failed, falling back to copy+load...`);
 
       // Copy full dictionary if needed
       let needsCopy = true;
@@ -273,9 +421,11 @@ class NativeDictionary {
           // If mini loaded, we're still partially functional
           if (miniLoaded) {
             console.warn(`[NativeDictionary] Full dictionary copy failed, using mini only`);
+            this.loadingLanguage = null;
             return true;
           }
           console.error(`[NativeDictionary] Failed to copy dictionary for '${lang}'`);
+          this.loadingLanguage = null;
           return false;
         }
       }
@@ -285,23 +435,28 @@ class NativeDictionary {
         // Mini already loaded - upgrade to full in background (non-blocking)
         console.info(`[NativeDictionary] Upgrading to full dictionary in background...`);
         this.loadFullDictionaryInBackground(fullDictPath, lang, keyWidth, keyHeight);
+        this.loadingLanguage = null;  // Background load continues independently
       } else {
-        // No mini - load full dictionary now (blocking)
-        console.info(`[NativeDictionary] Loading full dictionary directly...`);
+        // No mini - load full dictionary now (ASYNC to avoid ANR)
+        console.info(`[NativeDictionary] Loading full dictionary directly (async)...`);
         const loaded: boolean = await nativeDict.loadDictionary(fullDictPath) as boolean;
+        console.info(`[NativeDictionary] loadDictionary returned: ${loaded}`);
 
         if (!loaded) {
           // If mini was loaded, we're still functional
           if (miniLoaded) {
             console.warn(`[NativeDictionary] Full dictionary load failed, using mini only`);
+            this.loadingLanguage = null;
             return true;
           }
           console.error(`[NativeDictionary] Failed to load dictionary for '${lang}'`);
+          this.loadingLanguage = null;
           return false;
         }
-        
+
         this.isLoaded = true;
         this.currentLanguage = lang;
+        console.info(`[NativeDictionary] Dictionary loaded! isLoaded=${this.isLoaded}, lang=${this.currentLanguage}`);
       }
 
       // Set proximity info for autocorrection
@@ -316,11 +471,13 @@ class NativeDictionary {
       const nativeStats: NativeDictStats = nativeDict.getStats() as NativeDictStats;
       console.info(`[NativeDictionary] Loaded ${nativeStats.wordCount} words for '${lang}', memory: ${nativeStats.memoryUsage} bytes`);
 
+      this.loadingLanguage = null;  // Clear loading flag
       return true;
     } catch (err) {
       const error = err as BusinessError;
       console.error(`[NativeDictionary] Error initializing for '${lang}':`, error);
       this.isLoaded = false;
+      this.loadingLanguage = null;  // Clear loading flag on error
       return false;
     }
   }
@@ -349,6 +506,7 @@ class NativeDictionary {
 
   /**
    * Check if a file exists in rawfile resources
+   * Uses getRawFd (lightweight) instead of getRawFileContent (reads entire file!)
    */
   private async checkRawfileExists(filename: string): Promise<boolean> {
     console.info(`[NativeDictionary] checkRawfileExists('${filename}') called`);
@@ -358,21 +516,81 @@ class NativeDictionary {
     }
     try {
       const resMgr = this.context.resourceManager;
-      console.info(`[NativeDictionary] checkRawfileExists: calling getRawFileContent...`);
-      const data = await resMgr.getRawFileContent(filename);
-      const exists = data && data.byteLength > 0;
-      console.info(`[NativeDictionary] checkRawfileExists: result=${exists}, size=${data?.byteLength ?? 0}`);
+      // Use getRawFd - only opens file descriptor, doesn't read content!
+      console.info(`[NativeDictionary] checkRawfileExists: calling getRawFd...`);
+      const rawFd = await resMgr.getRawFd(filename);
+      const exists = rawFd && rawFd.fd >= 0;
+      if (exists) {
+        // Close the fd immediately - we just needed to check existence
+        await resMgr.closeRawFd(filename);
+        console.info(`[NativeDictionary] checkRawfileExists: exists=true, length=${rawFd.length}`);
+      }
       return exists;
     } catch (err) {
       const error = err as BusinessError;
-      console.error(`[NativeDictionary] checkRawfileExists error: code=${error.code} msg=${error.message}`);
+      // Error code 9001005 = file not found (expected for non-existent files)
+      if (error.code === 9001005) {
+        console.info(`[NativeDictionary] checkRawfileExists: file not found (expected)`);
+      } else {
+        console.error(`[NativeDictionary] checkRawfileExists error: code=${error.code} msg=${error.message}`);
+      }
       return false;
     }
   }
 
   /**
-   * Copy dictionary from rawfile resources to filesDir
-   * rawfile resources are packed in HAP and only accessible via resourceManager
+   * Load dictionary DIRECTLY from rawfile using memory-mapping (mmap)
+   * This is INSTANT - no file copying, no RAM usage for file content
+   * The OS loads pages on-demand when accessed
+   * 
+   * @param filename - Name of rawfile (e.g., "main_ru.dict")
+   * @returns true if loaded successfully
+   */
+  private async loadDirectFromRawfile(filename: string): Promise<boolean> {
+    console.info(`[NativeDictionary] loadDirectFromRawfile('${filename}') - using mmap`);
+    
+    if (!this.context) {
+      console.error(`[NativeDictionary] loadDirectFromRawfile: context is null!`);
+      return false;
+    }
+
+    try {
+      const resMgr = this.context.resourceManager;
+      
+      // Get file descriptor - this is instant, doesn't read file
+      const rawFd = await resMgr.getRawFd(filename);
+      if (!rawFd || rawFd.fd < 0) {
+        console.error(`[NativeDictionary] loadDirectFromRawfile: getRawFd failed`);
+        return false;
+      }
+      
+      console.info(`[NativeDictionary] loadDirectFromRawfile: fd=${rawFd.fd}, offset=${rawFd.offset}, length=${rawFd.length}`);
+      
+      // Load via mmap - this is INSTANT (microseconds, not seconds!)
+      const startTime = Date.now();
+      const loaded = await nativeDict.loadDictionaryFromFd(rawFd.fd, rawFd.offset, rawFd.length);
+      const duration = Date.now() - startTime;
+      
+      // Close fd (mmap has its own copy)
+      await resMgr.closeRawFd(filename);
+      
+      if (loaded) {
+        console.info(`[NativeDictionary] loadDirectFromRawfile: SUCCESS in ${duration}ms (mmap instant!)`);
+      } else {
+        console.error(`[NativeDictionary] loadDirectFromRawfile: native load failed`);
+      }
+      
+      return loaded;
+    } catch (err) {
+      const error = err as BusinessError;
+      console.error(`[NativeDictionary] loadDirectFromRawfile error: code=${error.code} msg=${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Copy dictionary from rawfile resources to filesDir using CHUNKED streaming
+   * This avoids loading the entire file into memory at once (ANR fix)
    */
   private async copyDictFromRawfile(filename: string, destPath: string): Promise<boolean> {
     console.info(`[NativeDictionary] copyDictFromRawfile('${filename}' -> '${destPath}') called`);
@@ -383,23 +601,55 @@ class NativeDictionary {
     }
 
     try {
-      // Read dictionary from rawfile using resourceManager
       const resMgr = this.context.resourceManager;
-      console.info(`[NativeDictionary] copyDictFromRawfile: reading rawfile...`);
-      const rawData = await resMgr.getRawFileContent(filename);
-
-      console.info(`[NativeDictionary] Read ${rawData.byteLength} bytes from rawfile/${filename}`);
-
-      // Write to filesDir
-      console.info(`[NativeDictionary] copyDictFromRawfile: opening dest file for write...`);
-      const file = fileIo.openSync(destPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
-      console.info(`[NativeDictionary] copyDictFromRawfile: writing ${rawData.byteLength} bytes...`);
-      const written = fileIo.writeSync(file.fd, rawData.buffer);
-      fileIo.closeSync(file);
-
-      console.info(`[NativeDictionary] Wrote ${written} bytes to ${destPath}`);
-
-      return written > 0;
+      
+      // Get file descriptor for streaming read (doesn't load entire file)
+      const rawFd = await resMgr.getRawFd(filename);
+      if (!rawFd || rawFd.fd < 0) {
+        console.error(`[NativeDictionary] Failed to get rawFd for ${filename}`);
+        return false;
+      }
+      
+      console.info(`[NativeDictionary] Streaming copy: ${rawFd.length} bytes from rawfile/${filename}`);
+      
+      // Open destination file
+      const destFile = fileIo.openSync(destPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
+      
+      // Copy in chunks to avoid blocking UI (64KB chunks)
+      const CHUNK_SIZE = 64 * 1024;
+      let offset = rawFd.offset;
+      let remaining = rawFd.length;
+      let totalWritten = 0;
+      
+      while (remaining > 0) {
+        const chunkSize = Math.min(CHUNK_SIZE, remaining);
+        const buffer = new ArrayBuffer(chunkSize);
+        
+        // Read chunk from rawfile fd
+        const bytesRead = fileIo.readSync(rawFd.fd, buffer, { offset: offset, length: chunkSize });
+        if (bytesRead <= 0) break;
+        
+        // Write chunk to destination (async to yield to event loop)
+        await new Promise<void>((resolve) => {
+          fileIo.write(destFile.fd, buffer, { length: bytesRead }, () => resolve());
+        });
+        
+        offset += bytesRead;
+        remaining -= bytesRead;
+        totalWritten += bytesRead;
+        
+        // Yield to event loop every few chunks to prevent ANR
+        if (totalWritten % (CHUNK_SIZE * 4) === 0) {
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
+        }
+      }
+      
+      fileIo.closeSync(destFile);
+      await resMgr.closeRawFd(filename);
+      
+      console.info(`[NativeDictionary] Streamed ${totalWritten} bytes to ${destPath}`);
+      return totalWritten > 0;
+      
     } catch (err) {
       const error = err as BusinessError;
       console.error(`[NativeDictionary] Failed to copy dictionary from rawfile:`, error);
@@ -475,8 +725,22 @@ class NativeDictionary {
     }
     try {
       const prefixLower = prefix.toLowerCase();
-      const results = nativeDict.getSuggestions(prefixLower, limit) as SuggestResult[];
-      console.info(`[NativeDictionary] getSuggestions("${prefixLower}", ${limit}) returned ${results?.length ?? 0} results for lang=${this.currentLanguage}`);
+      let results: SuggestResult[];
+      
+      // Use Yandex API if Yandex dictionary is loaded
+      if (this.yandexLoaded) {
+        const yandexResults = nativeDict.getYandexSuggestions(prefixLower, limit, '') as YandexSuggestion[];
+        // Convert YandexSuggestion to SuggestResult format
+        results = (yandexResults || []).map((r: YandexSuggestion): SuggestResult => ({
+          word: r.word,
+          score: r.score * 255,  // Convert [0-1] to [0-255] range
+          errorType: ErrorType.NOT_AN_ERROR
+        }));
+        console.info(`[NativeDictionary] getYandexSuggestions("${prefixLower}", ${limit}) returned ${results.length} results`);
+      } else {
+        results = nativeDict.getSuggestions(prefixLower, limit) as SuggestResult[];
+        console.info(`[NativeDictionary] getSuggestions("${prefixLower}", ${limit}) returned ${results?.length ?? 0} results for lang=${this.currentLanguage}`);
+      }
 
       // Apply capitalization from original prefix to results
       if (results && results.length > 0) {
@@ -565,6 +829,7 @@ class NativeDictionary {
     }
 
     this.isLoaded = false;
+    this.yandexLoaded = false;
     this.currentLanguage = '';
   }
 
@@ -760,12 +1025,13 @@ class NativeDictionary {
     }
   }
 
-  // ============ FlatTrie API (instant loading) ============
+  // ============ FlatTrie API (DEPRECATED - use Yandex format) ============
 
   /**
    * Load pre-serialized .flat dictionary for instant loading (<50ms)
+   * @deprecated Use loadDictionaryFromFd() with Yandex format. Always returns false.
    * @param path - Path to .flat file
-   * @returns true if loaded successfully
+   * @returns false (deprecated)
    */
   loadFlatDictionary(path: string): boolean {
     if (!this.nativeAvailable) return false;
@@ -784,10 +1050,11 @@ class NativeDictionary {
 
   /**
    * Convert .dict file to optimized .flat format
+   * @deprecated Yandex format doesn't require conversion. Always returns false.
    * @param inputPath - Path to input .dict file
    * @param outputPath - Path to output .flat file
    * @param locale - Optional language code (e.g., 'ru', 'en')
-   * @returns true if conversion successful
+   * @returns false (deprecated)
    */
   convertToFlatFormat(inputPath: string, outputPath: string, locale?: string): boolean {
     if (!this.nativeAvailable) return false;
@@ -806,7 +1073,8 @@ class NativeDictionary {
 
   /**
    * Get FlatTrie statistics
-   * @returns FlatTrie stats or null if not loaded
+   * @deprecated Use getStats() for Yandex dictionary stats. Always returns null.
+   * @returns null (deprecated)
    */
   getFlatTrieStats(): FlatTrieStats | null {
     if (!this.nativeAvailable) return null;
@@ -1010,6 +1278,144 @@ class NativeDictionary {
     }
   }
 
+  // ============================================================================
+  // Yandex Neural Dictionary API
+  // ============================================================================
+
+  /**
+   * Load Yandex dictionary from file
+   * Supports both binary (main_ru) and text formats
+   * @param path Path to dictionary file
+   * @returns true if loaded successfully
+   */
+  loadYandexDict(path: string): boolean {
+    if (!this.nativeAvailable) {
+      console.warn('[NativeDictionary] Yandex: Native not available');
+      return false;
+    }
+
+    try {
+      const result = nativeDict.loadYandexDict(path) as boolean;
+      console.info(`[NativeDictionary] Yandex dict loaded: ${result}`);
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error loading Yandex dict:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Load MindSpore neural model for scoring
+   * @param path Path to .ms model file
+   * @returns true if loaded successfully
+   */
+  loadNeuralModel(path: string): boolean {
+    if (!this.nativeAvailable) {
+      console.warn('[NativeDictionary] Neural: Native not available');
+      return false;
+    }
+
+    try {
+      const result = nativeDict.loadNeuralModel(path) as boolean;
+      console.info(`[NativeDictionary] Neural model loaded: ${result}`);
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error loading neural model:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Initialize Yandex neural dictionary with dict + model
+   * Loads from resources/rawfile
+   * @param dictFile Dictionary filename (e.g., 'yandex_ru.dict.txt')
+   * @param modelFile Model filename (e.g., 'ranker.ms')
+   */
+  async initializeYandex(dictFile: string = 'yandex_ru_final.txt', modelFile: string = 'ranker.ms'): Promise<boolean> {
+    if (!this.context) {
+      console.error('[NativeDictionary] initializeYandex: No context set');
+      return false;
+    }
+
+    try {
+      const resourceDir = this.context.resourceDir;
+      const dictPath = `${resourceDir}/rawfile/${dictFile}`;
+      const modelPath = `${resourceDir}/rawfile/${modelFile}`;
+
+      console.info(`[NativeDictionary] Initializing Yandex: dict=${dictPath}, model=${modelPath}`);
+
+      const dictLoaded = this.loadYandexDict(dictPath);
+      if (!dictLoaded) {
+        console.error('[NativeDictionary] Failed to load Yandex dictionary');
+        return false;
+      }
+
+      const modelLoaded = this.loadNeuralModel(modelPath);
+      if (!modelLoaded) {
+        console.warn('[NativeDictionary] Neural model not loaded - using frequency scoring');
+        // Continue anyway - frequency scoring works without neural model
+      }
+
+      console.info(`[NativeDictionary] Yandex initialized: dict=${dictLoaded}, model=${modelLoaded}`);
+      return true;
+    } catch (err) {
+      console.error('[NativeDictionary] Error initializing Yandex:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Get neural-scored suggestions from Yandex dictionary
+   * @param prefix Input prefix
+   * @param limit Maximum results (default: 10)
+   * @param context Previous words for context (optional)
+   */
+  getYandexSuggestions(prefix: string, limit: number = 10, context: string = ''): YandexSuggestion[] {
+    if (!this.nativeAvailable) return [];
+
+    try {
+      const results = nativeDict.getYandexSuggestions(prefix, limit, context) as YandexSuggestion[];
+      return results || [];
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getYandexSuggestions:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Get Yandex dictionary statistics
+   */
+  getYandexStats(): YandexStats {
+    if (!this.nativeAvailable) {
+      return { dictLoaded: false, modelLoaded: false };
+    }
+
+    try {
+      return nativeDict.getYandexStats() as YandexStats;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getYandexStats:', err);
+      return { dictLoaded: false, modelLoaded: false };
+    }
+  }
+
+  /**
+   * Unload Yandex dictionary and neural model
+   */
+  unloadYandex(): void {
+    if (!this.nativeAvailable) return;
+
+    try {
+      nativeDict.unloadYandex();
+      console.info('[NativeDictionary] Yandex unloaded');
+    } catch (err) {
+      console.error('[NativeDictionary] Error unloading Yandex:', err);
+    }
+  }
+
+  // ============================================================================
+  // End Yandex Neural Dictionary API
+  // ============================================================================
+
   /**
    * Self-test: Verify NAPI contract is working correctly
    * Call this in debug mode to validate native module integration
@@ -1081,6 +1487,168 @@ class NativeDictionary {
 
     console.info('[NativeDictionary] Self-test: All tests passed ✓');
     return true;
+  }
+
+  // ============================================================================
+  // Additional Models API (Yandex-style)
+  // ============================================================================
+
+  /**
+   * Load ALL 15 MindSpore neural models from directory
+   * @param modelsDir Directory containing all .ms model files
+   * @returns LoadModelsResult with loaded/failed counts
+   */
+  loadModels(modelsDir: string): LoadModelsResult {
+    const emptyResult: LoadModelsResult = {
+      success: false,
+      loaded: 0,
+      total: 15,
+      models: [],
+      failed: []
+    };
+
+    if (!this.nativeAvailable) {
+      console.warn('[NativeDictionary] loadModels: Native not available');
+      return emptyResult;
+    }
+
+    try {
+      const result = nativeDict.loadModels(modelsDir);
+      console.info(`[NativeDictionary] Loaded ${result.loaded}/${result.total} neural models`);
+      if (result.failed.length > 0) {
+        console.warn(`[NativeDictionary] Failed models: ${result.failed.join(', ')}`);
+      }
+      return result;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in loadModels:', err);
+      return emptyResult;
+    }
+  }
+
+  /**
+   * Get status of loaded models (ALL 15 neural models)
+   */
+  getModelStats(): ModelStats {
+    const emptyStats: ModelStats = {
+      yandexDictLoaded: false,
+      neuralModelsEnabled: false,
+      beamSearchReady: false,
+      totalModels: 15,
+      loadedModels: 0,
+      primaryDevice: 'Not initialized',
+      loadedModelNames: [],
+      failedModelNames: [],
+      legacyScorerEnabled: false,
+      legacyScorerLoaded: false
+    };
+
+    if (!this.nativeAvailable) {
+      return emptyStats;
+    }
+
+    try {
+      return nativeDict.getModelStats();
+    } catch (err) {
+      console.error('[NativeDictionary] Error in getModelStats:', err);
+      return emptyStats;
+    }
+  }
+
+  /**
+   * Initialize all models from rawfile
+   * Call this after dictionary is loaded
+   */
+  async initializeModels(): Promise<boolean> {
+    if (!this.context) {
+      console.error('[NativeDictionary] initializeModels: No context set');
+      return false;
+    }
+
+    try {
+      const resourceDir = this.context.resourceDir;
+      const rawfilePath = `${resourceDir}/rawfile`;
+
+      // Copy models from rawfile to filesDir (rawfile not directly accessible)
+      const modelsDir = `${this.context.filesDir}/models`;
+      try {
+        fileIo.mkdirSync(modelsDir);
+      } catch (mkdirErr) {
+        // Directory may exist
+      }
+
+      // ALL 15 Yandex MindSpore models
+      // TAP RANKING (5 models):
+      //   - tap_model_ranker.ms    - Primary tap input ranking
+      //   - tap_model_ranker_v2.ms - Improved tap ranking
+      //   - ranker.ms              - General ranking
+      //   - ranker_v2.ms           - Improved general ranking
+      //   - ranker_exp.ms          - Experimental ranking
+      // SWIPE RANKING (3 models):
+      //   - ranker_swipe.ms        - Swipe-specific ranking
+      //   - ranker_swipe_v2.ms     - Improved swipe ranking
+      //   - swipe_blocker.ms       - Swipe vs tap detection
+      // LANGUAGE MODELS (3 models):
+      //   - nnlm_model.ms          - Neural language model (context)
+      //   - neural_model.ms        - Neural predictions
+      //   - char_model.ms          - Character-level model
+      // AUTOCORRECT & MORPHOLOGY (2 models):
+      //   - tree_autocorrect_model.ms - Autocorrection
+      //   - lemmer_mhash.ms           - Lemmatization/morphology
+      // EMOJI (2 models):
+      //   - emoji_suggest.ms       - Emoji suggestions
+      //   - search_emoji_model.ms  - Emoji search
+      const modelFiles = [
+        // TAP RANKING
+        'tap_model_ranker.ms',
+        'tap_model_ranker_v2.ms',
+        'ranker.ms',
+        'ranker_v2.ms',
+        'ranker_exp.ms',
+        // SWIPE RANKING
+        'ranker_swipe.ms',
+        'ranker_swipe_v2.ms',
+        'swipe_blocker.ms',
+        // LANGUAGE MODELS
+        'nnlm_model.ms',
+        'neural_model.ms',
+        'char_model.ms',
+        // AUTOCORRECT & MORPHOLOGY
+        'tree_autocorrect_model.ms',
+        'lemmer_mhash.ms',
+        // EMOJI
+        'emoji_suggest.ms',
+        'search_emoji_model.ms',
+      ];
+
+      // Copy models from rawfile if needed
+      for (const modelFile of modelFiles) {
+        const destPath = `${modelsDir}/${modelFile}`;
+        try {
+          fileIo.statSync(destPath);
+        } catch (statErr) {
+          // File doesn't exist, copy from rawfile
+          try {
+            const rawData = await this.context.resourceManager.getRawFileContent(modelFile);
+            if (rawData && rawData.byteLength > 0) {
+              const file = fileIo.openSync(destPath, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY);
+              fileIo.writeSync(file.fd, rawData.buffer);
+              fileIo.closeSync(file);
+              console.info(`[NativeDictionary] Copied model ${modelFile} (${rawData.byteLength} bytes)`);
+            }
+          } catch (copyErr) {
+            console.warn(`[NativeDictionary] Model ${modelFile} not found in rawfile`);
+          }
+        }
+      }
+
+      // Pass models directory to native - it will load ALL 15 models
+      const result = this.loadModels(modelsDir);
+      console.info(`[NativeDictionary] initializeModels: ${result.loaded}/${result.total} models loaded`);
+      return result.success;
+    } catch (err) {
+      console.error('[NativeDictionary] Error in initializeModels:', err);
+      return false;
+    }
   }
 }
 

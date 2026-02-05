@@ -23,6 +23,16 @@ interface SwipeCandidate {
   score: number;
 }
 
+interface KeyScore {
+  key: string;
+  score: number;
+}
+
+interface KeyDistance {
+  key: string;
+  distSq: number;
+}
+
 export interface SwipeResult {
   bestWord: string;
   alternatives: string[];
@@ -30,17 +40,46 @@ export interface SwipeResult {
   rawSequence: string;
 }
 
+// === YANDEX SWIPE PARAMETERS (from json_config.json) ===
+
+interface YandexSwipeParams {
+  BEAM_WIDTH: number;
+  KEY_SQUARED_DISTANCE_LIMIT: number;
+  MAX_TRANSITION_SQUARED_DISTANCE: number;
+  START_KEY_DISTANCE_WEIGHT_X: number;
+  START_KEY_DISTANCE_WEIGHT_Y: number;
+  TOP_K: number;
+  SAMPLING_DISTANCE: number;
+}
+
+const YANDEX_PARAMS: YandexSwipeParams = {
+  // Swipe/Rule
+  BEAM_WIDTH: 300,
+  KEY_SQUARED_DISTANCE_LIMIT: 3000,
+  MAX_TRANSITION_SQUARED_DISTANCE: 10000,
+  START_KEY_DISTANCE_WEIGHT_X: 0.8,
+  START_KEY_DISTANCE_WEIGHT_Y: 1.4,
+  // Swipe/Linear
+  TOP_K: 24,
+  // Swipe/Rnnt
+  SAMPLING_DISTANCE: 0.1,
+};
+
 // === CLASS ===
 
 export class SwipeEngine {
   private keyboardLayout: KeyBounds[] = [];
 
-  // Algorithm parameters
+  // Algorithm parameters (aligned with Yandex)
   private readonly MIN_SWIPE_POINTS: number = 5;
   private readonly MIN_SWIPE_DISTANCE: number = 50;
-  private readonly MAX_CANDIDATES: number = 50;
-  private readonly PATH_SAMPLE_INTERVAL: number = 10;
-  private readonly KEY_HIT_RADIUS: number = 1.5;
+  private readonly MAX_CANDIDATES: number = YANDEX_PARAMS.TOP_K;  // Yandex: 24
+  private readonly PATH_SAMPLE_INTERVAL: number = 3;  // Reduced from 10 for denser sampling
+  private readonly KEY_SQUARED_DIST_LIMIT: number = YANDEX_PARAMS.KEY_SQUARED_DISTANCE_LIMIT;
+  
+  // Yandex-style weighted distance
+  private readonly WEIGHT_X: number = YANDEX_PARAMS.START_KEY_DISTANCE_WEIGHT_X;
+  private readonly WEIGHT_Y: number = YANDEX_PARAMS.START_KEY_DISTANCE_WEIGHT_Y;
 
   constructor() {}
 
@@ -182,25 +221,66 @@ export class SwipeEngine {
     return compressed;
   }
 
+  /**
+   * Find nearest key using Yandex-style weighted distance
+   * Yandex uses different weights for X and Y axes:
+   * - WeightX = 0.8 (horizontal movement more forgiving)
+   * - WeightY = 1.4 (vertical movement stricter - rows are close)
+   */
   private findNearestKey(point: SwipePoint): string | null {
     let nearest: string | null = null;
-    let minDist = Infinity;
+    let minDistSq = Infinity;
 
     for (const keyBounds of this.keyboardLayout) {
-      const dist = this.distance(
-        point,
-        { x: keyBounds.centerX, y: keyBounds.centerY, timestamp: 0 }
-      );
+      const dx = point.x - keyBounds.centerX;
+      const dy = point.y - keyBounds.centerY;
+      
+      // Yandex-style weighted squared distance
+      const weightedDistSq = (dx * dx * this.WEIGHT_X * this.WEIGHT_X) + 
+                             (dy * dy * this.WEIGHT_Y * this.WEIGHT_Y);
 
-      const maxDist = Math.max(keyBounds.width, keyBounds.height) * this.KEY_HIT_RADIUS;
+      // Skip if beyond distance limit
+      if (weightedDistSq > this.KEY_SQUARED_DIST_LIMIT) continue;
 
-      if (dist < minDist && dist < maxDist) {
-        minDist = dist;
+      if (weightedDistSq < minDistSq) {
+        minDistSq = weightedDistSq;
         nearest = keyBounds.key;
       }
     }
 
     return nearest;
+  }
+  
+  /**
+   * Get top-K nearest keys with proximity scores (Yandex-style)
+   */
+  private getNearestKeysWithScores(point: SwipePoint, topK: number = 3): KeyScore[] {
+    const candidates: KeyDistance[] = [];
+    
+    for (const keyBounds of this.keyboardLayout) {
+      const dx = point.x - keyBounds.centerX;
+      const dy = point.y - keyBounds.centerY;
+      
+      // Yandex-style weighted squared distance
+      const weightedDistSq = (dx * dx * this.WEIGHT_X * this.WEIGHT_X) + 
+                             (dy * dy * this.WEIGHT_Y * this.WEIGHT_Y);
+
+      if (weightedDistSq <= this.KEY_SQUARED_DIST_LIMIT) {
+        const kd: KeyDistance = { key: keyBounds.key, distSq: weightedDistSq };
+        candidates.push(kd);
+      }
+    }
+    
+    // Sort by distance and take top K
+    candidates.sort((a: KeyDistance, b: KeyDistance): number => a.distSq - b.distSq);
+    
+    const result: KeyScore[] = [];
+    const topCandidates = candidates.slice(0, topK);
+    for (const c of topCandidates) {
+      const ks: KeyScore = { key: c.key, score: 1.0 - (c.distSq / this.KEY_SQUARED_DIST_LIMIT) };
+      result.push(ks);
+    }
+    return result;
   }
 
   private getCandidates(keySequence: string[]): SwipeCandidate[] {

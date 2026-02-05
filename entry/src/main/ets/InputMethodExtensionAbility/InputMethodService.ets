@@ -74,26 +74,33 @@ export default class HoskeyInputMethod extends InputMethodExtensionAbility {
     const defaultLang = enabledLanguages.length > 0 ? enabledLanguages[0] : 'ru';
     console.info(`[HOSKEY IME] Enabled languages: ${enabledLanguages.join(', ')}, default: ${defaultLang}`);
 
-    // Load autocorrect rules for the default language
-    nativeDictionary.loadAutocorrectRules(defaultLang);
-
-    // Initialize NativeDictionary with context and load for default language
+    // Initialize NativeDictionary with context (but defer loading to avoid ANR)
     nativeDictionary.setContext(this.context);
-    nativeDictionary.initialize(defaultLang).then((loaded) => {
-      if (loaded) {
-        console.info(`[HOSKEY] NativeDictionary initialized for language: ${defaultLang}`);
-      } else {
-        console.warn(`[HOSKEY] NativeDictionary failed to load for language: ${defaultLang}`);
-      }
+    
+    // DEFER dictionary loading to let UI render first (ANR fix)
+    // Without this delay, copyDictFromRawfile blocks the main thread
+    setTimeout(() => {
+      console.info('[HOSKEY IME] Deferred dictionary loading starting...');
       
-      // Mark dictionary as ready and execute pending operations
-      this.markDictionaryReady();
-    }).catch((err: Error) => {
-      console.error('[HOSKEY] Failed to initialize NativeDictionary', err);
-      // Even on error, mark as "ready" to unblock pending operations
-      // They will get empty suggestions, but won't hang forever
-      this.markDictionaryReady();
-    });
+      // Load autocorrect rules (fast)
+      nativeDictionary.loadAutocorrectRules(defaultLang);
+      
+      // Load dictionary (slow - now runs after UI is shown)
+      nativeDictionary.initialize(defaultLang).then((loaded) => {
+        if (loaded) {
+          console.info(`[HOSKEY] NativeDictionary initialized for language: ${defaultLang}`);
+        } else {
+          console.warn(`[HOSKEY] NativeDictionary failed to load for language: ${defaultLang}`);
+        }
+        
+        // Mark dictionary as ready and execute pending operations
+        this.markDictionaryReady();
+      }).catch((err: Error) => {
+        console.error('[HOSKEY] Failed to initialize NativeDictionary', err);
+        // Even on error, mark as "ready" to unblock pending operations
+        this.markDictionaryReady();
+      });
+    }, 500);  // 500ms delay gives UI time to render
 
     // Initialize clipboard history
     clipboardHistory.setContext(this.context);
