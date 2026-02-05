@@ -767,33 +767,41 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
     
     // Profanity/slang filter - check if word contains bad substrings
     auto containsProfanity = [](const std::string& word) -> bool {
-        // Comprehensive Russian profanity and slang filter (UTF-8)
+        // Russian profanity filter using explicit UTF-8 hex codes
+        // This ensures correct encoding regardless of source file encoding
         static const char* badWords[] = {
-            // Core profanity roots (all forms)
-            "бля", "хуй", "хуя", "хуе", "хуи", "хую", "хуё",
-            "пизд", "пезд",
-            "ебат", "ебан", "ебал", "ебу", "ебе", "ебён", "ебёт", "ебуч", "ебущ", "ебну",
-            "ёб", "ёбан", "ёбат", "ёбну", "ёбыв",
-            "блят", "блядь", "блядин", "бляд",
-            // Important: match "еб" pattern in compounds (X+еб)
-            "оеб", "аеб", "уеб", "ъеб", "ьеб", "леб", "неб",
-            "оёб", "аёб", "уёб", "ъёб", "ьёб",
-            // Offensive slurs
-            "пидор", "пидар", "пидр", "педик", "гомик", "педер",
-            "чурк", "чучм", "хач", "жид", "негр", "нигер", "ниггер",
-            // Body parts vulgar
-            "залуп", "муда", "мудак", "мудил", "жопа", "жоп", "сиськ", "член", "хер",
-            // Excrement
-            "дерьм", "срать", "срал", "говн", "гавн", "сран", "засран",
-            // Other offensive
-            "шлюх", "сука", "сучк", "сучар", "тварь", "падл", "мраз", "ублюд",
-            "дебил", "идиот", "кретин", "даун", "урод",
-            // Slang abbreviations
-            "нах", "пох", "охуе", "ахуе", "заеб", "отъеб", "выеб", "доеб", "наеб", "уеб",
-            // Prison/criminal slang (inappropriate for keyboard)
-            "вертух", "шконк", "парашн", "петух", "опущ", "обиж",
-            // Ethnic slurs
-            "пшек", "хохол", "кацап", "москал", "чурбан"
+            // Core roots with explicit UTF-8 (е=D0B5, б=D0B1, ё=D191, etc.)
+            "\xD0\xB5\xD0\xB1",         // "еб"
+            "\xD1\x91\xD0\xB1",         // "ёб"
+            "\xD0\xBE\xD0\xB5\xD0\xB1", // "оеб" (compound like весело+еб)
+            "\xD0\xB0\xD0\xB5\xD0\xB1", // "аеб"
+            "\xD1\x83\xD0\xB5\xD0\xB1", // "уеб"
+            "\xD1\x8B\xD0\xB5\xD0\xB1", // "ыеб"
+            "\xD1\x8C\xD0\xB5\xD0\xB1", // "ьеб"
+            "\xD1\x8A\xD0\xB5\xD0\xB1", // "ъеб"
+            // хуй variants (х=D185, у=D183, й=D0B9)
+            "\xD1\x85\xD1\x83\xD0\xB9", // "хуй"
+            "\xD1\x85\xD1\x83\xD1\x8F", // "хуя"
+            "\xD1\x85\xD1\x83\xD0\xB5", // "хуе"
+            "\xD1\x85\xD1\x83\xD0\xB8", // "хуи"
+            "\xD1\x85\xD0\xB5\xD1\x80", // "хер"
+            // пизд (п=D0BF, и=D0B8, з=D0B7, д=D0B4)
+            "\xD0\xBF\xD0\xB8\xD0\xB7\xD0\xB4", // "пизд"
+            // бля (б=D0B1, л=D0BB, я=D18F)
+            "\xD0\xB1\xD0\xBB\xD1\x8F", // "бля"
+            "\xD0\xB1\xD0\xBB\xD1\x8F\xD0\xB4", // "бляд"
+            // мат abbreviations
+            "\xD0\xBD\xD0\xB0\xD1\x85", // "нах"
+            "\xD0\xBF\xD0\xBE\xD1\x85", // "пох"
+            // Other offensive (keeping readable for less critical)
+            "пидор", "пидар", "педик", "гомик",
+            "мудак", "мудил", "жопа", "жоп",
+            "говн", "гавн", "дерьм", "срать", "срал",
+            "сука", "сучк", "тварь", "шлюх",
+            "дебил", "идиот", "кретин", "урод",
+            // Prison slang
+            "\xD0\xB2\xD0\xB5\xD1\x80\xD1\x82\xD1\x83\xD1\x85", // "вертух"
+            "петух", "опущ"
         };
 
         for (const char* bad : badWords) {
