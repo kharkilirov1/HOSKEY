@@ -189,46 +189,44 @@ bool CompTrieReader::parseStructure() {
         return value;
     };
 
-    // Dictionary structure from Y1 parser (Yandex main_ru):
-    //   blacklist: offset=10016, size=374455  → ends at 384471
-    //   trie:      offset=384496, size=4498484
-    //
-    // IMPORTANT: JSON "DictOffset" (10016) points to DATA start which is
-    // the BLACKLIST, NOT the main trie! Trie starts at fixed offset 384496.
+    // Parse all relevant JSON fields from decompiled Yandex code:
+    //   "DictOffset"   (0x1a) - start of data section (blacklist)
+    //   "DictSize"     - total size of dict data
+    //   "TrieAddress"  (0x40) - DIRECT offset to main trie (what we need!)
+    //   "TrieSize"     - size of trie section
 
     size_t dictOffset = parseJsonInt("DictOffset");
     size_t dictSize = parseJsonInt("DictSize");
+    size_t trieAddress = parseJsonInt("TrieAddress");  // Direct trie offset from JSON!
+    size_t trieSize = parseJsonInt("TrieSize");
 
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu",
-                 dictOffset, dictSize);
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu, TrieAddress=%{public}zu, TrieSize=%{public}zu",
+                 dictOffset, dictSize, trieAddress, trieSize);
 
-    // Known constants for Yandex main_ru dictionary format
-    constexpr size_t YANDEX_TRIE_OFFSET = 384496;   // 0x5DE30 - where trie actually starts
-    constexpr size_t YANDEX_BLACKLIST_SIZE = 374480; // ~374KB blacklist before trie
-    constexpr size_t MIN_FULL_DICT_SIZE = 4000000;   // Full dict with blacklist is >4MB
-
-    // Detect Yandex format: DictOffset ~10016, DictSize >4MB
-    bool isYandexFormat = (dictOffset > 0 && dictOffset < 20000 &&
-                           dictSize > MIN_FULL_DICT_SIZE);
-
-    if (isYandexFormat && YANDEX_TRIE_OFFSET < fileSize_) {
-        // Standard Yandex main_ru format - skip to known trie offset
+    // Priority 1: Use TrieAddress if available (direct offset to trie)
+    if (trieAddress > 0 && trieAddress < fileSize_) {
+        trieStart_ = trieAddress;
+        trieEnd_ = (trieSize > 0) ? (trieAddress + trieSize) : (dictOffset + dictSize);
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using TrieAddress from JSON: [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
+    }
+    // Priority 2: Known Yandex format (DictOffset ~10016, large dict)
+    else if (dictOffset > 0 && dictOffset < 20000 && dictSize > 4000000) {
+        constexpr size_t YANDEX_TRIE_OFFSET = 384496;  // 0x5DE30
         trieStart_ = YANDEX_TRIE_OFFSET;
         trieEnd_ = dictOffset + dictSize;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Yandex format, using trie offset %{public}zu: [%{public}zu - %{public}zu]",
-                     YANDEX_TRIE_OFFSET, trieStart_, trieEnd_);
-    } else if (dictOffset > 0 && dictSize > 0) {
-        // Non-standard format or smaller dict - try to use directly
-        // but skip potential blacklist if dict is large
-        if (dictSize > MIN_FULL_DICT_SIZE) {
-            trieStart_ = dictOffset + YANDEX_BLACKLIST_SIZE;
-        } else {
-            trieStart_ = dictOffset;
-        }
-        trieEnd_ = dictOffset + dictSize;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Generic format: [%{public}zu - %{public}zu]",
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Yandex format, hardcoded offset: [%{public}zu - %{public}zu]",
                      trieStart_, trieEnd_);
-    } else {
+    }
+    // Priority 3: Use DictOffset directly (for smaller dicts without blacklist)
+    else if (dictOffset > 0 && dictSize > 0) {
+        trieStart_ = dictOffset;
+        trieEnd_ = dictOffset + dictSize;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using DictOffset directly: [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
+    }
+    // Fallback: scan for trie after JSON
+    else {
         // Fallback: skip padding after JSON
         trieStart_ = jsonEnd;
         while (trieStart_ < fileSize_ && (data_[trieStart_] == 0 || data_[trieStart_] == ' ')) {
