@@ -147,14 +147,16 @@ bool CompTrieReader::parseStructure() {
     // Check magic
     uint32_t magic = *reinterpret_cast<const uint32_t*>(data_);
     if (magic != YANDEX_MAGIC) {
+        OH_LOG_ERROR(LOG_APP, "HOSKEY-TRIE: Invalid magic: 0x%08X (expected 0x%08X)",
+                     magic, YANDEX_MAGIC);
         return false;
     }
 
-    // Find JSON end (starts at offset 32)
+    // Find JSON config (starts at offset 32)
     size_t jsonStart = 32;
     int depth = 0;
     size_t jsonEnd = jsonStart;
-    
+
     for (size_t i = jsonStart; i < fileSize_ && i < jsonStart + 20000; i++) {
         if (data_[i] == '{') depth++;
         else if (data_[i] == '}') {
@@ -166,21 +168,62 @@ bool CompTrieReader::parseStructure() {
         }
     }
 
-    // Skip padding after JSON
-    trieStart_ = jsonEnd;
-    while (trieStart_ < fileSize_ && (data_[trieStart_] == 0 || data_[trieStart_] == ' ')) {
-        trieStart_++;
-    }
+    // Extract JSON as string for parsing
+    std::string jsonConfig(reinterpret_cast<const char*>(data_ + jsonStart), jsonEnd - jsonStart);
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON config length: %{public}zu", jsonConfig.size());
 
-    // Find first TFLite model (TFL3 signature)
-    const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
-    trieEnd_ = fileSize_;
-    
-    for (size_t i = trieStart_; i < fileSize_ - 4; i++) {
-        if (memcmp(data_ + i, tfl3, 4) == 0) {
-            trieEnd_ = i - 4;  // FlatBuffer size is before signature
-            break;
+    // Parse DictOffset and DictSize from JSON
+    // Format: "DictOffset":12345,"DictSize":67890
+    size_t dictOffset = 0;
+    size_t dictSize = 0;
+
+    auto parseJsonInt = [&jsonConfig](const char* key) -> size_t {
+        std::string searchKey = std::string("\"") + key + "\":";
+        size_t pos = jsonConfig.find(searchKey);
+        if (pos == std::string::npos) return 0;
+        pos += searchKey.length();
+        // Skip whitespace
+        while (pos < jsonConfig.size() && (jsonConfig[pos] == ' ' || jsonConfig[pos] == '\t')) pos++;
+        // Parse number
+        size_t value = 0;
+        while (pos < jsonConfig.size() && jsonConfig[pos] >= '0' && jsonConfig[pos] <= '9') {
+            value = value * 10 + (jsonConfig[pos] - '0');
+            pos++;
         }
+        return value;
+    };
+
+    dictOffset = parseJsonInt("DictOffset");
+    dictSize = parseJsonInt("DictSize");
+
+    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON DictOffset=%{public}zu, DictSize=%{public}zu",
+                 dictOffset, dictSize);
+
+    // Use DictOffset/DictSize if available, otherwise fall back to heuristic
+    if (dictOffset > 0 && dictSize > 0 && dictOffset + dictSize <= fileSize_) {
+        trieStart_ = dictOffset;
+        trieEnd_ = dictOffset + dictSize;
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Using JSON offsets: trie [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
+    } else {
+        // Fallback: skip padding after JSON
+        trieStart_ = jsonEnd;
+        while (trieStart_ < fileSize_ && (data_[trieStart_] == 0 || data_[trieStart_] == ' ')) {
+            trieStart_++;
+        }
+
+        // Find first TFLite model (TFL3 signature) as end marker
+        const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
+        trieEnd_ = fileSize_;
+
+        for (size_t i = trieStart_; i < fileSize_ - 4; i++) {
+            if (memcmp(data_ + i, tfl3, 4) == 0) {
+                trieEnd_ = i - 4;  // FlatBuffer size is before signature
+                break;
+            }
+        }
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Fallback heuristic: trie [%{public}zu - %{public}zu]",
+                     trieStart_, trieEnd_);
     }
 
     // Find max frequency for normalization (sample first 1000 words)
