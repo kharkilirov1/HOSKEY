@@ -899,10 +899,16 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
     for (const auto& rawWord : foundWords) {
         std::string word = extractWord(rawWord);
 
-        // Log first 5 raw results for debugging
+        // Log first 5 raw results for debugging with hex bytes
         if (debugCount < 5) {
-            OH_LOG_DEBUG(LOG_APP, "  processing[%{public}d]: '%{public}s' -> '%{public}s'",
-                         debugCount, rawWord.c_str(), word.c_str());
+            std::string hexBytes;
+            for (size_t i = 0; i < std::min(word.size(), (size_t)20); i++) {
+                char buf[4];
+                snprintf(buf, sizeof(buf), "%02X ", (uint8_t)word[i]);
+                hexBytes += buf;
+            }
+            OH_LOG_DEBUG(LOG_APP, "  processing[%{public}d]: '%{public}s' hex=[%{public}s]",
+                         debugCount, word.c_str(), hexBytes.c_str());
             debugCount++;
         }
 
