@@ -245,19 +245,50 @@ bool CompTrieReader::parseStructure() {
     OH_LOG_DEBUG(LOG_APP, "LOUDS: JSON config ends at offset %{public}zu", jsonEnd);
 
     // Search for trie magic "1nc7" after JSON
+    // The file is a container with multiple trie entries:
+    //   - Small trie @ ~384,496 (4.5 MB) - quick suggestions
+    //   - Large trie (KEYBOARD-13421_trie) @ ~117,496,192 (11 MB) - main dictionary
+    // We want to find the LARGEST trie for best results
+
     const uint8_t trieMagic[] = {'1', 'n', 'c', '7'};
     size_t trieOffset = 0;
+    size_t bestTrieOffset = 0;
+    uint64_t bestNodeCount = 0;
 
+    // Search entire file for all '1nc7' occurrences
     size_t searchStart = jsonEnd;
-    size_t searchEnd = std::min(fileSize_, jsonEnd + 2000000);  // Search within 2MB
 
-    for (size_t i = searchStart; i < searchEnd - 4; i++) {
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Searching for '1nc7' magic signatures...");
+
+    for (size_t i = searchStart; i < fileSize_ - 24; i++) {
         if (memcmp(data_ + i, trieMagic, 4) == 0) {
-            trieOffset = i;
-            OH_LOG_DEBUG(LOG_APP, "LOUDS: Found '1nc7' magic at offset %{public}zu (0x%{public}zX)",
-                         trieOffset, trieOffset);
-            break;
+            // Found a trie header, check its size
+            const LOUDSHeader* hdr = reinterpret_cast<const LOUDSHeader*>(data_ + i);
+
+            // Validate this looks like a real header
+            if (hdr->version <= 10 && hdr->node_count > 0 && hdr->node_count < 100000000) {
+                OH_LOG_DEBUG(LOG_APP, "LOUDS: Found '1nc7' @ 0x%{public}zX, nodes=%{public}llu, chunks=%{public}llu",
+                             i, (unsigned long long)hdr->node_count, (unsigned long long)hdr->louds_chunks);
+
+                // Track the largest trie
+                if (hdr->node_count > bestNodeCount) {
+                    bestNodeCount = hdr->node_count;
+                    bestTrieOffset = i;
+                }
+
+                // Also keep first valid trie as fallback
+                if (trieOffset == 0) {
+                    trieOffset = i;
+                }
+            }
         }
+    }
+
+    // Use the largest trie found
+    if (bestTrieOffset != 0) {
+        trieOffset = bestTrieOffset;
+        OH_LOG_INFO(LOG_APP, "LOUDS: Selected largest trie @ 0x%{public}zX with %{public}llu nodes",
+                    trieOffset, (unsigned long long)bestNodeCount);
     }
 
     if (trieOffset == 0) {
@@ -296,20 +327,16 @@ bool CompTrieReader::parseStructure() {
         return false;
     }
 
-    // Calculate pointers
-    size_t loudsOffset = trieOffset + sizeof(LOUDSHeader);
-    size_t loudsBytes = loudsChunks * 16;  // 16 bytes per chunk (128 bits)
+    // === CRITICAL: Correct memory layout ===
+    // Structure inside '1nc7' section:
+    //   [Header 24 bytes]
+    //   [Labels array] @ offset 24, size = node_count bytes
+    //   [LOUDS bitvector] @ offset 24 + node_count
+    //
+    // We were reading LOUDS first, but Labels come first!
 
-    if (loudsOffset + loudsBytes > fileSize_) {
-        OH_LOG_ERROR(LOG_APP, "LOUDS: LOUDS bitvector extends beyond file");
-        return false;
-    }
-
-    louds_ = reinterpret_cast<const uint64_t*>(data_ + loudsOffset);
-    loudsSize_ = loudsChunks * 128;  // Size in bits
-
-    // Labels start after LOUDS
-    size_t labelsOffset = loudsOffset + loudsBytes;
+    // 1. Labels start immediately after header (offset 24)
+    size_t labelsOffset = trieOffset + sizeof(LOUDSHeader);  // +24
 
     if (labelsOffset + nodeCount_ > fileSize_) {
         OH_LOG_ERROR(LOG_APP, "LOUDS: Labels array extends beyond file");
@@ -318,13 +345,64 @@ bool CompTrieReader::parseStructure() {
 
     labels_ = data_ + labelsOffset;
 
-    OH_LOG_DEBUG(LOG_APP, "LOUDS: Structure parsed - LOUDS at 0x%{public}zX (%{public}zu bits), Labels at 0x%{public}zX",
-                 loudsOffset, loudsSize_, labelsOffset);
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Labels @ 0x%{public}zX, size=%{public}zu bytes",
+                 labelsOffset, nodeCount_);
 
-    // Log first few labels for debugging
-    OH_LOG_DEBUG(LOG_APP, "LOUDS: First 10 labels: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+    // 2. LOUDS bitvector starts after Labels
+    size_t loudsOffset = labelsOffset + nodeCount_;
+
+    // Check alignment for uint64_t access (ARM requires 8-byte alignment)
+    if (loudsOffset % 8 != 0) {
+        OH_LOG_WARN(LOG_APP, "LOUDS: Bitvector not 8-byte aligned at 0x%{public}zX", loudsOffset);
+        // For now continue, but may need memcpy to aligned buffer on some devices
+    }
+
+    // louds_chunks from header could be:
+    // - Number of 16-byte chunks (128 bits each)
+    // - Or size in bytes directly
+    // From JSON analysis: louds_chunks appears to be size in bytes or words
+    // Let's try interpreting it as size in bytes first
+    size_t loudsBytes = loudsChunks;  // Try as direct byte count first
+
+    // Sanity check: if too small, maybe it's chunks
+    if (loudsBytes < 1000 && nodeCount_ > 10000) {
+        // Probably chunks, not bytes
+        loudsBytes = loudsChunks * 16;
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: Interpreting louds_chunks as 16-byte chunks: %{public}zu bytes", loudsBytes);
+    } else {
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: Interpreting louds_chunks as byte count: %{public}zu bytes", loudsBytes);
+    }
+
+    if (loudsOffset + loudsBytes > fileSize_) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: LOUDS bitvector extends beyond file");
+        return false;
+    }
+
+    louds_ = reinterpret_cast<const uint64_t*>(data_ + loudsOffset);
+    loudsSize_ = loudsBytes * 8;  // Size in bits
+
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Structure parsed - Labels @ 0x%{public}zX, LOUDS @ 0x%{public}zX (%{public}zu bits)",
+                 labelsOffset, loudsOffset, loudsSize_);
+
+    // Log first few labels for debugging (decode them too)
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: First 10 label bytes: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
                  labels_[0], labels_[1], labels_[2], labels_[3], labels_[4],
                  labels_[5], labels_[6], labels_[7], labels_[8], labels_[9]);
+
+    // Decode first 10 labels to characters
+    for (int i = 0; i < 10 && i < (int)nodeCount_; i++) {
+        uint8_t labelByte = labels_[i];
+        uint8_t index = labelByte & LABEL_INDEX_MASK;
+        bool isTerminal = (labelByte & LABEL_TERMINAL) != 0;
+        std::string ch = decodeLabel(labelByte);
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: Label[%{public}d] = 0x%02X -> index=%{public}d, char='%{public}s', terminal=%{public}s",
+                     i, labelByte, index, ch.c_str(), isTerminal ? "yes" : "no");
+    }
+
+    // Log first few LOUDS words for debugging
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: First 4 LOUDS words: %016llX %016llX %016llX %016llX",
+                 (unsigned long long)louds_[0], (unsigned long long)louds_[1],
+                 (unsigned long long)louds_[2], (unsigned long long)louds_[3]);
 
     return true;
 }
