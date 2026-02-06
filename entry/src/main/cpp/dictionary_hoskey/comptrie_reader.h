@@ -1,20 +1,31 @@
 /**
- * Yandex CompactTrie Reader
- * 
- * Reads Yandex keyboard dictionary format (main_ru) directly via mmap.
- * Based on reverse-engineering of libjni_ykeyboard3.so and Catboost comptrie.
- * 
- * Format:
- *   [Header 32B][JSON config][CompactTrie with VarInt frequencies][TFLite models]
- * 
- * Node format:
- *   [flags 1B][label 1B][left_offset 0-7B][right_offset 0-7B][value VarInt?]
- * 
- * Flags:
- *   0x80 (MT_FINAL) = node has value (word end)
- *   0x40 (MT_NEXT)  = has continuation
- *   bits 3-5       = left offset length (0-7)
- *   bits 0-2       = right offset length (0-7)
+ * Yandex LOUDS Trie Reader
+ *
+ * Reads Yandex keyboard dictionary format (main_ru.dict) via mmap.
+ * Based on reverse-engineering of libjni_ykeyboard3.so.
+ *
+ * Format: LOUDS (Level-Order Unary Degree Sequence)
+ *
+ * File structure:
+ *   [Global Header][JSON config][Data sections][Trie '1nc7'][TFLite 'TFL3']
+ *
+ * Trie section (starts with '1nc7'):
+ *   [Header 24B][LOUDS bitvector][Labels array][Payloads]
+ *
+ * Header (24 bytes):
+ *   magic[4]       = "1nc7" (0x37636E31)
+ *   version[4]     = 1
+ *   node_count[8]  = N (number of nodes)
+ *   louds_chunks[8]= M (LOUDS size in 16-byte chunks)
+ *
+ * Label byte format:
+ *   Bit 7 (0x80): IS_TERMINAL (word ends here)
+ *   Bit 6 (0x40): HAS_PAYLOAD (has weight data)
+ *   Bits 0-5 (0x3F): CHAR_INDEX (0-63)
+ *
+ * Alphabet mapping:
+ *   Index 32-63: Linear Russian 'а' + (index - 32)
+ *   Index 0-31:  Frequency-sorted (partially known)
  */
 
 #pragma once
@@ -23,27 +34,30 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <cstdint>
 
 namespace yandex {
 
-// Yandex trie node markers (from reverse engineering)
-constexpr uint8_t NODE_REGULAR = 0x40;    // '@' - Regular node
-constexpr uint8_t NODE_PROPERTY = 0x48;   // 'H' - Node with property
-constexpr uint8_t NODE_END = 0x50;        // 'P' - End-of-word marker
-constexpr uint8_t NODE_TERMINAL = 0x58;   // 'X' - Terminal node with data
+// Dictionary magic signatures
+constexpr uint32_t YANDEX_MAGIC = 0xFE3AC19B;      // Global file header
+constexpr uint32_t TRIE_MAGIC = 0x37636E31;        // "1nc7" little-endian
 
-// Legacy CompactTrie constants (kept for reference)
-constexpr uint8_t MT_FINAL = 0x80;
-constexpr uint8_t MT_NEXT = 0x40;
-constexpr uint8_t MT_SIZEMASK = 0x07;
-constexpr size_t MT_LEFTSHIFT = 3;
+// Label byte masks
+constexpr uint8_t LABEL_TERMINAL = 0x80;   // Bit 7: word ends here
+constexpr uint8_t LABEL_PAYLOAD = 0x40;    // Bit 6: has payload/weight
+constexpr uint8_t LABEL_INDEX_MASK = 0x3F; // Bits 0-5: character index
 
-// UTF-8 Cyrillic lead bytes
-constexpr uint8_t UTF8_CYR_D0 = 0xD0;
-constexpr uint8_t UTF8_CYR_D1 = 0xD1;
-
-// Dictionary magic
-constexpr uint32_t YANDEX_MAGIC = 0xFE3AC19B;
+/**
+ * LOUDS Trie Header (24 bytes, packed)
+ */
+#pragma pack(push, 1)
+struct LOUDSHeader {
+    char magic[4];           // "1nc7"
+    uint32_t version;        // Usually 1
+    uint64_t node_count;     // N: number of nodes
+    uint64_t louds_chunks;   // M: LOUDS size in 16-byte (128-bit) chunks
+};
+#pragma pack(pop)
 
 /**
  * Suggestion result
@@ -55,7 +69,7 @@ struct CompTrieSuggestion {
 };
 
 /**
- * CompactTrie Reader - mmap-based, instant loading
+ * LOUDS Trie Reader - mmap-based, instant loading
  */
 class CompTrieReader {
 public:
@@ -67,8 +81,8 @@ public:
     CompTrieReader& operator=(const CompTrieReader&) = delete;
 
     /**
-     * Load dictionary via mmap (instant, no parsing)
-     * @param path Path to main_ru file
+     * Load dictionary via mmap
+     * @param path Path to dictionary file
      * @return true if loaded successfully
      */
     bool load(const std::string& path);
@@ -114,7 +128,7 @@ public:
                        std::function<bool(const std::string& word, uint64_t freq)> callback) const;
 
     /**
-     * Get memory usage
+     * Get memory usage (minimal - only mmap overhead)
      */
     size_t getMemoryUsage() const;
 
@@ -126,71 +140,152 @@ public:
     /**
      * Check if loaded
      */
-    bool isLoaded() const { return data_ != nullptr; }
+    bool isLoaded() const { return data_ != nullptr && louds_ != nullptr; }
 
 private:
     // Mmap data
-    void* mapHandle_ = nullptr;  // Platform-specific handle
+    void* mapHandle_ = nullptr;
     const uint8_t* data_ = nullptr;
     size_t fileSize_ = 0;
-    size_t mapLength_ = 0;  // Actual mmap length (may differ from fileSize_ due to alignment)
+    size_t mapLength_ = 0;
 
-    // Trie boundaries
-    size_t trieStart_ = 0;
-    size_t trieEnd_ = 0;
-    uint64_t maxFrequency_ = 1;
+    // LOUDS structure pointers (within mmap)
+    const LOUDSHeader* header_ = nullptr;
+    const uint64_t* louds_ = nullptr;      // LOUDS bitvector
+    const uint8_t* labels_ = nullptr;      // Labels array
+    size_t loudsSize_ = 0;                 // Size in bits
+    size_t nodeCount_ = 0;
+
+    // Alphabet mapping table (index -> UTF-8 char)
+    // Filled during initialization
+    std::string alphabet_[64];
 
     // Cached stats
     mutable size_t wordCount_ = 0;
     mutable bool wordCountCached_ = false;
 
-    // Internal navigation
-    
-    /**
-     * Unpack variable-length offset
-     */
-    static size_t unpackOffset(const uint8_t* p, size_t len);
+    // =========================================================================
+    // LOUDS bit operations
+    // =========================================================================
 
     /**
-     * Unpack VarInt value (frequency)
+     * Get bit at position
      */
-    static uint64_t unpackVarInt(const uint8_t* p, size_t& bytesRead);
+    inline int getBit(size_t bitIdx) const {
+        size_t wordIdx = bitIdx / 64;
+        size_t bitPos = bitIdx % 64;
+        return (louds_[wordIdx] >> bitPos) & 1;
+    }
 
     /**
-     * Skip VarInt and return its length
+     * Count ones in bits[0..bitIdx) - exclusive
+     * rank1(i) = number of 1s before position i
      */
-    static size_t skipVarInt(const uint8_t* p);
+    size_t rank1(size_t bitIdx) const;
 
     /**
-     * Navigate to child by label byte
-     * @param datapos Current position (updated)
-     * @param dataend End of trie data
-     * @param label Byte to find
-     * @return Flags of found node, or 0 if not found (datapos set to nullptr)
+     * Count zeros in bits[0..bitIdx) - exclusive
+     * rank0(i) = i - rank1(i)
      */
-    uint8_t leapByte(const uint8_t*& datapos, const uint8_t* dataend, uint8_t label) const;
+    inline size_t rank0(size_t bitIdx) const {
+        return bitIdx - rank1(bitIdx);
+    }
 
     /**
-     * Find node for given key
-     * @param key Key bytes
-     * @param keylen Key length
-     * @param value Output: pointer to value if found
-     * @return true if exact match found
+     * Find position of k-th zero (1-indexed)
+     * select0(k) = position of k-th 0-bit
      */
-    bool findKey(const uint8_t* key, size_t keylen, const uint8_t** value) const;
+    size_t select0(size_t k) const;
 
     /**
-     * Collect words from subtrie (DFS)
+     * Find position of k-th one (1-indexed)
+     * select1(k) = position of k-th 1-bit
      */
-    void collectWords(const uint8_t* pos, const uint8_t* end,
-                      const std::string& prefix,
-                      std::vector<CompTrieSuggestion>& results,
-                      int maxResults, int depth) const;
+    size_t select1(size_t k) const;
+
+    // =========================================================================
+    // Tree navigation
+    // =========================================================================
 
     /**
-     * Parse header and find trie boundaries
+     * Get first child of node
+     * FirstChild(i) = Select0(Rank1(i)) + 1
+     * @return Child node index, or 0 if no children
+     */
+    size_t firstChild(size_t nodeIdx) const;
+
+    /**
+     * Get parent of node
+     * Parent(i) = Select1(Rank0(i))
+     * @return Parent node index
+     */
+    size_t parent(size_t nodeIdx) const;
+
+    /**
+     * Check if node has children
+     */
+    bool hasChildren(size_t nodeIdx) const;
+
+    /**
+     * Get all children of a node
+     * @param nodeIdx Node index
+     * @param children Output vector of (char, child_node_idx) pairs
+     */
+    void getChildren(size_t nodeIdx, std::vector<std::pair<std::string, size_t>>& children) const;
+
+    // =========================================================================
+    // Label/Alphabet handling
+    // =========================================================================
+
+    /**
+     * Initialize alphabet mapping table
+     */
+    void initAlphabet();
+
+    /**
+     * Decode label byte to UTF-8 character
+     * @param labelByte Raw label byte from labels_ array
+     * @return UTF-8 character string
+     */
+    std::string decodeLabel(uint8_t labelByte) const;
+
+    /**
+     * Check if node is terminal (word ends here)
+     */
+    inline bool isTerminal(size_t nodeIdx) const {
+        if (nodeIdx == 0 || nodeIdx > nodeCount_) return false;
+        return (labels_[nodeIdx - 1] & LABEL_TERMINAL) != 0;
+    }
+
+    /**
+     * Encode UTF-8 character to label index for search
+     * @param utf8Char UTF-8 character (1-4 bytes)
+     * @return Label index (0-63), or -1 if not found
+     */
+    int encodeChar(const std::string& utf8Char) const;
+
+    // =========================================================================
+    // Parsing
+    // =========================================================================
+
+    /**
+     * Parse file structure and locate LOUDS trie
      */
     bool parseStructure();
+
+    /**
+     * Find node matching prefix, starting from root
+     * @param prefix UTF-8 prefix string
+     * @return Node index, or 0 if not found
+     */
+    size_t findPrefixNode(const std::string& prefix) const;
+
+    /**
+     * Collect words from subtree (DFS)
+     */
+    void collectWords(size_t nodeIdx, const std::string& prefix,
+                      std::vector<CompTrieSuggestion>& results,
+                      int maxResults, int depth) const;
 };
 
 } // namespace yandex

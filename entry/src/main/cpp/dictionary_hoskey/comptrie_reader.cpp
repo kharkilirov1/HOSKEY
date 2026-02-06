@@ -1,5 +1,8 @@
 /**
- * Yandex CompactTrie Reader Implementation
+ * Yandex LOUDS Trie Reader Implementation
+ *
+ * Based on reverse-engineering of libjni_ykeyboard3.so.
+ * Uses LOUDS (Level-Order Unary Degree Sequence) format.
  */
 
 #include "comptrie_reader.h"
@@ -9,39 +12,105 @@
 #include <unistd.h>
 #include <cstring>
 #include <algorithm>
-#include <queue>
 #include <hilog/log.h>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0001
-#define LOG_TAG "HOSKEY-TRIE"
+#define LOG_TAG "HOSKEY-LOUDS"
 
 namespace yandex {
-
-//==============================================================================
-// VarInt Skip Table (from Catboost)
-// Maps first byte to total VarInt length
-//==============================================================================
-static const uint8_t SkipTable[256] = {
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
-    3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
-    4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5,6,6,6,6,7,7,8,9
-};
 
 //==============================================================================
 // Constructor / Destructor
 //==============================================================================
 
-CompTrieReader::CompTrieReader() = default;
+CompTrieReader::CompTrieReader() {
+    initAlphabet();
+}
 
 CompTrieReader::~CompTrieReader() {
     unload();
+}
+
+//==============================================================================
+// Alphabet Mapping
+//==============================================================================
+
+void CompTrieReader::initAlphabet() {
+    // Initialize all to empty
+    for (int i = 0; i < 64; i++) {
+        alphabet_[i] = "";
+    }
+
+    // Zone 1: Frequency-sorted characters (indices 0-31)
+    // Based on analysis of dictionary structure
+    // Known mappings from reverse engineering:
+    alphabet_[0x00] = "";      // Reserved/null
+    alphabet_[0x01] = " ";     // Space (word separator in n-grams)
+    alphabet_[0x02] = "а";     // Most frequent vowel
+    alphabet_[0x03] = "о";     // Second most frequent
+    alphabet_[0x04] = "е";     // Third
+    alphabet_[0x05] = "и";     // Fourth (was 'н' in earlier analysis, corrected)
+    alphabet_[0x06] = "н";     // Fifth
+    alphabet_[0x07] = "т";     // Sixth
+    alphabet_[0x08] = "с";     // Seventh
+    alphabet_[0x09] = "р";     // Eighth (was 'е' earlier)
+    alphabet_[0x0A] = "в";     // Ninth
+    alphabet_[0x0B] = "л";     // Tenth
+    alphabet_[0x0C] = "к";
+    alphabet_[0x0D] = "м";
+    alphabet_[0x0E] = "д";
+    alphabet_[0x0F] = "п";
+    alphabet_[0x10] = "у";
+    alphabet_[0x11] = "я";
+    alphabet_[0x12] = "ы";
+    alphabet_[0x13] = "ь";
+    alphabet_[0x14] = "г";
+    alphabet_[0x15] = "з";
+    alphabet_[0x16] = "б";
+    alphabet_[0x17] = "ч";
+    alphabet_[0x18] = "й";
+    alphabet_[0x19] = "х";
+    alphabet_[0x1A] = "ж";
+    alphabet_[0x1B] = "ш";
+    alphabet_[0x1C] = "ю";
+    alphabet_[0x1D] = "ц";
+    alphabet_[0x1E] = "щ";
+    alphabet_[0x1F] = "э";
+
+    // Zone 2: Linear alphabet (indices 32-63)
+    // Char = 'а' + (index - 32)
+    // Russian lowercase: а=0x430, б=0x431, ..., я=0x44F (32 letters)
+    const char* russianAlphabet[] = {
+        "а", "б", "в", "г", "д", "е", "ж", "з",
+        "и", "й", "к", "л", "м", "н", "о", "п",
+        "р", "с", "т", "у", "ф", "х", "ц", "ч",
+        "ш", "щ", "ъ", "ы", "ь", "э", "ю", "я"
+    };
+
+    for (int i = 0; i < 32; i++) {
+        alphabet_[32 + i] = russianAlphabet[i];
+    }
+
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Alphabet initialized (64 entries)");
+}
+
+std::string CompTrieReader::decodeLabel(uint8_t labelByte) const {
+    uint8_t index = labelByte & LABEL_INDEX_MASK;
+    if (index < 64) {
+        return alphabet_[index];
+    }
+    return "";
+}
+
+int CompTrieReader::encodeChar(const std::string& utf8Char) const {
+    for (int i = 0; i < 64; i++) {
+        if (alphabet_[i] == utf8Char) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 //==============================================================================
@@ -51,13 +120,12 @@ CompTrieReader::~CompTrieReader() {
 bool CompTrieReader::load(const std::string& path) {
     unload();
 
-    // Open file
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Failed to open file: %{public}s", path.c_str());
         return false;
     }
 
-    // Get file size
     struct stat st;
     if (fstat(fd, &st) < 0) {
         close(fd);
@@ -65,11 +133,11 @@ bool CompTrieReader::load(const std::string& path) {
     }
     fileSize_ = st.st_size;
 
-    // Memory map the file
     void* mapped = mmap(nullptr, fileSize_, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
 
     if (mapped == MAP_FAILED) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: mmap failed");
         return false;
     }
 
@@ -77,12 +145,12 @@ bool CompTrieReader::load(const std::string& path) {
     mapLength_ = fileSize_;
     data_ = static_cast<const uint8_t*>(mapped);
 
-    // Parse structure to find trie boundaries
     if (!parseStructure()) {
         unload();
         return false;
     }
 
+    OH_LOG_INFO(LOG_APP, "LOUDS: Loaded successfully, %{public}zu nodes", nodeCount_);
     return true;
 }
 
@@ -103,25 +171,24 @@ bool CompTrieReader::loadFromFd(int fd, size_t offset, size_t length) {
     size_t delta = offset - alignedOffset;
     size_t mapLength = length + delta;
 
-    // Memory map the file region
     void* mapped = mmap(nullptr, mapLength, PROT_READ, MAP_PRIVATE, fd, alignedOffset);
     if (mapped == MAP_FAILED) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: mmap from fd failed");
         return false;
     }
 
     mapHandle_ = mapped;
-    mapLength_ = mapLength;  // Store for proper munmap
+    mapLength_ = mapLength;
     data_ = static_cast<const uint8_t*>(mapped) + delta;
 
-    // Advise kernel for sequential access
     madvise(mapped, mapLength, MADV_SEQUENTIAL);
 
-    // Parse structure to find trie boundaries
     if (!parseStructure()) {
         unload();
         return false;
     }
 
+    OH_LOG_INFO(LOG_APP, "LOUDS: Loaded from fd, %{public}zu nodes", nodeCount_);
     return true;
 }
 
@@ -131,28 +198,35 @@ void CompTrieReader::unload() {
         mapHandle_ = nullptr;
     }
     data_ = nullptr;
+    header_ = nullptr;
+    louds_ = nullptr;
+    labels_ = nullptr;
     fileSize_ = 0;
     mapLength_ = 0;
-    trieStart_ = 0;
-    trieEnd_ = 0;
+    loudsSize_ = 0;
+    nodeCount_ = 0;
     wordCount_ = 0;
     wordCountCached_ = false;
 }
 
+//==============================================================================
+// Structure Parsing
+//==============================================================================
+
 bool CompTrieReader::parseStructure() {
     if (!data_ || fileSize_ < 64) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: File too small");
         return false;
     }
 
-    // Check magic
-    uint32_t magic = *reinterpret_cast<const uint32_t*>(data_);
-    if (magic != YANDEX_MAGIC) {
-        OH_LOG_ERROR(LOG_APP, "HOSKEY-TRIE: Invalid magic: 0x%08X (expected 0x%08X)",
-                     magic, YANDEX_MAGIC);
+    // Check global magic
+    uint32_t globalMagic = *reinterpret_cast<const uint32_t*>(data_);
+    if (globalMagic != YANDEX_MAGIC) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Invalid global magic: 0x%{public}08X", globalMagic);
         return false;
     }
 
-    // Find JSON config (starts at offset 32)
+    // Find JSON config end (starts at offset 32)
     size_t jsonStart = 32;
     int depth = 0;
     size_t jsonEnd = jsonStart;
@@ -168,213 +242,357 @@ bool CompTrieReader::parseStructure() {
         }
     }
 
-    // Extract JSON as string for parsing
-    std::string jsonConfig(reinterpret_cast<const char*>(data_ + jsonStart), jsonEnd - jsonStart);
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: JSON config length: %{public}zu", jsonConfig.size());
-
-    // Parse offsets from JSON
-    auto parseJsonInt = [&jsonConfig](const char* key) -> size_t {
-        std::string searchKey = std::string("\"") + key + "\":";
-        size_t pos = jsonConfig.find(searchKey);
-        if (pos == std::string::npos) return 0;
-        pos += searchKey.length();
-        // Skip whitespace
-        while (pos < jsonConfig.size() && (jsonConfig[pos] == ' ' || jsonConfig[pos] == '\t')) pos++;
-        // Parse number
-        size_t value = 0;
-        while (pos < jsonConfig.size() && jsonConfig[pos] >= '0' && jsonConfig[pos] <= '9') {
-            value = value * 10 + (jsonConfig[pos] - '0');
-            pos++;
-        }
-        return value;
-    };
-
-    // Yandex dictionary format (from decompiled code analysis):
-    //
-    // Structure:
-    //   - Header (32 bytes): magic 0xFE3AC19B + version 0x5802
-    //   - JSON Config (~10KB): section names and parameters
-    //   - Data Section: blacklist, rules.bin, etc.
-    //   - Trie Section: starts with magic "1nc7" (0x316e6337)
-    //     Format: magic(4) + version(4) + entry_count(8) + data...
-    //   - TFLite Models: start with "TFL3" signature
-    //
-    // Key insight: Trie section has magic signature "1nc7" at start
-    // This is reliable way to find trie without hardcoded offsets
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: JSON config ends at offset %{public}zu", jsonEnd);
 
     // Search for trie magic "1nc7" after JSON
-    const uint8_t trieMagic[] = {'1', 'n', 'c', '7'};  // 0x31 0x6e 0x63 0x37
-    trieStart_ = 0;
+    const uint8_t trieMagic[] = {'1', 'n', 'c', '7'};
+    size_t trieOffset = 0;
 
-    // Start search after JSON config
     size_t searchStart = jsonEnd;
-    size_t searchEnd = std::min(fileSize_, jsonEnd + 1000000);  // Search within 1MB after JSON
+    size_t searchEnd = std::min(fileSize_, jsonEnd + 2000000);  // Search within 2MB
 
     for (size_t i = searchStart; i < searchEnd - 4; i++) {
         if (memcmp(data_ + i, trieMagic, 4) == 0) {
-            trieStart_ = i;
-            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Found trie magic '1nc7' at offset %{public}zu (0x%{public}zX)",
-                         trieStart_, trieStart_);
-
-            // Parse trie header: magic(4) + version(4) + entry_count(8)
-            if (i + 16 <= fileSize_) {
-                uint32_t version = *reinterpret_cast<const uint32_t*>(data_ + i + 4);
-                uint64_t entryCount = *reinterpret_cast<const uint64_t*>(data_ + i + 8);
-                OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: version=%{public}u, entries=%{public}llu",
-                             version, (unsigned long long)entryCount);
-            }
+            trieOffset = i;
+            OH_LOG_DEBUG(LOG_APP, "LOUDS: Found '1nc7' magic at offset %{public}zu (0x%{public}zX)",
+                         trieOffset, trieOffset);
             break;
         }
     }
 
-    // Fallback: if no magic found, try after JSON padding (for old format)
-    if (trieStart_ == 0) {
-        trieStart_ = jsonEnd;
-        while (trieStart_ < fileSize_ &&
-               (data_[trieStart_] == 0 || data_[trieStart_] == ' ' ||
-                data_[trieStart_] == '\n' || data_[trieStart_] == '\r')) {
-            trieStart_++;
-        }
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: No magic found, using fallback offset %{public}zu", trieStart_);
-    }
-
-    trieEnd_ = fileSize_;
-
-    // Find TFLite model (TFL3 signature) as end marker if present
-    const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
-    for (size_t i = trieStart_; i < fileSize_ - 4; i++) {
-        if (memcmp(data_ + i, tfl3, 4) == 0) {
-            trieEnd_ = i - 4;  // FlatBuffer size is before signature
-            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Found TFL3 marker, trie ends at: %{public}zu", trieEnd_);
-            break;
-        }
-    }
-
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Final trie region: [%{public}zu - %{public}zu] (%{public}zu bytes)",
-                 trieStart_, trieEnd_, trieEnd_ - trieStart_);
-
-    // Find max frequency for normalization (sample first 1000 words)
-    maxFrequency_ = 1;
-    int sampled = 0;
-    iteratePrefix("", [this, &sampled](const std::string&, uint64_t freq) {
-        if (freq > maxFrequency_) maxFrequency_ = freq;
-        return ++sampled < 1000;
-    });
-
-    return trieStart_ < trieEnd_;
-}
-
-//==============================================================================
-// VarInt helpers
-//==============================================================================
-
-size_t CompTrieReader::unpackOffset(const uint8_t* p, size_t len) {
-    size_t result = 0;
-    for (size_t i = 0; i < len; i++) {
-        result = (result << 8) | p[i];
-    }
-    return result;
-}
-
-uint64_t CompTrieReader::unpackVarInt(const uint8_t* p, size_t& bytesRead) {
-    uint8_t ch = *p++;
-    bytesRead = SkipTable[ch];
-    size_t taillen = bytesRead - 1;
-    
-    uint64_t result = ch & (0x7F >> taillen);
-    
-    while (taillen--) {
-        result = (result << 8) | (*p++ & 0xFF);
-    }
-    
-    return result;
-}
-
-size_t CompTrieReader::skipVarInt(const uint8_t* p) {
-    return SkipTable[*p];
-}
-
-//==============================================================================
-// Navigation
-//==============================================================================
-
-uint8_t CompTrieReader::leapByte(const uint8_t*& datapos, const uint8_t* dataend, uint8_t label) const {
-    while (datapos < dataend) {
-        const uint8_t* startpos = datapos;
-        uint8_t flags = *datapos++;
-
-        // Check for epsilon link (no MT_FINAL or MT_NEXT)
-        if (!(flags & (MT_FINAL | MT_NEXT))) {
-            size_t offsetlen = flags & MT_SIZEMASK;
-            size_t offset = unpackOffset(datapos, offsetlen);
-            if (!offset) break;
-            datapos = startpos + offset;
-            continue;
-        }
-
-        uint8_t ch = *datapos++;
-        
-        // Left branch
-        size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-        if (label < ch) {
-            size_t offset = unpackOffset(datapos, leftLen);
-            if (!offset) break;
-            datapos = startpos + offset;
-            continue;
-        }
-        datapos += leftLen;
-
-        // Right branch
-        size_t rightLen = flags & MT_SIZEMASK;
-        if (label > ch) {
-            size_t offset = unpackOffset(datapos, rightLen);
-            if (!offset) break;
-            datapos = startpos + offset;
-            continue;
-        }
-        datapos += rightLen;
-
-        // Match found
-        return flags;
-    }
-
-    datapos = nullptr;
-    return 0;
-}
-
-bool CompTrieReader::findKey(const uint8_t* key, size_t keylen, const uint8_t** value) const {
-    if (!data_ || trieStart_ >= trieEnd_) {
+    if (trieOffset == 0) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Trie magic '1nc7' not found");
         return false;
     }
 
-    const uint8_t* pos = data_ + trieStart_;
-    const uint8_t* end = data_ + trieEnd_;
-    
-    *value = nullptr;
-    uint8_t flags = MT_NEXT;
+    // Parse LOUDS header
+    if (trieOffset + sizeof(LOUDSHeader) > fileSize_) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Header extends beyond file");
+        return false;
+    }
 
-    for (size_t i = 0; i < keylen; i++) {
-        flags = leapByte(pos, end, key[i]);
-        if (!pos) {
-            return false;
-        }
+    header_ = reinterpret_cast<const LOUDSHeader*>(data_ + trieOffset);
 
-        if (flags & MT_FINAL) {
-            // There's a value here
-            if (i == keylen - 1) {
-                *value = pos;
-                return true;
+    // Validate header
+    if (memcmp(header_->magic, "1nc7", 4) != 0) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Invalid trie magic in header");
+        return false;
+    }
+
+    nodeCount_ = header_->node_count;
+    size_t loudsChunks = header_->louds_chunks;
+
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Header - version=%{public}u, nodes=%{public}zu, chunks=%{public}zu",
+                 header_->version, nodeCount_, loudsChunks);
+
+    // Validate reasonable values
+    if (nodeCount_ == 0 || nodeCount_ > 100000000) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Invalid node_count: %{public}zu", nodeCount_);
+        return false;
+    }
+
+    if (loudsChunks == 0 || loudsChunks > 10000000) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Invalid louds_chunks: %{public}zu", loudsChunks);
+        return false;
+    }
+
+    // Calculate pointers
+    size_t loudsOffset = trieOffset + sizeof(LOUDSHeader);
+    size_t loudsBytes = loudsChunks * 16;  // 16 bytes per chunk (128 bits)
+
+    if (loudsOffset + loudsBytes > fileSize_) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: LOUDS bitvector extends beyond file");
+        return false;
+    }
+
+    louds_ = reinterpret_cast<const uint64_t*>(data_ + loudsOffset);
+    loudsSize_ = loudsChunks * 128;  // Size in bits
+
+    // Labels start after LOUDS
+    size_t labelsOffset = loudsOffset + loudsBytes;
+
+    if (labelsOffset + nodeCount_ > fileSize_) {
+        OH_LOG_ERROR(LOG_APP, "LOUDS: Labels array extends beyond file");
+        return false;
+    }
+
+    labels_ = data_ + labelsOffset;
+
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Structure parsed - LOUDS at 0x%{public}zX (%{public}zu bits), Labels at 0x%{public}zX",
+                 loudsOffset, loudsSize_, labelsOffset);
+
+    // Log first few labels for debugging
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: First 10 labels: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                 labels_[0], labels_[1], labels_[2], labels_[3], labels_[4],
+                 labels_[5], labels_[6], labels_[7], labels_[8], labels_[9]);
+
+    return true;
+}
+
+//==============================================================================
+// LOUDS Bit Operations
+//==============================================================================
+
+size_t CompTrieReader::rank1(size_t bitIdx) const {
+    if (bitIdx == 0) return 0;
+
+    size_t wordIdx = bitIdx / 64;
+    size_t bitPos = bitIdx % 64;
+
+    size_t count = 0;
+
+    // Count full words
+    for (size_t i = 0; i < wordIdx; i++) {
+        count += __builtin_popcountll(louds_[i]);
+    }
+
+    // Count partial word
+    if (bitPos > 0) {
+        uint64_t mask = (1ULL << bitPos) - 1;
+        count += __builtin_popcountll(louds_[wordIdx] & mask);
+    }
+
+    return count;
+}
+
+size_t CompTrieReader::select0(size_t k) const {
+    if (k == 0) return 0;
+
+    size_t pos = 0;
+    size_t zeros = 0;
+
+    // Search word by word
+    size_t maxWords = loudsSize_ / 64;
+    for (size_t wordIdx = 0; wordIdx < maxWords; wordIdx++) {
+        uint64_t word = louds_[wordIdx];
+        size_t ones = __builtin_popcountll(word);
+        size_t wordZeros = 64 - ones;
+
+        if (zeros + wordZeros >= k) {
+            // k-th zero is in this word
+            uint64_t invWord = ~word;
+            for (int bit = 0; bit < 64; bit++) {
+                if ((invWord >> bit) & 1) {
+                    zeros++;
+                    if (zeros == k) {
+                        return wordIdx * 64 + bit;
+                    }
+                }
             }
-            // Skip value to continue
-            pos += skipVarInt(pos);
         }
 
-        if (!(flags & MT_NEXT)) {
-            return false;
+        zeros += wordZeros;
+        pos += 64;
+    }
+
+    return pos;  // Not found, return end position
+}
+
+size_t CompTrieReader::select1(size_t k) const {
+    if (k == 0) return 0;
+
+    size_t ones = 0;
+
+    size_t maxWords = loudsSize_ / 64;
+    for (size_t wordIdx = 0; wordIdx < maxWords; wordIdx++) {
+        uint64_t word = louds_[wordIdx];
+        size_t wordOnes = __builtin_popcountll(word);
+
+        if (ones + wordOnes >= k) {
+            // k-th one is in this word
+            for (int bit = 0; bit < 64; bit++) {
+                if ((word >> bit) & 1) {
+                    ones++;
+                    if (ones == k) {
+                        return wordIdx * 64 + bit;
+                    }
+                }
+            }
+        }
+
+        ones += wordOnes;
+    }
+
+    return loudsSize_;  // Not found
+}
+
+//==============================================================================
+// Tree Navigation
+//==============================================================================
+
+size_t CompTrieReader::firstChild(size_t nodeIdx) const {
+    if (nodeIdx == 0) {
+        // Root's first child is at position after first 0
+        // In LOUDS, root is represented by "10" (one child) or "110" (two children), etc.
+        // FirstChild(0) = position 1 if root has children
+        if (loudsSize_ > 0 && getBit(0) == 1) {
+            return 1;
+        }
+        return 0;
+    }
+
+    // FirstChild(i) = Select0(Rank1(i)) + 1
+    size_t r = rank1(nodeIdx);
+    if (r == 0) return 0;
+
+    size_t childPos = select0(r) + 1;
+
+    // Check if this position has a 1-bit (meaning it's a valid child)
+    if (childPos < loudsSize_ && getBit(childPos) == 1) {
+        // Convert bit position to node index
+        return rank1(childPos + 1);
+    }
+
+    return 0;  // No children
+}
+
+size_t CompTrieReader::parent(size_t nodeIdx) const {
+    if (nodeIdx <= 1) return 0;  // Root has no parent
+
+    // Parent(i) = Select1(Rank0(i))
+    size_t r0 = rank0(nodeIdx);
+    if (r0 == 0) return 0;
+
+    size_t parentBit = select1(r0);
+    return rank1(parentBit + 1);
+}
+
+bool CompTrieReader::hasChildren(size_t nodeIdx) const {
+    return firstChild(nodeIdx) != 0;
+}
+
+void CompTrieReader::getChildren(size_t nodeIdx, std::vector<std::pair<std::string, size_t>>& children) const {
+    children.clear();
+
+    if (nodeIdx >= nodeCount_) return;
+
+    // Find bit position for this node's children
+    size_t bitPos;
+    if (nodeIdx == 0) {
+        bitPos = 0;
+    } else {
+        size_t r = rank1(nodeIdx);
+        bitPos = select0(r) + 1;
+    }
+
+    // Read consecutive 1s as children
+    size_t childIdx = 1;
+    while (bitPos < loudsSize_ && getBit(bitPos) == 1) {
+        // This is a child edge
+        size_t childNodeIdx = rank1(bitPos + 1);
+
+        if (childNodeIdx > 0 && childNodeIdx <= nodeCount_) {
+            std::string label = decodeLabel(labels_[childNodeIdx - 1]);
+            if (!label.empty()) {
+                children.push_back({label, childNodeIdx});
+            }
+        }
+
+        bitPos++;
+        childIdx++;
+    }
+}
+
+//==============================================================================
+// Tree Search
+//==============================================================================
+
+size_t CompTrieReader::findPrefixNode(const std::string& prefix) const {
+    if (!louds_ || !labels_ || prefix.empty()) {
+        return 0;
+    }
+
+    size_t currentNode = 0;  // Start at root
+
+    // Parse UTF-8 prefix character by character
+    size_t i = 0;
+    while (i < prefix.size()) {
+        // Extract one UTF-8 character
+        std::string utf8Char;
+        uint8_t c = static_cast<uint8_t>(prefix[i]);
+
+        if ((c & 0x80) == 0) {
+            // ASCII
+            utf8Char = prefix.substr(i, 1);
+            i += 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            // 2-byte UTF-8 (Cyrillic)
+            if (i + 1 >= prefix.size()) break;
+            utf8Char = prefix.substr(i, 2);
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            // 3-byte UTF-8
+            if (i + 2 >= prefix.size()) break;
+            utf8Char = prefix.substr(i, 3);
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            // 4-byte UTF-8
+            if (i + 3 >= prefix.size()) break;
+            utf8Char = prefix.substr(i, 4);
+            i += 4;
+        } else {
+            break;  // Invalid UTF-8
+        }
+
+        // Find child with matching label
+        std::vector<std::pair<std::string, size_t>> children;
+        getChildren(currentNode, children);
+
+        bool found = false;
+        for (const auto& [label, childIdx] : children) {
+            if (label == utf8Char) {
+                currentNode = childIdx;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            OH_LOG_DEBUG(LOG_APP, "LOUDS: Character '%{public}s' not found at node %{public}zu",
+                         utf8Char.c_str(), currentNode);
+            return 0;  // Character not found
         }
     }
 
-    return false;
+    return currentNode;
+}
+
+//==============================================================================
+// Word Collection
+//==============================================================================
+
+void CompTrieReader::collectWords(size_t nodeIdx, const std::string& prefix,
+                                   std::vector<CompTrieSuggestion>& results,
+                                   int maxResults, int depth) const {
+    if (depth > 30 || results.size() >= static_cast<size_t>(maxResults * 10)) {
+        return;
+    }
+
+    // Check if current node is a terminal (word ends here)
+    if (nodeIdx > 0 && isTerminal(nodeIdx)) {
+        CompTrieSuggestion s;
+        s.word = prefix;
+        s.frequency = 100;  // Default frequency
+        s.score = 1.0f / (1.0f + depth);  // Prefer shorter words
+        results.push_back(s);
+    }
+
+    // Get children and recurse
+    std::vector<std::pair<std::string, size_t>> children;
+    getChildren(nodeIdx, children);
+
+    for (const auto& [label, childIdx] : children) {
+        if (label.empty() || label == " " || label == "@") {
+            continue;  // Skip separators
+        }
+
+        std::string newPrefix = prefix + label;
+        collectWords(childIdx, newPrefix, results, maxResults, depth + 1);
+
+        if (results.size() >= static_cast<size_t>(maxResults * 10)) {
+            break;
+        }
+    }
 }
 
 //==============================================================================
@@ -382,602 +600,68 @@ bool CompTrieReader::findKey(const uint8_t* key, size_t keylen, const uint8_t** 
 //==============================================================================
 
 bool CompTrieReader::contains(const std::string& word) const {
-    if (!data_ || word.empty() || trieStart_ >= trieEnd_) {
+    if (!isLoaded() || word.empty()) {
         return false;
     }
 
-    // Direct search: scan for the word as UTF-8 byte sequence
-    const uint8_t* wordBytes = reinterpret_cast<const uint8_t*>(word.data());
-    const size_t wordLen = word.size();
-    const uint8_t* start = data_ + trieStart_;
-    const uint8_t* end = data_ + trieEnd_ - wordLen;
-
-    // Scan for exact word match followed by word boundary
-    for (const uint8_t* pos = start; pos < end; pos++) {
-        if (memcmp(pos, wordBytes, wordLen) == 0) {
-            // Check word boundary: next byte should not be continuation
-            uint8_t nextByte = *(pos + wordLen);
-            // Word boundary: null, space, node marker, or non-Cyrillic
-            if (nextByte == 0 || nextByte == ' ' || nextByte == '@' ||
-                nextByte == NODE_REGULAR || nextByte == NODE_PROPERTY ||
-                nextByte == NODE_END || nextByte == NODE_TERMINAL ||
-                (nextByte != UTF8_CYR_D0 && nextByte != UTF8_CYR_D1 &&
-                 !(nextByte >= 'a' && nextByte <= 'z'))) {
-                return true;
-            }
-        }
-    }
-    return false;
+    size_t node = findPrefixNode(word);
+    return node != 0 && isTerminal(node);
 }
 
 uint64_t CompTrieReader::getFrequency(const std::string& word) const {
-    // Since we can't reliably extract frequencies from Yandex format,
-    // return a heuristic frequency based on word properties
     if (!contains(word)) {
         return 0;
     }
-
-    // Heuristic frequency: shorter common words get higher frequency
-    size_t charCount = 0;
-    for (size_t i = 0; i < word.size(); ) {
-        uint8_t c = static_cast<uint8_t>(word[i]);
-        if ((c & 0x80) == 0) { i++; }
-        else if ((c & 0xE0) == 0xC0) { i += 2; }
-        else { i += 1; }
-        charCount++;
-    }
-
-    // Frequency inversely related to length
-    if (charCount <= 3) return 255;
-    if (charCount <= 5) return 200;
-    if (charCount <= 7) return 150;
-    if (charCount <= 10) return 100;
-    return 50;
-}
-
-void CompTrieReader::collectWords(const uint8_t* pos, const uint8_t* end,
-                                   const std::string& prefix,
-                                   std::vector<CompTrieSuggestion>& results,
-                                   int maxResults, int depth) const {
-    if (!pos || pos >= end || depth > 30) return;
-    if ((int)results.size() >= maxResults * 10) return;
-
-    // Stack-based DFS with explicit state tracking
-    struct StackItem {
-        const uint8_t* pos;
-        std::string word;
-        int depth;
-    };
-    
-    std::vector<StackItem> stack;
-    stack.reserve(256);
-    stack.push_back({pos, prefix, depth});
-
-    const size_t maxWordLen = prefix.size() + 40;  // Max 40 chars after prefix
-
-    while (!stack.empty() && (int)results.size() < maxResults * 10) {
-        StackItem item = stack.back();
-        stack.pop_back();
-
-        if (!item.pos || item.pos >= end || item.depth > 30) continue;
-        if (item.word.size() > maxWordLen) continue;  // Word too long, skip
-
-        const uint8_t* p = item.pos;
-        
-        // Process one node and its siblings
-        while (p && p < end - 1) {
-            const uint8_t* startpos = p;
-            uint8_t flags = *p++;
-            
-            // Epsilon link (redirect without symbol)
-            if (!(flags & (MT_FINAL | MT_NEXT))) {
-                size_t offsetlen = flags & MT_SIZEMASK;
-                if (offsetlen == 0 || p + offsetlen > end) break;
-                size_t offset = unpackOffset(p, offsetlen);
-                if (!offset || startpos + offset >= end) break;
-                p = startpos + offset;
-                continue;
-            }
-
-            // Read label byte
-            uint8_t ch = *p++;
-
-            // Sanity check: null byte usually means end of valid data
-            if (ch == 0) break;
-
-            // Skip '@' and ' ' branches - these are n-gram separators
-            // '@' (0x40) separates current word from next-word prediction
-            // ' ' (0x20) separates words in n-gram phrases
-            if (ch == '@' || ch == ' ') {
-                // Still need to process siblings (left/right branches)
-                size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-                size_t rightLen = flags & MT_SIZEMASK;
-                if (p + leftLen + rightLen > end) break;
-
-                // Parse and push sibling branches (skip the '@' branch itself)
-                size_t leftOffset = 0, rightOffset = 0;
-                if (leftLen > 0) leftOffset = unpackOffset(p, leftLen);
-                p += leftLen;
-                if (rightLen > 0) rightOffset = unpackOffset(p, rightLen);
-                p += rightLen;
-
-                if (rightOffset > 0 && startpos + rightOffset < end) {
-                    stack.push_back({startpos + rightOffset, item.word, item.depth});
-                }
-                if (leftOffset > 0 && startpos + leftOffset < end) {
-                    stack.push_back({startpos + leftOffset, item.word, item.depth});
-                }
-                break;  // Don't follow '@' children, move to next stack item
-            }
-            
-            // Read offset lengths
-            size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-            size_t rightLen = flags & MT_SIZEMASK;
-            
-            // Bounds check
-            if (p + leftLen + rightLen > end) break;
-            
-            // Parse branch offsets
-            size_t leftOffset = 0, rightOffset = 0;
-            if (leftLen > 0) {
-                leftOffset = unpackOffset(p, leftLen);
-            }
-            p += leftLen;
-            if (rightLen > 0) {
-                rightOffset = unpackOffset(p, rightLen);
-            }
-            p += rightLen;
-
-            // IMPORTANT: Push RIGHT first, then LEFT
-            // Stack is LIFO, so LEFT will be popped first (lower bytes = alphabetical order)
-            // This ensures "прив..." is found before "приж..."
-            if (rightOffset > 0 && startpos + rightOffset < end) {
-                stack.push_back({startpos + rightOffset, item.word, item.depth});
-            }
-            if (leftOffset > 0 && startpos + leftOffset < end) {
-                stack.push_back({startpos + leftOffset, item.word, item.depth});
-            }
-
-            // Build current word by appending this byte
-            std::string currentWord = item.word;
-            currentWord += static_cast<char>(ch);
-            
-            // Check for word boundary (MT_FINAL)
-            if (flags & MT_FINAL) {
-                if (p >= end) break;
-                
-                size_t bytesRead = 0;
-                uint64_t freq = unpackVarInt(p, bytesRead);
-                
-                // Validate VarInt read
-                if (bytesRead == 0 || bytesRead > 8 || p + bytesRead > end) break;
-                p += bytesRead;
-                
-                // Validate frequency (reasonable range)
-                if (freq > 0 && freq < 0xFFFFFFFF) {
-                    // Only add complete UTF-8 words (even number of bytes for Cyrillic)
-                    CompTrieSuggestion s;
-                    s.word = currentWord;
-                    s.frequency = freq;
-                    s.score = static_cast<float>(freq) / static_cast<float>(maxFrequency_);
-                    results.push_back(s);
-                }
-            }
-
-            // Queue children (next level, deeper into trie)
-            if (flags & MT_NEXT) {
-                if (p < end && currentWord.size() <= maxWordLen) {
-                    stack.push_back({p, currentWord, item.depth + 1});
-                }
-            }
-
-            break;  // Processed this node, move to next stack item
-        }
-    }
+    // TODO: Extract actual frequency from payload section
+    return 100;
 }
 
 std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string& prefix, int maxResults) const {
     std::vector<CompTrieSuggestion> results;
 
-    if (!data_ || prefix.empty()) {
+    if (!isLoaded() || prefix.empty()) {
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: getSuggestions - not loaded or empty prefix");
         return results;
     }
 
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: getSuggestions('%{public}s'): navigating trie [%{public}zu - %{public}zu]",
-                 prefix.c_str(), trieStart_, trieEnd_);
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: getSuggestions('%{public}s'), maxResults=%{public}d",
+                 prefix.c_str(), maxResults);
 
-    // Navigate to prefix node using proper trie traversal (not byte scanning)
-    const uint8_t* pos = data_ + trieStart_;
-    const uint8_t* end = data_ + trieEnd_;
-    const size_t prefixLen = prefix.size();
+    // Find node for prefix
+    size_t prefixNode = findPrefixNode(prefix);
 
-    // Navigate to prefix position using leapByte for each byte
-    bool prefixFound = true;
-    for (size_t i = 0; i < prefix.size(); i++) {
-        uint8_t flags = leapByte(pos, end, static_cast<uint8_t>(prefix[i]));
-        if (!pos) {
-            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix byte %{public}zu (0x%{public}02X '%{public}c') not found",
-                         i, static_cast<uint8_t>(prefix[i]),
-                         (prefix[i] >= 32 && prefix[i] < 127) ? prefix[i] : '?');
-            prefixFound = false;
-            break;
-        }
-
-        // If this node has a value, skip it to continue navigation
-        if (flags & MT_FINAL) {
-            if (pos >= end) {
-                prefixFound = false;
-                break;
-            }
-            size_t bytesRead = skipVarInt(pos);
-            if (bytesRead == 0 || bytesRead > 8 || pos + bytesRead > end) {
-                prefixFound = false;
-                break;
-            }
-            pos += bytesRead;
-        }
-
-        // Check if we can continue (except for last byte)
-        if (!(flags & MT_NEXT) && i < prefix.size() - 1) {
-            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: no continuation at byte %{public}zu", i);
-            prefixFound = false;
-            break;
-        }
-    }
-
-    std::vector<std::string> foundWords;
-    foundWords.reserve(maxResults * 10);
-
-    if (!prefixFound) {
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix '%{public}s' not found via trie navigation", prefix.c_str());
-        // Return empty - no fallback to byte scan
+    if (prefixNode == 0) {
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: Prefix '%{public}s' not found in trie", prefix.c_str());
         return results;
     }
 
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: prefix found at offset %{public}zu, collecting words",
-                 pos - data_);
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Found prefix at node %{public}zu", prefixNode);
 
-    // Collect words from this subtrie using DFS
-    struct StackItem {
-        const uint8_t* pos;
-        std::string word;
-        int depth;
-    };
+    // Collect words from this subtree
+    collectWords(prefixNode, prefix, results, maxResults, 0);
 
-    std::vector<StackItem> stack;
-    stack.reserve(256);
-    stack.push_back({pos, prefix, 0});
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Collected %{public}zu raw results", results.size());
 
-    const size_t maxWordLen = prefix.size() + 40;
-
-    while (!stack.empty() && foundWords.size() < static_cast<size_t>(maxResults * 50)) {
-        StackItem item = stack.back();
-        stack.pop_back();
-
-        if (!item.pos || item.pos >= end || item.depth > 30 || item.word.size() > maxWordLen) {
-            continue;
-        }
-
-        const uint8_t* p = item.pos;
-        while (p && p < end - 1) {
-            const uint8_t* startpos = p;
-            uint8_t flags = *p++;
-
-            // Epsilon link (redirect without symbol)
-            if (!(flags & (MT_FINAL | MT_NEXT))) {
-                size_t offsetlen = flags & MT_SIZEMASK;
-                if (offsetlen == 0 || p + offsetlen > end) break;
-                size_t offset = unpackOffset(p, offsetlen);
-                if (!offset || startpos + offset >= end) break;
-                p = startpos + offset;
-                continue;
-            }
-
-            if (p >= end) break;
-            uint8_t ch = *p++;
-            if (ch == 0) break;
-
-            // Skip '@' and ' ' branches - n-gram separators
-            if (ch == '@' || ch == ' ') {
-                size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-                size_t rightLen = flags & MT_SIZEMASK;
-                if (p + leftLen + rightLen > end) break;
-
-                size_t leftOffset = 0, rightOffset = 0;
-                if (leftLen > 0) leftOffset = unpackOffset(p, leftLen);
-                p += leftLen;
-                if (rightLen > 0) rightOffset = unpackOffset(p, rightLen);
-                p += rightLen;
-
-                if (rightOffset > 0 && startpos + rightOffset < end) {
-                    stack.push_back({startpos + rightOffset, item.word, item.depth});
-                }
-                if (leftOffset > 0 && startpos + leftOffset < end) {
-                    stack.push_back({startpos + leftOffset, item.word, item.depth});
-                }
-                break;
-            }
-
-            size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-            size_t rightLen = flags & MT_SIZEMASK;
-            if (p + leftLen + rightLen > end) break;
-
-            size_t leftOffset = 0, rightOffset = 0;
-            if (leftLen > 0) leftOffset = unpackOffset(p, leftLen);
-            p += leftLen;
-            if (rightLen > 0) rightOffset = unpackOffset(p, rightLen);
-            p += rightLen;
-
-            // Push siblings to stack
-            if (rightOffset > 0 && startpos + rightOffset < end) {
-                stack.push_back({startpos + rightOffset, item.word, item.depth});
-            }
-            if (leftOffset > 0 && startpos + leftOffset < end) {
-                stack.push_back({startpos + leftOffset, item.word, item.depth});
-            }
-
-            // Build current word by appending this character byte
-            std::string currentWord = item.word;
-            currentWord += static_cast<char>(ch);
-
-            // Check for word boundary (MT_FINAL)
-            if (flags & MT_FINAL) {
-                if (p >= end) break;
-                size_t bytesRead = skipVarInt(p);
-                if (bytesRead == 0 || bytesRead > 8 || p + bytesRead > end) break;
-                p += bytesRead;
-
-                // Save valid word (must be longer than prefix)
-                if (currentWord.size() > prefix.size() && currentWord.size() <= 40) {
-                    foundWords.push_back(currentWord);
-                }
-            }
-
-            // Continue to next level if MT_NEXT
-            if (flags & MT_NEXT) {
-                stack.push_back({p, currentWord, item.depth + 1});
-            }
-
-            break;  // Move to next stack item
-        }
-    }
-
-    OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: getSuggestions('%{public}s'): found %{public}zu raw matches",
-                 prefix.c_str(), foundWords.size());
-
-    // Log first few found words
-    for (size_t i = 0; i < std::min(foundWords.size(), (size_t)5); i++) {
-        OH_LOG_DEBUG(LOG_APP, "  raw[%{public}zu]: '%{public}s'", i, foundWords[i].c_str());
-    }
-
-    // Helper: extract clean word from n-gram format
-    auto extractWord = [&prefix](const std::string& entry) -> std::string {
-        // Find @ delimiter - take part before @ (current word, not prediction)
-        size_t atPos = entry.find('@');
-        std::string text = (atPos != std::string::npos) ? entry.substr(0, atPos) : entry;
-
-        // If text contains spaces, find word matching prefix
-        if (text.find(' ') != std::string::npos) {
-            size_t start = 0;
-            while (start < text.size()) {
-                size_t end = text.find(' ', start);
-                if (end == std::string::npos) end = text.size();
-                std::string word = text.substr(start, end - start);
-                if (!word.empty() && word.size() >= prefix.size() &&
-                    word.compare(0, prefix.size(), prefix) == 0) {
-                    return word;
-                }
-                start = end + 1;
-            }
-            return "";
-        }
-        return text;
-    };
-    
-    auto isValidUtf8Word = [](const std::string& word) -> bool {
-        if (word.empty() || word.size() > 40) return false;
-
-        // Track valid character count
-        size_t validChars = 0;
-
-        for (size_t i = 0; i < word.size(); ) {
-            uint8_t c = static_cast<uint8_t>(word[i]);
-
-            // Control characters are invalid
-            if (c < 0x20) return false;
-
-            // ASCII printable (0x20-0x7E)
-            if (c < 0x80) {
-                // Only allow: letters, apostrophe, hyphen, space
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                    c == '\'' || c == '-' || c == ' ') {
-                    i++;
-                    validChars++;
-                    continue;
-                }
-                // Reject @, digits, punctuation, etc.
-                return false;
-            }
-
-            // 2-byte UTF-8 (0xC0-0xDF): includes Cyrillic (0xD0-0xD1)
-            if ((c & 0xE0) == 0xC0) {
-                if (i + 1 >= word.size()) return false;
-                uint8_t c1 = static_cast<uint8_t>(word[i + 1]);
-                if ((c1 & 0xC0) != 0x80) return false;
-
-                // Decode codepoint
-                uint32_t cp = ((c & 0x1F) << 6) | (c1 & 0x3F);
-
-                // Only allow Cyrillic: U+0400-U+04FF
-                if (cp >= 0x0400 && cp <= 0x04FF) {
-                    i += 2;
-                    validChars++;
-                    continue;
-                }
-                return false;
-            }
-
-            // 3-byte UTF-8 (0xE0-0xEF): includes Korean, Chinese - REJECT
-            if ((c & 0xF0) == 0xE0) {
-                return false;  // No Korean/Chinese in Russian dictionary
-            }
-
-            // 4-byte UTF-8 (0xF0-0xF7): emoji etc - REJECT
-            if ((c & 0xF8) == 0xF0) {
-                return false;
-            }
-
-            // Invalid UTF-8 bytes
-            return false;
-        }
-
-        // Must have at least 1 valid character
-        return validChars > 0;
-    };
-    
-    // Common Russian word stems for boosting
-    auto isCommonWordPattern = [](const std::string& word) -> bool {
-        // Common Russian word beginnings (UTF-8)
-        static const char* commonStarts[] = {
-            // Very common words
-            "привет", "прив", "пока", "спасиб", "здравств", "добр",
-            "хорош", "норм", "отлич", "класс", "круто",
-            // Common verbs
-            "сдела", "буд", "был", "есть", "хоч", "мог", "долж", "нуж",
-            "знаю", "знае", "дума", "думаю", "люблю", "любл",
-            // Common nouns
-            "день", "ночь", "утро", "вечер", "время", "год", "месяц",
-            "работ", "дом", "друг", "человек", "жизн",
-            // Pronouns/determiners
-            "этот", "этого", "тот", "мой", "твой", "наш", "ваш",
-            // Adverbs
-            "сегодн", "завтра", "вчера", "сейчас", "потом", "всегда", "никогда",
-            "очень", "тоже", "также", "только", "уже", "еще",
-            // Conjunctions/prepositions
-            "потому", "поэтому", "когда", "если", "чтобы", "после", "перед",
-            // Common adjectives
-            "новый", "новая", "старый", "большой", "маленьк", "красив"
-        };
-
-        for (const char* stem : commonStarts) {
-            if (word.find(stem) == 0) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    // Word quality scoring - prefer common, natural Russian words
-    auto getWordQuality = [&isCommonWordPattern](const std::string& word, size_t prefixLen) -> float {
-        float quality = 1.0f;
-
-        // Count UTF-8 characters
-        size_t charCount = 0;
-        for (size_t i = 0; i < word.size(); ) {
-            uint8_t c = static_cast<uint8_t>(word[i]);
-            if ((c & 0x80) == 0) { i++; charCount++; }
-            else if ((c & 0xE0) == 0xC0) { i += 2; charCount++; }
-            else if ((c & 0xF0) == 0xE0) { i += 3; charCount++; }
-            else { i += 4; charCount++; }
-        }
-
-        // Optimal word length: 3-12 characters
-        if (charCount >= 3 && charCount <= 12) {
-            quality *= 1.5f;
-        } else if (charCount < 3 || charCount > 15) {
-            quality *= 0.5f;
-        }
-
-        // Prefer words where prefix covers more of the word
-        float prefixCoverage = static_cast<float>(prefixLen) / static_cast<float>(charCount);
-        if (prefixCoverage >= 0.5f) {
-            quality *= 1.3f;
-        }
-
-        // Penalize very short extensions (might be partial words)
-        size_t extensionLen = charCount > prefixLen ? charCount - prefixLen : 0;
-        if (extensionLen <= 1 && charCount < 4) {
-            quality *= 0.7f;
-        }
-
-        // Boost common Russian words significantly
-        if (isCommonWordPattern(word)) {
-            quality *= 3.0f;
-        }
-
-        return quality;
-    };
-    
-    // Count UTF-8 characters (not bytes)
-    auto countUtf8Chars = [](const std::string& str) -> size_t {
-        size_t count = 0;
-        for (size_t i = 0; i < str.size(); ) {
-            uint8_t c = static_cast<uint8_t>(str[i]);
-            if ((c & 0x80) == 0) { i++; }
-            else if ((c & 0xE0) == 0xC0) { i += 2; }
-            else if ((c & 0xF0) == 0xE0) { i += 3; }
-            else { i += 4; }
-            count++;
-        }
-        return count;
-    };
-
-    // Calculate prefix length in characters
-    size_t prefixCharLen = countUtf8Chars(prefix);
-
-    // Convert foundWords to CompTrieSuggestion with filtering
-    for (const auto& rawWord : foundWords) {
-        std::string word = extractWord(rawWord);
-
-        // Skip empty words
-        if (word.empty()) continue;
-
-        // Skip words containing spaces (n-gram artifacts)
-        if (word.find(' ') != std::string::npos) continue;
-
-        // Verify prefix match
-        if (word.size() < prefix.size() || word.compare(0, prefix.size(), prefix) != 0) {
-            continue;
-        }
-
-        // Validate UTF-8 structure
-        if (!isValidUtf8Word(word)) continue;
-
-        // Create suggestion with quality-based score
-        CompTrieSuggestion s;
-        s.word = word;
-        s.frequency = 100;  // Base frequency (we use quality scoring instead)
-        s.score = getWordQuality(word, prefixCharLen);
-        results.push_back(s);
-    }
-
-    OH_LOG_DEBUG(LOG_APP, "getSuggestions('%{public}s'): after filtering: %{public}zu results",
-                 prefix.c_str(), results.size());
-
-    // Log first few results
-    for (size_t i = 0; i < std::min(results.size(), (size_t)5); i++) {
-        OH_LOG_DEBUG(LOG_APP, "  result[%{public}zu]: '%{public}s' score=%.3f",
-                     i, results[i].word.c_str(), results[i].score);
-    }
-
-    // Deduplicate (same word from different n-grams)
+    // Sort by score (higher is better)
     std::sort(results.begin(), results.end(), [](const CompTrieSuggestion& a, const CompTrieSuggestion& b) {
-        if (a.word != b.word) return a.word < b.word;
-        return a.score > b.score;  // Keep highest quality version
+        return a.score > b.score;
     });
+
+    // Deduplicate
     results.erase(std::unique(results.begin(), results.end(),
         [](const CompTrieSuggestion& a, const CompTrieSuggestion& b) {
             return a.word == b.word;
         }), results.end());
 
-    // Sort by combined score (frequency * quality) descending
-    std::sort(results.begin(), results.end(), [](const CompTrieSuggestion& a, const CompTrieSuggestion& b) {
-        return a.score > b.score;
-    });
-
     // Trim to maxResults
-    if ((int)results.size() > maxResults) {
+    if (static_cast<int>(results.size()) > maxResults) {
         results.resize(maxResults);
+    }
+
+    // Log results
+    for (size_t i = 0; i < std::min(results.size(), static_cast<size_t>(5)); i++) {
+        OH_LOG_DEBUG(LOG_APP, "LOUDS: result[%{public}zu] = '%{public}s'",
+                     i, results[i].word.c_str());
     }
 
     return results;
@@ -985,133 +669,28 @@ std::vector<CompTrieSuggestion> CompTrieReader::getSuggestions(const std::string
 
 void CompTrieReader::iteratePrefix(const std::string& prefix,
                                     std::function<bool(const std::string& word, uint64_t freq)> callback) const {
-    if (!data_ || !callback) {
+    if (!isLoaded() || !callback) {
         return;
     }
 
-    // Navigate to prefix node.
-    const uint8_t* pos = data_ + trieStart_;
-    const uint8_t* end = data_ + trieEnd_;
-
-    for (size_t i = 0; i < prefix.size(); i++) {
-        uint8_t flags = leapByte(pos, end, static_cast<uint8_t>(prefix[i]));
-        if (!pos) {
-            return;
-        }
-
-        if (flags & MT_FINAL) {
-            if (pos >= end) return;
-            size_t bytesRead = 0;
-            uint64_t freq = unpackVarInt(pos, bytesRead);
-            if (bytesRead == 0 || bytesRead > 8 || pos + bytesRead > end) return;
-
-            if (i == prefix.size() - 1) {
-                if (!callback(prefix, freq)) {
-                    return;
-                }
-            }
-            pos += bytesRead;
-        }
-
-        if (!(flags & MT_NEXT) && i < prefix.size() - 1) {
-            return;
-        }
+    size_t prefixNode = findPrefixNode(prefix);
+    if (prefixNode == 0 && !prefix.empty()) {
+        return;
     }
 
-    // DFS traversal without materializing all suggestions in memory.
-    struct StackItem {
-        const uint8_t* pos;
-        std::string word;
-        int depth;
-    };
+    // Use collectWords and call callback for each
+    std::vector<CompTrieSuggestion> results;
+    collectWords(prefixNode, prefix, results, 10000, 0);
 
-    std::vector<StackItem> stack;
-    stack.reserve(256);
-    stack.push_back({pos, prefix, 0});
-
-    const size_t maxWordLen = prefix.size() + 40;
-
-    while (!stack.empty()) {
-        StackItem item = stack.back();
-        stack.pop_back();
-
-        if (!item.pos || item.pos >= end || item.depth > 30 || item.word.size() > maxWordLen) {
-            continue;
-        }
-
-        const uint8_t* p = item.pos;
-        while (p && p < end - 1) {
-            const uint8_t* startpos = p;
-            uint8_t flags = *p++;
-
-            // Epsilon link (redirect without symbol).
-            if (!(flags & (MT_FINAL | MT_NEXT))) {
-                size_t offsetlen = flags & MT_SIZEMASK;
-                if (offsetlen == 0 || p + offsetlen > end) break;
-                size_t offset = unpackOffset(p, offsetlen);
-                if (!offset || startpos + offset >= end) break;
-                p = startpos + offset;
-                continue;
-            }
-
-            if (p >= end) break;
-            uint8_t ch = *p++;
-            if (ch == 0) break;
-
-            size_t leftLen = (flags >> MT_LEFTSHIFT) & MT_SIZEMASK;
-            size_t rightLen = flags & MT_SIZEMASK;
-            if (p + leftLen + rightLen > end) break;
-
-            // Parse branch offsets
-            size_t leftOffset = 0, rightOffset = 0;
-            if (leftLen > 0) {
-                leftOffset = unpackOffset(p, leftLen);
-            }
-            p += leftLen;
-            if (rightLen > 0) {
-                rightOffset = unpackOffset(p, rightLen);
-            }
-            p += rightLen;
-
-            // Push RIGHT first, then LEFT (LIFO order ensures LEFT is processed first)
-            if (rightOffset > 0 && startpos + rightOffset < end) {
-                stack.push_back({startpos + rightOffset, item.word, item.depth});
-            }
-            if (leftOffset > 0 && startpos + leftOffset < end) {
-                stack.push_back({startpos + leftOffset, item.word, item.depth});
-            }
-
-            // Skip '@' and ' ' branches (n-gram separators)
-            if (ch == '@' || ch == ' ') {
-                break;
-            }
-
-            std::string currentWord = item.word;
-            currentWord += static_cast<char>(ch);
-
-            if (flags & MT_FINAL) {
-                if (p >= end) break;
-                size_t bytesRead = 0;
-                uint64_t freq = unpackVarInt(p, bytesRead);
-                if (bytesRead == 0 || bytesRead > 8 || p + bytesRead > end) break;
-                p += bytesRead;
-                if (!callback(currentWord, freq)) {
-                    return;
-                }
-            }
-
-            if ((flags & MT_NEXT) && p < end && item.depth < 30 && currentWord.size() <= maxWordLen) {
-                stack.push_back({p, currentWord, item.depth + 1});
-            }
-
+    for (const auto& s : results) {
+        if (!callback(s.word, s.frequency)) {
             break;
         }
     }
 }
 
 size_t CompTrieReader::getMemoryUsage() const {
-    // Only mmap overhead, actual RAM usage is minimal
-    return sizeof(*this) + 4096;  // ~1 page for metadata
+    return sizeof(*this) + 4096;  // Minimal - only mmap metadata
 }
 
 size_t CompTrieReader::getWordCount() const {
@@ -1119,12 +698,20 @@ size_t CompTrieReader::getWordCount() const {
         return wordCount_;
     }
 
+    if (!isLoaded()) {
+        return 0;
+    }
+
+    // Count terminal nodes
     wordCount_ = 0;
-    iteratePrefix("", [this](const std::string&, uint64_t) {
-        wordCount_++;
-        return true;
-    });
+    for (size_t i = 1; i <= nodeCount_; i++) {
+        if (isTerminal(i)) {
+            wordCount_++;
+        }
+    }
+
     wordCountCached_ = true;
+    OH_LOG_DEBUG(LOG_APP, "LOUDS: Word count = %{public}zu", wordCount_);
 
     return wordCount_;
 }
