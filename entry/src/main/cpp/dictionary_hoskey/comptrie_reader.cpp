@@ -189,41 +189,56 @@ bool CompTrieReader::parseStructure() {
         return value;
     };
 
-    // Yandex dictionary format varies by size:
+    // Yandex dictionary format (from decompiled code analysis):
     //
-    // LARGE (main_ru, ~137MB): Has separate blacklist section before trie
-    //   - JSON config at offset 32
-    //   - Blacklist: offset ~10016, size ~374KB (vulgar words filter)
-    //   - Trie: offset 384496 (0x5DE30), size ~4.5MB
-    //   - TFLite models after trie
+    // Structure:
+    //   - Header (32 bytes): magic 0xFE3AC19B + version 0x5802
+    //   - JSON Config (~10KB): section names and parameters
+    //   - Data Section: blacklist, rules.bin, etc.
+    //   - Trie Section: starts with magic "1nc7" (0x316e6337)
+    //     Format: magic(4) + version(4) + entry_count(8) + data...
+    //   - TFLite Models: start with "TFL3" signature
     //
-    // SMALL (main_en, ~33MB): Blacklist embedded in trie
-    //   - JSON config at offset 32
-    //   - Trie: starts immediately after JSON padding
-    //   - TFLite models after trie
+    // Key insight: Trie section has magic signature "1nc7" at start
+    // This is reliable way to find trie without hardcoded offsets
 
-    // Threshold: files >100MB likely have separate blacklist section
-    constexpr size_t LARGE_DICT_THRESHOLD = 100000000;  // 100MB
-    constexpr size_t YANDEX_RU_TRIE_OFFSET = 384496;    // 0x5DE30 - known offset for main_ru
+    // Search for trie magic "1nc7" after JSON
+    const uint8_t trieMagic[] = {'1', 'n', 'c', '7'};  // 0x31 0x6e 0x63 0x37
+    trieStart_ = 0;
 
-    if (fileSize_ > LARGE_DICT_THRESHOLD) {
-        // Large dictionary (main_ru format) - skip blacklist section
-        trieStart_ = YANDEX_RU_TRIE_OFFSET;
-        trieEnd_ = fileSize_;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Large dict (%{public}zu MB), using trie offset %{public}zu",
-                     fileSize_ / 1000000, trieStart_);
-    } else {
-        // Small dictionary (main_en format) - trie after JSON padding
+    // Start search after JSON config
+    size_t searchStart = jsonEnd;
+    size_t searchEnd = std::min(fileSize_, jsonEnd + 1000000);  // Search within 1MB after JSON
+
+    for (size_t i = searchStart; i < searchEnd - 4; i++) {
+        if (memcmp(data_ + i, trieMagic, 4) == 0) {
+            trieStart_ = i;
+            OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Found trie magic '1nc7' at offset %{public}zu (0x%{public}zX)",
+                         trieStart_, trieStart_);
+
+            // Parse trie header: magic(4) + version(4) + entry_count(8)
+            if (i + 16 <= fileSize_) {
+                uint32_t version = *reinterpret_cast<const uint32_t*>(data_ + i + 4);
+                uint64_t entryCount = *reinterpret_cast<const uint64_t*>(data_ + i + 8);
+                OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: version=%{public}u, entries=%{public}llu",
+                             version, (unsigned long long)entryCount);
+            }
+            break;
+        }
+    }
+
+    // Fallback: if no magic found, try after JSON padding (for old format)
+    if (trieStart_ == 0) {
         trieStart_ = jsonEnd;
         while (trieStart_ < fileSize_ &&
                (data_[trieStart_] == 0 || data_[trieStart_] == ' ' ||
                 data_[trieStart_] == '\n' || data_[trieStart_] == '\r')) {
             trieStart_++;
         }
-        trieEnd_ = fileSize_;
-        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: Small dict (%{public}zu MB), trie after JSON at %{public}zu",
-                     fileSize_ / 1000000, trieStart_);
+        OH_LOG_DEBUG(LOG_APP, "HOSKEY-TRIE: No magic found, using fallback offset %{public}zu", trieStart_);
     }
+
+    trieEnd_ = fileSize_;
 
     // Find TFLite model (TFL3 signature) as end marker if present
     const uint8_t tfl3[] = {'T', 'F', 'L', '3'};
