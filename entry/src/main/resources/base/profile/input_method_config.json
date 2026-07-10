@@ -1,0 +1,11 @@
+{
+  "subtypes": [
+    {
+      "icon": "$media:layered_image",
+      "id": "hoskey_ru",
+      "label": "$string:InputMethodExtensionAbility_label",
+      "locale": "ru-RU",
+      "mode": "lower"
+    }
+  ]
+}

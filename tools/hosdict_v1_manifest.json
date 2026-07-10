@@ -1,0 +1,24 @@
+{
+  "package_name": "ru.smart.default",
+  "locale": "ru-RU",
+  "version": 1,
+  "assets": [
+    { "key": "config", "format": "feature_json", "file": "config" },
+    { "key": "lexicon.default", "format": "succinct_lexicon_v1", "file": "trie" },
+    { "key": "lexicon.experiments.KEYBOARD-13421_v2", "format": "succinct_lexicon_k13421", "file": "KEYBOARD-13421_trie" },
+    { "key": "rules.transfeme", "format": "tfmtrie_v1", "file": "rules.bin" },
+    { "key": "rules.transfeme_experiments.KEYBOARD-13421_v2", "format": "tfmtrie_k13421", "file": "KEYBOARD-13421_rules.bin" },
+    { "key": "normdict.default", "format": "normdict_v2", "file": "normdict" },
+    { "key": "lemma.hash", "format": "chd_hash", "file": "lemmer_mhash" },
+    { "key": "lemma.rules", "format": "lemma_rules_program", "file": "lemmer_rules" },
+    { "key": "policy.blacklist", "format": "policy_blob", "file": "blacklist" },
+    { "key": "policy.blacklist_suggest", "format": "policy_blob", "file": "blacklist_suggest" },
+    { "key": "policy.autocorrect_blocker", "format": "policy_blob", "file": "autocorrect_blocker" },
+    { "key": "policy.abbr", "format": "policy_blob", "file": "abbr" },
+    { "key": "features.autocc", "format": "feature_json", "file": "features_autocc.json" },
+    { "key": "features.ranker", "format": "feature_json", "file": "features_ranker.json" },
+    { "key": "features.tap_model", "format": "feature_json", "file": "features_tap_model.json" },
+    { "key": "ranking.ranker", "format": "mindspore_model", "file": "ranker.ms" },
+    { "key": "ranking.neural_model", "format": "mindspore_model", "file": "neural_model.ms" }
+  ]
+}

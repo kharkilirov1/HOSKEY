@@ -1,0 +1,6 @@
+{
+  "src": [
+    "pages/SetupGuidePage",
+    "InputMethodExtensionAbility/pages/Index"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "OpenBoard, a keyboard which provides Gemini AI voice typing and several languages to the Harmony os system",
+  "main": "",
+  "author": "OpenTech",
+  "license": "",
+  "dependencies": {}
+}
+

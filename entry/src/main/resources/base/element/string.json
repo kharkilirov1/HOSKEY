@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "OpenBoard_Keyboard"
+    },
+    {
+      "name": "clipboard_permission_reason",
+      "value": "Allow keyboard to read clipboard for pasting text"
+    },
+    {
+      "name": "InputMethodExtensionAbility_desc",
+      "value": "OpenBoard Keyboard Input Method"
+    },
+    {
+      "name": "InputMethodExtensionAbility_label",
+      "value": "OpenBoard Keyboard"
+    }
+  ]
+}

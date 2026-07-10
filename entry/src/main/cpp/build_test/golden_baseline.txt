@@ -1,0 +1,14 @@
+Open: ok=1 msg=
+is_open=1
+assets: config[loaded]; lexicon.default[succinct trie (1nc7): loaded for direct matching]; lexicon.experiments.KEYBOARD-13421_v2[binary]; rules.transfeme[binary]; rules.transfeme_experiments.KEYBOARD-13421_v2[binary]; normdict.default[lang=ru, order=1]; neural.word_model.raw[model blob: ynnlm_v1_bundle]; lemma.hash[CHD validated, keys=103803]; lemma.rules[rules validated, count=3229]; policy.blacklist[binary blob]; policy.blacklist_suggest[binary blob]; policy.autocorrect_blocker[policy entries: 1]; policy.abbr[binary blob]; features.autocc[loaded]; features.ranker[loaded]; features.tap_model[loaded]; ranking.ranker[ms model]; ranking.neural_model[ms model]
+suggest 'при' -> 5: [приют|82.1|ynnlm_vocab] [приус|82.1|ynnlm_vocab] [прист|82.1|ynnlm_vocab] [принт|82.1|ynnlm_vocab] [принц|82.1|ynnlm_vocab] 
+suggest 'мага' -> 5: [магаза|89.2|ynnlm_vocab] [магазе|89.2|ynnlm_vocab] [магази|89.2|ynnlm_vocab] [магадан|64.1|ynnlm_vocab] [магазах|64.1|ynnlm_vocab] 
+suggest 'кот' -> 5: [котлы|81.6|ynnlm_vocab] [котов|81.6|ynnlm_vocab] [коток|81.6|ynnlm_vocab] [котом|81.6|ynnlm_vocab] [котон|81.6|ynnlm_vocab] 
+suggest 'здравству' -> 2: [здравствует|109.6|ynnlm_vocab] [здравствуйте|86.3|ynnlm_vocab] 
+suggest 'я' -> 5: [яд|84.0|ynnlm_vocab] [яз|84.0|ynnlm_vocab] [яй|84.0|ynnlm_vocab] [як|84.0|ynnlm_vocab] [ял|84.0|ynnlm_vocab] 
+suggest 'latin' -> 1: [programm|0.0|identity] 
+suggest 'empty' -> 0: 
+checkWord 'привет': known=1 normalized='привет'
+checkWord 'кот': known=1 normalized='кот'
+checkWord 'asdfghjkl': known=0 normalized='asdfghjkl'
+SMOKE OK
