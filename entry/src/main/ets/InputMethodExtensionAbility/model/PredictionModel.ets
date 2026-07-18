@@ -1,6 +1,7 @@
 import { preferences } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import privacyGate, { PrivacyGate } from './PrivacyGate';
 
 // Interfaces for language models
 interface LangModel {
@@ -29,17 +30,19 @@ interface SerializedModel {
   blockedWords: string[]; // Include blocked words in serialization
 }
 
-class PredictionModel {
+export class PredictionModel {
   private models: Map<string, LangModel>;
   private context: common.UIAbilityContext | null = null;
+  private privacyGate: PrivacyGate;
   private saveCounter: number = 0;
   private readonly SAVE_THRESHOLD = 10; // Save after every 10 words learned
   private readonly DECAY_FACTOR = 0.95; // Decay competing words by 5%
   private readonly MIN_COUNT_THRESHOLD = 0.5; // Remove words with count below this
   private readonly LEARN_THRESHOLD = 3; // Word must be typed 3 times to be learned
 
-  constructor() {
+  constructor(gate: PrivacyGate = privacyGate) {
     this.models = new Map();
+    this.privacyGate = gate;
   }
 
   setContext(ctx: common.UIAbilityContext): void {
@@ -149,6 +152,9 @@ class PredictionModel {
   }
 
   recordWord(lang: string, prev: string | null, word: string, prev2: string | null = null): void {
+    if (!this.privacyGate.canProcessText()) {
+      return;
+    }
     if (!word) {
       return;
     }
@@ -294,6 +300,9 @@ class PredictionModel {
   }
 
   predict(lang: string, prev: string | null, prefix: string | null, k: number, prev2: string | null = null): string[] {
+    if (!this.privacyGate.canProcessText()) {
+      return [];
+    }
     const m = this.ensure(lang);
     const list: RankedWord[] = [];
     const now = Date.now();
@@ -501,6 +510,9 @@ class PredictionModel {
 
   // Save all models to preferences
   async save(): Promise<void> {
+    if (!this.privacyGate.canProcessText()) {
+      return;
+    }
     if (!this.context) {
       console.warn('OpenBoard: Cannot save prediction data - context not set');
       return;

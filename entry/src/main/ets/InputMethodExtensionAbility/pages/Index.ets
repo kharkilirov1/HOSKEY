@@ -16,6 +16,21 @@ import {
 import keyboardController from '../model/KeyboardController';
 import predictionModel from '../model/PredictionModel';
 import diagLog from '../model/DiagLog';
+import {
+  applyEmojiSearchEdit,
+  normalizeEmojiSearchQuery,
+  selectEmojiPanelItems
+} from '../model/EmojiSearchPresentation';
+import {
+  derivePredictionInputState,
+  isPredictionBoundary,
+  PredictionInputState
+} from '../model/PredictionInputState';
+import {
+  NativeEmojiSearchResponse,
+  NativeEmojiSuggestCandidate,
+  NativeEmojiSuggestResponse
+} from '../model/HoskeyEngine';
 import { display } from '@kit.ArkUI';
 import { inputMethodEngine } from '@kit.IMEKit';
 import pasteboard from '@ohos.pasteboard';
@@ -27,6 +42,11 @@ const EMOJI_KEY_DATA: KeyData = { mainValue: 'icon', secondaryValue: undefined, 
 interface Position { x: number; y: number; }
 interface LongPressInfo { key: KeyData; initialPosition: Position; }
 interface SingleCharPopupInfo { char: string; position: Position; }
+interface PendingAutocorrectCommit {
+  original: string;
+  replacement: string;
+  boundary: string;
+}
 type KeyTouchPhase = 'down' | 'move' | 'up' | 'cancel';
 type LanguageCode = 'en' | 'ar' | 'it' | 'pl' | 'fa' | 'ru';
 enum LayoutSwipeDirection { Left, Right }
@@ -265,13 +285,16 @@ struct KeyView {
   onKeyContinuousPressStart: (key: KeyData) => void = () => {};
   onKeyContinuousPressEnd: (key: KeyData) => void = () => {};
   onKeyTouchTelemetry: (key: KeyData, position: Position, phase: KeyTouchPhase) => void = () => {};
+  onGestureEnd: (key: KeyData) => void = () => {};
   onSwipe?: (direction: LayoutSwipeDirection) => void;
 
   @State isPressed: boolean = false;
   @State private longPressTimer: number = -1;
   @State private longPressTriggered: boolean = false;
   @State private touchStartX: number = 0;
+  @State private touchStartY: number = 0;
   @State private swipeHandled: boolean = false;
+  private gestureTypingHandled: boolean = false;
 
   @Prop enterKeyLabel: string;
 
@@ -389,9 +412,11 @@ struct KeyView {
         if (event.type === TouchType.Down) {
           this.onKeyTouchTelemetry(this.keyData, currentPosition, 'down');
           this.touchStartX = currentPosition.x;
+          this.touchStartY = currentPosition.y;
           this.isPressed = true;
           this.longPressTriggered = false;
           this.swipeHandled = false;
+          this.gestureTypingHandled = false;
 
           this.longPressTimer = setTimeout((): void => {
             this.longPressTriggered = true;
@@ -431,13 +456,28 @@ struct KeyView {
 
               this.isPressed = false;
             }
+          } else if (this.keyData.action === KeyAction.Char &&
+            !this.gestureTypingHandled) {
+            const dx = currentPosition.x - this.touchStartX;
+            const dy = currentPosition.y - this.touchStartY;
+            if (Math.sqrt(dx * dx + dy * dy) > 24) {
+              clearTimeout(this.longPressTimer);
+              this.gestureTypingHandled = true;
+              this.isPressed = false;
+            }
           }
         }
 
         if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
           this.onKeyTouchTelemetry(this.keyData, currentPosition, event.type === TouchType.Up ? 'up' : 'cancel');
           clearTimeout(this.longPressTimer);
-          if (this.longPressTriggered) {
+          if (this.keyData.action === KeyAction.Char && event.type === TouchType.Up &&
+            this.gestureTypingHandled) {
+            console.info('[HOSKEY_SWIPE_GESTURE] source=touch_up,handled=1');
+          }
+          if (this.gestureTypingHandled && event.type === TouchType.Up) {
+            this.onGestureEnd(this.keyData);
+          } else if (this.longPressTriggered) {
             if (this.keyData.action === KeyAction.Backspace) {
               this.onKeyContinuousPressEnd(this.keyData);
             } else if (this.keyData.secondaryValue) {
@@ -450,11 +490,35 @@ struct KeyView {
           this.isPressed = false;
           this.longPressTriggered = false;
           this.touchStartX = 0;
+          this.touchStartY = 0;
           this.swipeHandled = false;
+          this.gestureTypingHandled = false;
         }
       })
     }
     .padding({ left: KEY_CONTENT_PADDING, right: KEY_CONTENT_PADDING, top: KEY_CONTENT_PADDING, bottom: KEY_CONTENT_PADDING })
+    .parallelGesture(
+      PanGesture({ distance: 24 })
+        .onActionStart((event: GestureEvent): void => {
+          if (this.keyData.action !== KeyAction.Char || event.fingerList.length === 0) {
+            return;
+          }
+          clearTimeout(this.longPressTimer);
+          this.gestureTypingHandled = true;
+          const finger = event.fingerList[0];
+          this.onKeyTouchTelemetry(this.keyData,
+            { x: finger.globalX, y: finger.globalY }, 'move');
+          console.info('[HOSKEY_SWIPE_GESTURE] source=pan');
+        })
+        .onActionUpdate((event: GestureEvent): void => {
+          if (!this.gestureTypingHandled || event.fingerList.length === 0) {
+            return;
+          }
+          const finger = event.fingerList[0];
+          this.onKeyTouchTelemetry(this.keyData,
+            { x: finger.globalX, y: finger.globalY }, 'move');
+        })
+    )
   }
 }
 
@@ -476,11 +540,20 @@ struct Index {
 
   @State showEmojiPanel: boolean = false;
   @State emojiCategory: string = 'Smileys & Emotion';
+  @State emojiSearchQuery: string = '';
+  @State emojiSearchResults: string[] = [];
+  @State emojiSearchDiagnostics: string = '';
+  @State emojiSearchEditing: boolean = false;
+  private lastEmojiSearchExecutedQuery: string = '';
   private emojiScroller: Scroller = new Scroller();
 
   @State private previousWord: string = '';
   @State private currentWord: string = '';
   @State private suggestions: string[] = [];
+  @State private contextEmojiSuggestions: string[] = [];
+  @State private contextEmojiDiagnostics: string = '';
+  private contextEmojiGeneration: number = 0;
+  private contextEmojiSuppressedUntilNextWord: boolean = false;
   @State private nativePredictorMode: string = 'baseline';
   @State private nativeDiagnosticsSnippet: string = '';
   @State private lastNativeDiagnosticsLogged: string = '';
@@ -491,6 +564,8 @@ struct Index {
   @State private nativeDebugPredDirect: string = '';
   @State private nativeDebugPredHandoff: string = '';
   @State private nativeDebugWillAutocorrect: boolean = false;
+  private pendingAutocorrectCommit: PendingAutocorrectCommit | null = null;
+  private suppressedAutocorrectWord: string = '';
 
   @State private isRecording: boolean = false;
   @State private languageIndicatorOpacity: number = 0;
@@ -709,6 +784,20 @@ struct Index {
     keyboardController.setEnterKeyTypeCallback((enterKeyType: number): void => {
       this.updateEnterKeyLabel(enterKeyType);
     });
+    keyboardController.setPrivacyStateCallback((restricted: boolean, _diagnostics: string): void => {
+      if (restricted) {
+        this.clearPrivacyPredictionContext();
+      } else {
+        this.invalidateContextEmojiSuggestions();
+      }
+    });
+    keyboardController.setEditorContextChangedCallback((): void => {
+      this.pendingAutocorrectCommit = null;
+      this.invalidateContextEmojiSuggestions();
+    });
+    keyboardController.setNativeEngineReadyCallback((): void => {
+      this.refreshPredictionsAfterNativeReady();
+    });
     this.updateEnterKeyLabel(keyboardController.getCurrentEnterKeyType());
     this.nativePredictorMode = keyboardController.getNativePredictorDebugModeLabel();
     keyboardController.setNativeLayoutDescriptor(this.getNativeLayoutDescriptor());
@@ -741,6 +830,7 @@ struct Index {
       const timeSinceLastActivity = Date.now() - this.lastTypingActivity;
       if (!this.isRecording && !this.showEmojiPanel &&
         this.currentWord.length === 0 && this.suggestions.length === 0 &&
+        this.contextEmojiSuggestions.length === 0 &&
         timeSinceLastActivity >= 5000) {
         this.showPreTypingToolbar = true;
       }
@@ -754,7 +844,8 @@ struct Index {
   }
 
   private keepSuggestionToolbarVisible(): void {
-    if (this.currentWord.length > 0 || this.suggestions.length > 0) {
+    if (this.currentWord.length > 0 || this.suggestions.length > 0 ||
+      this.contextEmojiSuggestions.length > 0) {
       this.showPreTypingToolbar = false;
     }
   }
@@ -788,6 +879,10 @@ struct Index {
       clearInterval(this.rapidDeleteTimer);
     }
     this.rapidDeleteTimer = setInterval((): void => {
+      if (this.showEmojiPanel && this.emojiSearchEditing) {
+        this.updateEmojiSearch(applyEmojiSearchEdit(this.emojiSearchQuery, 'backspace'));
+        return;
+      }
       keyboardController.deleteForward(1);
       this.onBackspaceTyped();
     }, 100);
@@ -839,8 +934,12 @@ struct Index {
 
   private handleLongPressEnd(): void {
     if (this.longPressInfo && this.hoveredChar) {
-      keyboardController.insertText(this.hoveredChar);
-      this.onTextTyped(this.hoveredChar);
+      if (this.showEmojiPanel && this.emojiSearchEditing) {
+        this.updateEmojiSearch(applyEmojiSearchEdit(this.emojiSearchQuery, 'char', this.hoveredChar));
+      } else {
+        keyboardController.insertText(this.hoveredChar);
+        this.onTextTyped(this.hoveredChar);
+      }
     }
     this.longPressInfo = null;
     this.hoveredChar = null;
@@ -864,11 +963,106 @@ struct Index {
   }
 
   private handleKeyTouchTelemetry(key: KeyData, position: Position, phase: KeyTouchPhase): void {
+    if (this.showEmojiPanel && this.emojiSearchEditing) {
+      return;
+    }
     keyboardController.setNativeLayoutDescriptor(this.getNativeLayoutDescriptor());
-    keyboardController.recordNativeTouchPoint(key, position.x, position.y, phase);
+    // TouchEvent.windowX/windowY are reported in vp, while Panel.resize() and
+    // proximityInfo use physical pixels. Keep the native geometry in one unit;
+    // otherwise a 1308 px panel sees every gesture compressed into its top-left.
+    let xPx: number = position.x;
+    let yPx: number = position.y;
+    try {
+      xPx = this.getUIContext().vp2px(position.x);
+      yPx = this.getUIContext().vp2px(position.y);
+    } catch (e) {
+      // Keep the original coordinates only as a defensive preview fallback.
+    }
+    keyboardController.recordNativeTouchPoint(key, xPx, yPx, phase);
+  }
+
+  private handleGestureEnd(startKey: KeyData): void {
+    if (this.showEmojiPanel && this.emojiSearchEditing) {
+      keyboardController.clearNativeTouchContext();
+      this.handleKeyPress(startKey);
+      return;
+    }
+    const isRussianAlphabet: boolean = this.currentLanguage === 'ru' &&
+      this.keyboardLayout === KeyboardLayout.Alphabet;
+    const nativeAvailable: boolean = keyboardController.isNativeEngineAvailable();
+    if (!isRussianAlphabet || !nativeAvailable) {
+      console.info('[HOSKEY_SWIPE_GATE] russian_alphabet=' + (isRussianAlphabet ? '1' : '0') +
+        ',native_available=' + (nativeAvailable ? '1' : '0'));
+      keyboardController.clearNativeTouchContext();
+      this.handleKeyPress(startKey);
+      return;
+    }
+
+    const response: NativeSuggestResponse = keyboardController.getNativeSwipeResponse(
+      startKey.mainValue, this.previousWord, 'ru_RU');
+    console.info('[HOSKEY_SWIPE_ROUTE] ' + response.diagnostics);
+    this.nativeDiagnosticsSnippet = response.diagnostics;
+    const word: string = response.suggestions[0]?.text ?? '';
+    if (!response.ok || word.length === 0) {
+      diagLog.add('[SWIPE] no candidate: ' + response.diagnostics);
+      keyboardController.clearNativeTouchContext();
+      this.handleKeyPress(startKey);
+      return;
+    }
+
+    if (this.currentWord.length > 0) {
+      keyboardController.deleteForward(this.currentWord.length);
+    }
+    keyboardController.insertText(word);
+    keyboardController.insertText(' ');
+    predictionModel.recordWord(this.currentLanguage, this.previousWord, word);
+    this.previousWord = word;
+    this.currentWord = '';
+    this.suggestions = [];
+    this.shiftState = ShiftState.Off;
+    keyboardController.clearNativeTouchContext();
+    keyboardController.setNativeLayoutDescriptor(this.getNativeLayoutDescriptor());
+    diagLog.add('[SWIPE] ' + word + ' <= ' + response.diagnostics);
+    this.updateSuggestions();
+    this.resetInactivityTimer();
+  }
+
+  private handleEmojiSearchKey(key: KeyData): boolean {
+    if (!this.showEmojiPanel || !this.emojiSearchEditing) {
+      return false;
+    }
+
+    switch (key.action) {
+      case KeyAction.Char:
+        const text: string = (this.currentLanguage !== 'ar' && this.currentLanguage !== 'fa' &&
+          (this.shiftState === ShiftState.On || this.shiftState === ShiftState.CapsLock))
+          ? key.shiftValue ?? key.mainValue
+          : key.mainValue;
+        this.updateEmojiSearch(applyEmojiSearchEdit(this.emojiSearchQuery, 'char', text));
+        if (this.shiftState === ShiftState.On) {
+          this.shiftState = ShiftState.Off;
+        }
+        return true;
+      case KeyAction.Space:
+        this.updateEmojiSearch(applyEmojiSearchEdit(this.emojiSearchQuery, 'space'));
+        return true;
+      case KeyAction.Backspace:
+        this.updateEmojiSearch(applyEmojiSearchEdit(this.emojiSearchQuery, 'backspace'));
+        return true;
+      case KeyAction.Enter:
+      case KeyAction.EMOJI_PANEL:
+        this.emojiSearchEditing = false;
+        return true;
+      default:
+        return false;
+    }
   }
 
   handleKeyPress(key: KeyData): void {
+    if (this.handleEmojiSearchKey(key)) {
+      return;
+    }
+
     if (key.action !== KeyAction.EMOJI_PANEL) {
       this.resetInactivityTimer();
     }
@@ -878,7 +1072,14 @@ struct Index {
     }
 
     if (key.action === KeyAction.EMOJI_PANEL) {
+      this.invalidateContextEmojiSuggestions();
       this.showEmojiPanel = !this.showEmojiPanel;
+      if (this.showEmojiPanel) {
+        this.emojiSearchEditing = false;
+        this.updateEmojiSearch(this.currentWord);
+      } else {
+        this.clearEmojiSearch();
+      }
       return;
     }
 
@@ -894,18 +1095,22 @@ struct Index {
         }
         break;
       case KeyAction.Space:
-        this.maybeApplyNativeAutocorrect();
+        this.maybeApplyNativeAutocorrect(' ');
         keyboardController.insertText(' ');
         this.onBoundaryTyped(' ');
         break;
       case KeyAction.Enter:
-        this.maybeApplyNativeAutocorrect();
+        this.maybeApplyNativeAutocorrect('\n');
         keyboardController.sendEnterKey();
         this.onBoundaryTyped('\n');
         break;
       case KeyAction.Backspace:
-        keyboardController.deleteForward(1);
-        this.onBackspaceTyped();
+        if (!this.tryUndoNativeAutocorrect()) {
+          this.pendingAutocorrectCommit = null;
+          this.suppressedAutocorrectWord = '';
+          keyboardController.deleteForward(1);
+          this.onBackspaceTyped();
+        }
         break;
       case KeyAction.Shift:
         const now = Date.now();
@@ -936,6 +1141,34 @@ struct Index {
         keyboardController.setNativeLayoutDescriptor(this.getNativeLayoutDescriptor());
         break;
     }
+  }
+
+  private updateEmojiSearch(rawQuery: string): void {
+    this.emojiSearchQuery = rawQuery;
+    const query: string = normalizeEmojiSearchQuery(rawQuery);
+    if (query.length === 0) {
+      this.lastEmojiSearchExecutedQuery = '';
+      this.emojiSearchResults = [];
+      this.emojiSearchDiagnostics = '';
+      return;
+    }
+    if (query === this.lastEmojiSearchExecutedQuery) {
+      return;
+    }
+
+    const response: NativeEmojiSearchResponse = keyboardController.getNativeEmojiSearch(query, 50);
+    this.lastEmojiSearchExecutedQuery = response.ok ? query : '';
+    this.emojiSearchDiagnostics = response.diagnostics;
+    this.emojiSearchResults = response.ok && response.modelEngaged ? response.emojis.slice(0, 50) : [];
+    console.info('[HOSKEY_EMOJI_SEARCH_ROUTE] ' + response.diagnostics);
+  }
+
+  private clearEmojiSearch(): void {
+    this.emojiSearchQuery = '';
+    this.emojiSearchResults = [];
+    this.emojiSearchDiagnostics = '';
+    this.emojiSearchEditing = false;
+    this.lastEmojiSearchExecutedQuery = '';
   }
 
   // PASTE CURRENT CLIPBOARD ITEM ONLY
@@ -980,6 +1213,8 @@ struct Index {
     }
 
     this.currentLanguage = this.availableLanguages[currentIndex];
+    this.contextEmojiSuppressedUntilNextWord = false;
+    this.invalidateContextEmojiSuggestions();
     keyboardController.clearNativeTouchContext();
     keyboardController.setNativeLayoutDescriptor(this.getNativeLayoutDescriptor());
     console.info('OpenBoard Keyboard: Switched to language:', this.currentLanguage);
@@ -1010,13 +1245,37 @@ struct Index {
   }
 
   private getFallbackSuggestions(limit: number = SUGGESTION_FETCH_LIMIT): string[] {
+    if (keyboardController.isPrivacyRestricted()) {
+      return [];
+    }
     return this.normalizeSuggestions(
       predictionModel.predict(this.currentLanguage, this.previousWord, this.currentWord, limit),
       limit
     );
   }
 
+  private refreshPredictionsAfterNativeReady(): void {
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
+    const inputState: PredictionInputState = derivePredictionInputState(
+      keyboardController.getTextBeforeCursor(256)
+    );
+    this.previousWord = inputState.previousWord;
+    this.currentWord = inputState.currentWord;
+    console.info('[HOSKEY_NATIVE_READY_REFRESH] current_length=' + this.currentWord.length +
+      ',previous_length=' + this.previousWord.length);
+    this.updateSuggestions();
+  }
+
   private updateSuggestions(): void {
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
+    const contextEmojiRequestGeneration: number = this.beginContextEmojiRequest();
+    this.updateContextEmojiSuggestions(contextEmojiRequestGeneration);
     let fallbackSugs: string[] = [];
     try {
       fallbackSugs = this.getFallbackSuggestions(SUGGESTION_FETCH_LIMIT);
@@ -1026,6 +1285,21 @@ struct Index {
         const locale = this.currentLanguage === 'ru' ? 'ru_RU' : 'en_US';
         const response: NativeSuggestResponse = keyboardController.getNativeSuggestResponse(this.currentWord, this.previousWord, locale);
         const nativeSugs: string[] = response.suggestions.map((suggestion: NativeSuggestion): string => suggestion.text);
+        if (this.extractDiagnosticField(response.diagnostics, 'tap_model_path') ===
+          'ranker_classifier') {
+          console.info('[HOSKEY_TAP_ROUTE] path=ranker_classifier' +
+            ',rank=' + this.extractDiagnosticField(response.diagnostics,
+              'tap_model_top_rank') +
+            ',classifier=' + this.extractDiagnosticField(response.diagnostics,
+              'tap_model_classifier') +
+            ',ranker_invoke_count=' + this.extractDiagnosticField(
+              response.diagnostics, 'ranker_invoke_count') +
+            ',classifier_invoke_count=' + this.extractDiagnosticField(
+              response.diagnostics, 'classifier_invoke_count') +
+            ',pts=' + this.extractDiagnosticField(response.diagnostics, 'pts') +
+            ',touch_seq=' + this.extractDiagnosticField(
+              response.diagnostics, 'touch_seq'));
+        }
         this.nativeDiagnosticsSnippet = this.summarizeNativeDiagnostics(response.diagnostics);
         this.updateNativeDebugState(response);
         if (this.nativePredictorMode === 'verified-split' && response.diagnostics &&
@@ -1049,6 +1323,46 @@ struct Index {
       this.suggestions = fallbackSugs;
       this.keepSuggestionToolbarVisible();
     }
+  }
+
+  private beginContextEmojiRequest(): number {
+    this.contextEmojiGeneration = (this.contextEmojiGeneration + 1) % 4294967295;
+    this.contextEmojiSuggestions = [];
+    this.contextEmojiDiagnostics = '';
+    return this.contextEmojiGeneration;
+  }
+
+  private invalidateContextEmojiSuggestions(): void {
+    this.beginContextEmojiRequest();
+  }
+
+  private updateContextEmojiSuggestions(generation: number): void {
+    if (this.contextEmojiSuppressedUntilNextWord || this.currentWord.length > 0 ||
+      this.currentLanguage !== 'ru' || this.showEmojiPanel ||
+      !keyboardController.isNativeEngineAvailable()) {
+      return;
+    }
+
+    const response: NativeEmojiSuggestResponse =
+      keyboardController.getNativeContextEmoji(generation, false);
+    if (response.generation !== generation ||
+      generation !== this.contextEmojiGeneration || this.showEmojiPanel ||
+      this.currentWord.length > 0 || keyboardController.isPrivacyRestricted()) {
+      return;
+    }
+
+    const accepted: string[] = [];
+    if (response.ok && response.modelEngaged) {
+      response.candidates.slice(0, 3)
+        .forEach((candidate: NativeEmojiSuggestCandidate): void => {
+          accepted.push(candidate.emoji);
+        });
+    }
+    this.contextEmojiDiagnostics = response.diagnostics;
+    this.contextEmojiSuggestions = accepted;
+    console.info('[HOSKEY_CONTEXT_EMOJI_ROUTE] generation=' + generation +
+      ', count=' + accepted.length + ', ' + response.diagnostics);
+    this.keepSuggestionToolbarVisible();
   }
 
   private extractDiagnosticField(diagnostics: string, key: string): string {
@@ -1099,12 +1413,6 @@ struct Index {
     return kept.join(' | ');
   }
 
-  private isBoundaryChar(ch: string): boolean {
-    if (!ch) return false;
-    const boundaries: string[] = [' ', '\n', ',', '.', '!', '?', ';', ':', '/', '\\', '-', '_', '"', "'", '(', ')', '[', ']', '<', '>'];
-    return boundaries.indexOf(ch) >= 0;
-  }
-
   // Autocc: a sentence-ending punctuation arms auto-capitalization of the next word.
   private endsSentence(ch: string): boolean {
     return ch === '.' || ch === '!' || ch === '?';
@@ -1112,10 +1420,17 @@ struct Index {
 
   private onTextTyped(text: string): void {
     if (!text) return;
-    if (this.isBoundaryChar(text)) {
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
+    if (isPredictionBoundary(text)) {
       this.onBoundaryTyped(text);
       return;
     }
+    this.pendingAutocorrectCommit = null;
+    this.suppressedAutocorrectWord = '';
+    this.contextEmojiSuppressedUntilNextWord = false;
     this.currentWord = this.currentWord + text;
     this.updateSuggestions();
     this.resetInactivityTimer();
@@ -1155,8 +1470,18 @@ struct Index {
     }
   }
 
-  private maybeApplyNativeAutocorrect(): void {
-    if (!this.currentWord || !keyboardController.isNativeEngineAvailable()) {
+  private maybeApplyNativeAutocorrect(boundary: string): void {
+    if (keyboardController.isPrivacyRestricted() || !this.currentWord ||
+      !keyboardController.isNativeEngineAvailable()) {
+      this.pendingAutocorrectCommit = null;
+      return;
+    }
+
+    if (this.suppressedAutocorrectWord === this.currentWord) {
+      console.info('[HOSKEY_AUTOCC_COMMIT] action=suppressed_after_undo,word_length=' +
+        this.currentWord.length);
+      this.suppressedAutocorrectWord = '';
+      this.pendingAutocorrectCommit = null;
       return;
     }
 
@@ -1165,15 +1490,53 @@ struct Index {
     const replacement = response.suggestions[0]?.text ?? '';
 
     if (!response.ok || !response.willAutocorrect || !replacement || replacement === this.currentWord) {
+      this.pendingAutocorrectCommit = null;
       return;
     }
 
+    const original: string = this.currentWord;
     keyboardController.deleteForward(this.currentWord.length);
     keyboardController.insertText(replacement);
     this.currentWord = replacement;
+    this.pendingAutocorrectCommit = {
+      original,
+      replacement,
+      boundary
+    };
+    console.info('[HOSKEY_AUTOCC_COMMIT] action=applied,original_length=' + original.length +
+      ',replacement_length=' + replacement.length +
+      ',model_path=' + this.extractDiagnosticField(response.diagnostics, 'autocc_model_path') +
+      ',variant=' + this.extractDiagnosticField(response.diagnostics, 'autocc_variant'));
+  }
+
+  private tryUndoNativeAutocorrect(): boolean {
+    const pending: PendingAutocorrectCommit | null = this.pendingAutocorrectCommit;
+    this.pendingAutocorrectCommit = null;
+    if (pending === null || keyboardController.isPrivacyRestricted()) {
+      return false;
+    }
+
+    const committedSuffix: string = pending.replacement + pending.boundary;
+    const textBeforeCursor: string = keyboardController.getTextBeforeCursor(
+      Math.max(256, committedSuffix.length));
+    if (!textBeforeCursor.endsWith(committedSuffix)) {
+      return false;
+    }
+
+    keyboardController.deleteForward(committedSuffix.length);
+    keyboardController.insertText(pending.original);
+    this.suppressedAutocorrectWord = pending.original;
+    this.onBackspaceTyped();
+    console.info('[HOSKEY_AUTOCC_UNDO] action=restored,original_length=' +
+      pending.original.length + ',replacement_length=' + pending.replacement.length);
+    return true;
   }
 
   private onBoundaryTyped(boundary: string): void {
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
     if (this.currentWord) {
       predictionModel.recordWord(this.currentLanguage, this.previousWord, this.currentWord);
       this.previousWord = this.currentWord;
@@ -1192,16 +1555,20 @@ struct Index {
   }
 
   private onBackspaceTyped(): void {
-    if (this.currentWord && this.currentWord.length > 0) {
-      this.currentWord = this.currentWord.substring(0, this.currentWord.length - 1);
-      this.updateSuggestions();
-      this.resetInactivityTimer();
-      if (this.currentWord.length === 0) {
-        keyboardController.clearNativeTouchContext();
-      }
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
     }
+    const inputState: PredictionInputState = derivePredictionInputState(
+      keyboardController.getTextBeforeCursor(256)
+    );
+    this.previousWord = inputState.previousWord;
+    this.currentWord = inputState.currentWord;
+    this.contextEmojiSuppressedUntilNextWord = false;
+    keyboardController.clearNativeTouchContext();
 
-    if (keyboardController.isBufferEmpty()) {
+    const bufferEmpty: boolean = keyboardController.isBufferEmpty();
+    if (bufferEmpty) {
       this.previousWord = '';
       this.currentWord = '';
       // Autocc: an empty field is a sentence start — capitalize the first letter.
@@ -1210,25 +1577,59 @@ struct Index {
       }
       this.nativeDiagnosticsSnippet = '';
       this.resetNativeDebugState();
-      this.updateSuggestions();
-      this.showPreTypingToolbar = this.suggestions.length === 0;
-    } else {
-      this.showPreTypingToolbar = false;
     }
+
+    this.updateSuggestions();
+    this.resetInactivityTimer();
+    this.showPreTypingToolbar = bufferEmpty && this.suggestions.length === 0;
   }
 
   private pickSuggestion(word: string): void {
+    if (keyboardController.isPrivacyRestricted()) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
     this.resetInactivityTimer();
     keyboardController.deleteForward(this.currentWord.length);
     keyboardController.insertText(word);
     keyboardController.insertText(' ');
 
+    this.currentWord = word;
     this.onBoundaryTyped(' ');
-    this.previousWord = word;
-    this.currentWord = '';
     this.nativeDiagnosticsSnippet = '';
     this.resetNativeDebugState();
-    this.updateSuggestions();
+  }
+
+  private pickContextEmoji(emoji: string): void {
+    if (keyboardController.isPrivacyRestricted() || !emoji) {
+      this.clearPrivacyPredictionContext();
+      return;
+    }
+    this.resetInactivityTimer();
+    // Commit the exact catalog grapheme/sequence as one string. It is not a
+    // word token and must not replace previousWord.
+    keyboardController.insertText(emoji);
+    this.contextEmojiSuppressedUntilNextWord = true;
+    this.invalidateContextEmojiSuggestions();
+    this.suggestions = [];
+    this.nativeDiagnosticsSnippet = '';
+    this.resetNativeDebugState();
+  }
+
+  private clearPrivacyPredictionContext(): void {
+    this.pendingAutocorrectCommit = null;
+    this.suppressedAutocorrectWord = '';
+    this.previousWord = '';
+    this.currentWord = '';
+    this.suggestions = [];
+    this.contextEmojiSuggestions = [];
+    this.contextEmojiDiagnostics = '';
+    this.contextEmojiSuppressedUntilNextWord = false;
+    this.contextEmojiGeneration = (this.contextEmojiGeneration + 1) % 4294967295;
+    this.nativeDiagnosticsSnippet = '';
+    this.lastNativeDiagnosticsLogged = '';
+    this.resetNativeDebugState();
+    this.showPreTypingToolbar = true;
   }
 
   private getScreenWidthVp(): number {
@@ -1258,19 +1659,38 @@ struct Index {
   }
 
   private shouldShowSuggestionToolbarActions(): boolean {
-    return this.currentWord.length === 0 && this.suggestions.length === 0;
+    return this.currentWord.length === 0 && this.suggestions.length === 0 &&
+      this.contextEmojiSuggestions.length === 0;
   }
 
   private shouldShowPreTypingToolbar(): boolean {
     return this.showPreTypingToolbar && this.currentWord.length === 0 &&
-      this.suggestions.length === 0 && !this.isRecording && !this.showEmojiPanel;
+      this.suggestions.length === 0 && this.contextEmojiSuggestions.length === 0 &&
+      !this.isRecording && !this.showEmojiPanel;
   }
 
   @Builder
   buildSuggestionStrip() {
     Scroll() {
       Row({ space: SUGGESTION_ITEM_GAP }) {
-        if (this.suggestions.length === 0) {
+        if (this.contextEmojiSuggestions.length > 0) {
+          ForEach(this.contextEmojiSuggestions, (emoji: string) => {
+            Text(emoji)
+              .fontSize(22)
+              .fontWeight(500)
+              .fontColor(OpenBoardTheme.primaryText)
+              .height(34)
+              .padding({ left: 15, right: 15 })
+              .textAlign(TextAlign.Center)
+              .maxLines(1)
+              .backgroundColor(OpenBoardTheme.suggestionChipPressed)
+              .borderRadius(17)
+              .border({ width: 0, color: OpenBoardTheme.divider })
+              .onClick((): void => {
+                this.pickContextEmoji(emoji);
+              })
+          })
+        } else if (this.suggestions.length === 0) {
           Text(this.currentWord.length > 0 ? this.currentWord : '')
             .fontSize(12)
             .fontWeight(500)
@@ -1462,13 +1882,29 @@ struct Index {
       .border({ width: 0, color: OpenBoardTheme.divider })
       .onClick((): void => {
         this.showEmojiPanel = false;
+        this.clearEmojiSearch();
       })
 
-      // EMPTY SPACE
-      Flex().layoutWeight(1)
-
-      // EMPTY SPACE
-      Flex().layoutWeight(1)
+      TextInput({
+        text: this.emojiSearchQuery,
+        placeholder: this.currentLanguage === 'ru' ? 'Поиск эмодзи' : 'Search emoji'
+      })
+        .height(32)
+        .layoutWeight(1)
+        .fontSize(14)
+        .fontColor(OpenBoardTheme.primaryText)
+        .placeholderColor(OpenBoardTheme.secondaryText)
+        .backgroundColor(OpenBoardTheme.surface)
+        .borderRadius(16)
+        .padding({ left: 12, right: 12 })
+        .onClick((): void => {
+          this.emojiSearchEditing = true;
+          this.keyboardLayout = KeyboardLayout.Alphabet;
+          keyboardController.clearNativeTouchContext();
+        })
+        .onChange((value: string): void => {
+          this.updateEmojiSearch(value);
+        })
     }
     .width('100%')
     .height('100%')
@@ -1565,7 +2001,7 @@ struct Index {
         .shadow({ radius: 0 })
 
         // MAIN CONTENT
-        if (!this.showEmojiPanel) {
+        if (!this.showEmojiPanel || this.emojiSearchEditing) {
           // Main keyboard
           Column({ space: KEY_ROW_GAP }) {
             ForEach(this.getCurrentLayout(), (row: KeyData[]) => {
@@ -1588,6 +2024,7 @@ struct Index {
                       onKeyContinuousPressEnd: (): void => this.handleRapidDeleteEnd(),
                       onKeyTouchTelemetry: (k: KeyData, p: Position, phase: KeyTouchPhase): void =>
                         this.handleKeyTouchTelemetry(k, p, phase),
+                      onGestureEnd: (k: KeyData): void => this.handleGestureEnd(k),
                       onSwipe: key.action === KeyAction.Space ? (direction: LayoutSwipeDirection): void => this.handleSwipe(direction) : undefined
                     })
                       .layoutWeight(key.flex)
@@ -1604,48 +2041,57 @@ struct Index {
           // Emoji Panel
           Column({ space: 10 }) {
             // Emoji Categories
-            Scroll() {
-              Row() {
-                ForEach(EMOJI_CATEGORIES, (cat: string) => {
-                  Text(cat)
-                    .fontSize(14)
-                    .fontWeight(500)
-                    .fontColor(this.emojiCategory === cat ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
-                    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-                    .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
-                    .borderRadius(20)
-                    .onClick(() => { this.emojiCategory = cat; })
-                })
+            if (normalizeEmojiSearchQuery(this.emojiSearchQuery).length === 0) {
+              Scroll() {
+                Row() {
+                  ForEach(EMOJI_CATEGORIES, (cat: string) => {
+                    Text(cat)
+                      .fontSize(14)
+                      .fontWeight(500)
+                      .fontColor(this.emojiCategory === cat ? OpenBoardTheme.accent : OpenBoardTheme.secondaryText)
+                      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+                      .backgroundColor(this.emojiCategory === cat ? OpenBoardTheme.surface : OpenBoardTheme.background)
+                      .borderRadius(20)
+                      .onClick(() => { this.emojiCategory = cat; })
+                  })
+                }
+                .padding({ left: 8, right: 8 })
               }
-              .padding({ left: 8, right: 8 })
+              .scrollable(ScrollDirection.Horizontal)
+              .scrollBar(BarState.Off)
+              .edgeEffect(EdgeEffect.Spring)
             }
-            .scrollable(ScrollDirection.Horizontal)
-            .scrollBar(BarState.Off)
-            .edgeEffect(EdgeEffect.Spring)
 
             // Emoji
-            Scroll(this.emojiScroller) {
-              Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
-                ForEach(this.getEmojiList(this.emojiCategory), (emoji: string) => {
-                  Text(emoji)
-                    .fontSize(28)
-                    .textAlign(TextAlign.Center)
-                    .width('11%')
-                    .height(46)
-                    .onClick(() => {
-                      keyboardController.insertText(emoji);
-                      this.onTextTyped(emoji);
-                    })
-                })
+            if (this.getVisibleEmojiList().length === 0) {
+              Text(this.currentLanguage === 'ru' ? 'Эмодзи не найдены' : 'No emoji found')
+                .fontSize(14)
+                .fontColor(OpenBoardTheme.secondaryText)
+                .layoutWeight(1)
+            } else {
+              Scroll(this.emojiScroller) {
+                Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Start }) {
+                  ForEach(this.getVisibleEmojiList(), (emoji: string) => {
+                    Text(emoji)
+                      .fontSize(28)
+                      .textAlign(TextAlign.Center)
+                      .width('11%')
+                      .height(46)
+                      .onClick(() => {
+                        keyboardController.insertText(emoji);
+                        this.onTextTyped(emoji);
+                      })
+                  })
+                }
+                .width('100%')
+                .padding({ left: 8, right: 8 })
               }
-              .width('100%')
-              .padding({ left: 8, right: 8 })
+              .scrollable(ScrollDirection.Vertical)
+              .scrollBar(BarState.On)
+              .onScrollFrameBegin((offset: number, state: ScrollState) => {
+                return { offsetRemain: offset };
+              })
             }
-            .scrollable(ScrollDirection.Vertical)
-            .scrollBar(BarState.On)
-            .onScrollFrameBegin((offset: number, state: ScrollState) => {
-              return { offsetRemain: offset };
-            })
           }
           .layoutWeight(1)
           .padding({ left: 2, right: 2, bottom: 2 })
@@ -1783,5 +2229,13 @@ struct Index {
       default:
         return ['🙂','😊','😂','🤣'];
     }
+  }
+
+  private getVisibleEmojiList(): string[] {
+    return selectEmojiPanelItems(
+      this.emojiSearchQuery,
+      this.emojiSearchResults,
+      this.getEmojiList(this.emojiCategory)
+    );
   }
 }

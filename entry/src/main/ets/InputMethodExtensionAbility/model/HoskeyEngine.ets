@@ -20,6 +20,13 @@ export interface NativeSuggestRequest {
   emojiFactor?: number;
   packageName?: string;
   isUrgent?: boolean;
+  isGesture?: boolean;
+  disableYnnlm?: boolean;
+  disableRnnt?: boolean;
+  disableTapModel?: boolean;
+  disableAutoccModel?: boolean;
+  autoccVariant?: string;
+  sensitiveContext?: boolean;
   fieldActionId?: number;
   gender?: number;
   age?: number;
@@ -58,6 +65,7 @@ export type NativePredictorOverlayMode = 'disabled' | 'all' | 'split';
 export interface NativeOpenDebugOptions {
   predictorOverlayMode?: NativePredictorOverlayMode;
   predictorSplitAllowlist?: boolean;
+  runModelNegativeAudit?: boolean;
 }
 
 export interface NativeSuggestResponse {
@@ -85,6 +93,45 @@ export interface NativeCheckWordResponse {
   diagnostics: string;
 }
 
+export interface NativeEmojiSearchRequest {
+  query: string;
+  maxResults?: number;
+  disableModel?: boolean;
+}
+
+export interface NativeEmojiSearchResponse {
+  ok: boolean;
+  statusCode: number;
+  statusMessage: string;
+  emojis: string[];
+  modelEngaged: boolean;
+  diagnostics: string;
+}
+
+export interface NativeEmojiSuggestCandidate {
+  emoji: string;
+  probability: number;
+}
+
+export interface NativeEmojiSuggestRequest {
+  completedWords: string[];
+  packageName?: string;
+  maxResults?: number;
+  disableModel?: boolean;
+  sensitiveContext?: boolean;
+  generation: number;
+}
+
+export interface NativeEmojiSuggestResponse {
+  ok: boolean;
+  statusCode: number;
+  statusMessage: string;
+  candidates: NativeEmojiSuggestCandidate[];
+  modelEngaged: boolean;
+  generation: number;
+  diagnostics: string;
+}
+
 export interface NativePredictorModeCompareResponse {
   ok: boolean;
   statusCode: number;
@@ -106,6 +153,8 @@ interface HoskeyBridgeApi {
   open(dictDir: string, options?: NativeOpenDebugOptions): boolean;
   openAsync(dictDir: string, options?: NativeOpenDebugOptions): Promise<boolean>;
   getSuggestions(request: NativeSuggestRequest): NativeSuggestResponse;
+  searchEmojis(request: NativeEmojiSearchRequest): NativeEmojiSearchResponse;
+  suggestEmojis(request: NativeEmojiSuggestRequest): NativeEmojiSuggestResponse;
   comparePredictorModes(request: NativeSuggestRequest): NativePredictorModeCompareResponse;
   checkWord(request: NativeCheckWordRequest): NativeCheckWordResponse;
   close(): void;
@@ -250,6 +299,46 @@ export class HoskeyEngine {
       return {
         ok: false, statusCode: 0, statusMessage: '' + e,
         isKnown: false, isBlocked: false, normalizedForm: word, diagnostics: ''
+      };
+    }
+  }
+
+  searchEmojis(query: string, maxResults: number = 50, disableModel: boolean = false): NativeEmojiSearchResponse {
+    if (!this.initialized || !query) {
+      return {
+        ok: false, statusCode: 0, statusMessage: 'Not initialized',
+        emojis: [], modelEngaged: false, diagnostics: ''
+      };
+    }
+
+    try {
+      return hoskeyBridge.searchEmojis({ query, maxResults, disableModel } as NativeEmojiSearchRequest);
+    } catch (e) {
+      console.error('[HoskeyEngine] searchEmojis failed: ' + e);
+      return {
+        ok: false, statusCode: 0, statusMessage: '' + e,
+        emojis: [], modelEngaged: false, diagnostics: ''
+      };
+    }
+  }
+
+  suggestEmojis(request: NativeEmojiSuggestRequest): NativeEmojiSuggestResponse {
+    if (!this.initialized || request.completedWords.length === 0) {
+      return {
+        ok: false, statusCode: 0, statusMessage: 'Not initialized',
+        candidates: [], modelEngaged: false,
+        generation: request.generation, diagnostics: ''
+      };
+    }
+
+    try {
+      return hoskeyBridge.suggestEmojis(request);
+    } catch (e) {
+      console.error('[HoskeyEngine] suggestEmojis failed: ' + e);
+      return {
+        ok: false, statusCode: 0, statusMessage: '' + e,
+        candidates: [], modelEngaged: false,
+        generation: request.generation, diagnostics: ''
       };
     }
   }
