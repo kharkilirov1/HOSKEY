@@ -33,6 +33,15 @@
     },
     {
       "name": "ohosTest",
+      "config": {
+        "buildOption": {
+          "nativeLib": {
+            "filter": {
+              "excludes": ["**/libjni_ykeyboard3.so"]
+            }
+          }
+        }
+      },
     }
   ]
 }

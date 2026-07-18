@@ -1,0 +1,2 @@
+# Project-specific ArkTS obfuscation rules.
+# Obfuscation is currently disabled in entry/build-profile.json5.
