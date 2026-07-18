@@ -51,8 +51,17 @@ class NeuralLM {
 
   [[nodiscard]] bool VocabularyContains(std::string_view word) const;
   [[nodiscard]] int32_t VocabularyWeight(std::string_view word) const;
+  [[nodiscard]] int32_t VocabularyRank(std::string_view word) const;
+  [[nodiscard]] const std::vector<std::string>& vocabulary_words() const {
+    return vocabulary_;
+  }
+  [[nodiscard]] const std::unordered_map<std::string, uint32_t>&
+  vocabulary_ranks() const {
+    return vocabulary_rank_;
+  }
   [[nodiscard]] std::vector<NeuralVocabCandidate> VocabularyCompletions(
-      std::string_view prefix, size_t max_results = 12) const;
+      std::string_view prefix, size_t max_results = 12,
+      bool include_short_suffix = false) const;
 
   // Generate completions using Beam Search
   // context_tokens: tokens already typed (from SuccinctTrie::Tokenize)

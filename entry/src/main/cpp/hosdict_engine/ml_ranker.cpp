@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <unordered_map>
+
+#include "text_utils.h"
 
 // MindSpore Lite headers — available in HarmonyOS NDK.
 // Build-gated: only compiled when MINDSPORE_LITE_AVAILABLE is defined.
@@ -70,9 +74,250 @@ std::string DescribeModelIo(OH_AI_ModelHandle model) {
 }  // namespace
 #endif
 
+namespace {
+
+float CharNgramPrecision(const std::vector<char32_t>& reference,
+                         const std::vector<char32_t>& hypothesis, size_t n) {
+  if (hypothesis.size() < n || reference.size() < n) return 0.0f;
+  std::unordered_map<size_t, int> counts;
+  auto hash_ngram = [n](const std::vector<char32_t>& value, size_t start) {
+    size_t hash = 0;
+    for (size_t i = 0; i < n; ++i) {
+      hash = hash * 1000003u ^ static_cast<size_t>(value[start + i]);
+    }
+    return hash;
+  };
+  for (size_t i = 0; i + n <= reference.size(); ++i) {
+    ++counts[hash_ngram(reference, i)];
+  }
+  int matched = 0;
+  int total = 0;
+  for (size_t i = 0; i + n <= hypothesis.size(); ++i) {
+    auto it = counts.find(hash_ngram(hypothesis, i));
+    if (it != counts.end() && it->second > 0) {
+      ++matched;
+      --it->second;
+    }
+    ++total;
+  }
+  return total == 0 ? 0.0f
+                    : static_cast<float>(matched) / static_cast<float>(total);
+}
+
+bool IsPermutation(const std::vector<char32_t>& a,
+                   const std::vector<char32_t>& b) {
+  if (a.size() != b.size()) return false;
+  auto sorted_a = a;
+  auto sorted_b = b;
+  std::sort(sorted_a.begin(), sorted_a.end());
+  std::sort(sorted_b.begin(), sorted_b.end());
+  return sorted_a == sorted_b;
+}
+
+float KendallTauNormalized(const std::vector<char32_t>& a,
+                           const std::vector<char32_t>& b) {
+  if (a.empty() || b.empty() || a.size() != b.size()) return 0.0f;
+  std::unordered_map<char32_t, int> position;
+  for (int i = 0; i < static_cast<int>(b.size()); ++i) position[b[i]] = i;
+  std::vector<int> mapped;
+  mapped.reserve(a.size());
+  for (char32_t value : a) {
+    const auto it = position.find(value);
+    if (it != position.end()) mapped.push_back(it->second);
+  }
+  int inversions = 0;
+  for (size_t i = 0; i < mapped.size(); ++i) {
+    for (size_t j = i + 1; j < mapped.size(); ++j) {
+      if (mapped[i] > mapped[j]) ++inversions;
+    }
+  }
+  const int count = static_cast<int>(mapped.size());
+  const int maximum = count * (count - 1) / 2;
+  return maximum == 0 ? 0.0f
+                      : static_cast<float>(inversions) /
+                            static_cast<float>(maximum);
+}
+
+}  // namespace
+
 // ============================================================================
 // RankerFeatures
 // ============================================================================
+
+bool CalibrateNgramLogit(float raw, const NgramCalibration& calibration,
+                         float* out) {
+  if (out == nullptr || !std::isfinite(raw) ||
+      !std::isfinite(calibration.scale) ||
+      !std::isfinite(calibration.bias) ||
+      !std::isfinite(calibration.low) ||
+      !std::isfinite(calibration.high) || calibration.scale <= 0.0f ||
+      calibration.low > calibration.high || raw < 0.0f || raw > 1.0f) {
+    return false;
+  }
+  if (raw == 0.0f) {
+    *out = calibration.high;
+    return true;
+  }
+  const float negative_log =
+      -std::log(std::max(raw, std::numeric_limits<float>::min()));
+  const float mapped = negative_log * calibration.scale + calibration.bias;
+  if (!std::isfinite(mapped)) return false;
+  *out = std::clamp(mapped, calibration.low, calibration.high);
+  return true;
+}
+
+bool CalibrateTransfemeDistance(float raw_similarity, float* out) {
+  if (out == nullptr || !std::isfinite(raw_similarity)) return false;
+  constexpr float kScale = -0.7758315358f;
+  constexpr float kBias = 26.7383875174f;
+  const float mapped = raw_similarity * kScale + kBias;
+  if (!std::isfinite(mapped)) return false;
+  *out = std::clamp(mapped, 0.0f, 64.0f);
+  return true;
+}
+
+bool CalibrateGeometryDistancePerLetter(float transfeme_distance, float* out) {
+  if (out == nullptr || !std::isfinite(transfeme_distance)) return false;
+  constexpr float kScale = 1.2213213024f;
+  constexpr float kBias = 11.7852434380f;
+  *out = std::clamp(kScale * transfeme_distance + kBias, 0.0f, 256.0f);
+  return std::isfinite(*out);
+}
+
+bool CalibrateStaticUnigramRank(int32_t rank, float* out) {
+  if (out == nullptr || rank < 0) return false;
+  constexpr float kScale = 1.4529097268f;
+  constexpr float kBias = 3.8357257144f;
+  *out = std::clamp(kScale * std::log1p(static_cast<float>(rank)) + kBias,
+                    0.0f, 64.0f);
+  return std::isfinite(*out);
+}
+
+bool CalibrateStaticNgramRank(int32_t rank, float* out) {
+  if (out == nullptr || rank < 0) return false;
+  constexpr float kScale = 1.4007749334f;
+  constexpr float kBias = 4.0694079541f;
+  *out = std::clamp(kScale * std::log1p(static_cast<float>(rank)) + kBias,
+                    0.0f, 64.0f);
+  return std::isfinite(*out);
+}
+
+float BlendMatrixNetWithVocabularyRank(float matrixnet_score, int32_t rank,
+                                       size_t vocabulary_size) {
+  if (!std::isfinite(matrixnet_score)) return matrixnet_score;
+  const size_t effective_rank = rank >= 0
+      ? static_cast<size_t>(rank)
+      : vocabulary_size;
+  if (effective_rank == 0 && rank < 0) return matrixnet_score;
+  constexpr float kRankPriorScale = 4.4f;
+  return matrixnet_score -
+      kRankPriorScale * std::log1p(static_cast<float>(effective_rank));
+}
+
+RankerFeatures BuildNeuralRankerFeatures(
+    const NeuralRankerFeatureInput& input,
+    const NgramCalibration& calibration) {
+  RankerFeatures features;
+  const auto original = DecodeUtf8(input.original);
+  const auto correction = DecodeUtf8(input.correction);
+  features.original_length = static_cast<float>(original.size());
+  features.correction_length = static_cast<float>(correction.size());
+  features.original_ndict = input.original_known ? 1.0f : 0.0f;
+  features.correction_ndict = 1.0f;
+  features.no_change = input.original == input.correction ? 1.0f : 0.0f;
+
+  features.levenshtein = static_cast<float>(
+      LevenshteinDistanceUtf8(input.original, input.correction));
+  features.levenshtein_per_letter =
+      features.levenshtein / std::max(features.correction_length, 1.0f);
+
+  features.distance_transfeme_fwd = input.transfeme_proximity;
+  features.distance_transfeme_rev = input.transfeme_proximity;
+  features.distance_per_letter_fwd = features.correction_length > 0.0f
+      ? input.transfeme_proximity / features.correction_length
+      : 0.0f;
+  features.distance_per_letter_rev = features.original_length > 0.0f
+      ? input.transfeme_proximity / features.original_length
+      : 0.0f;
+
+  features.is_permutation = IsPermutation(original, correction) ? 1.0f : 0.0f;
+  features.kendall_tau_distance = KendallTauNormalized(original, correction);
+  features.bleu_2 = CharNgramPrecision(original, correction, 2);
+  features.bleu_3 = CharNgramPrecision(original, correction, 3);
+  features.bleu_4 = CharNgramPrecision(original, correction, 4);
+  features.letter_precision_2 = features.bleu_2;
+  features.letter_precision_3 = features.bleu_3;
+  if (!correction.empty()) {
+    std::unordered_map<char32_t, int> counts;
+    for (char32_t value : original) ++counts[value];
+    int matched = 0;
+    for (char32_t value : correction) {
+      auto it = counts.find(value);
+      if (it != counts.end() && it->second > 0) {
+        ++matched;
+        --it->second;
+      }
+    }
+    features.letter_precision_1 =
+        static_cast<float>(matched) / features.correction_length;
+  }
+
+  features.original_lm_1gr_static = input.original_static;
+  features.original_lm_2gr_static = input.original_static_ngram;
+  features.original_lm_ngr_static = input.original_static_ngram;
+  features.correction_lm_1gr_static = input.correction_static;
+  features.correction_lm_2gr_static = input.correction_static_ngram;
+  features.correction_lm_ngr_static = input.correction_static_ngram;
+  features.original_letter_lm_main = input.original_letter_lm_main;
+  features.correction_letter_lm_main = input.correction_letter_lm_main;
+
+  float original_main = calibration.high;
+  if (input.has_original_logit) {
+    (void)CalibrateNgramLogit(input.raw_original_logit, calibration,
+                              &original_main);
+  }
+  float correction_main = calibration.high;
+  (void)CalibrateNgramLogit(input.raw_correction_logit, calibration,
+                            &correction_main);
+  features.original_lm_ngr_main = original_main;
+  features.correction_lm_ngr_main = correction_main;
+
+  if (input.has_geometry) {
+    float original_per_letter = 0.0f;
+    float correction_per_letter = 0.0f;
+    if (CalibrateGeometryDistancePerLetter(
+            input.original_transfeme_proximity, &original_per_letter) &&
+        CalibrateGeometryDistancePerLetter(
+            input.transfeme_proximity, &correction_per_letter) &&
+        original_per_letter > 0.0f) {
+      const float relative_gap = correction_per_letter / original_per_letter;
+      features.geometry_distance_per_letter = correction_per_letter;
+      features.geometry_distance_original =
+          original_per_letter * features.original_length;
+      features.geometry_distance_per_letter_original = original_per_letter;
+      features.geometry_distance_rel_gap = relative_gap;
+      features.geometry_distance_rel_gap_and_char_lm_per_letter =
+          features.original_length > 0.0f
+              ? (relative_gap + features.original_letter_lm_main) /
+                    features.original_length
+              : 0.0f;
+      // The recovered tap path emits identical scalar and n-gram geometry for
+      // the captured кот/кто vectors. Keep the two catalog branches explicit
+      // so a future coordinate kernel can replace this proxy without changing
+      // the MatrixNet contract.
+      features.geometry_distance_ngram_per_letter = correction_per_letter;
+      features.geometry_distance_ngram_and_char_lm =
+          correction_per_letter * features.correction_length +
+          features.original_letter_lm_main;
+      features.geometry_distance_ngram_original =
+          features.geometry_distance_original;
+      features.geometry_distance_ngram_per_letter_original =
+          original_per_letter;
+      features.geometry_distance_ngram_rel_gap = relative_gap;
+    }
+  }
+  return features;
+}
 
 std::vector<float> RankerFeatures::ToVector() const {
   return {
@@ -163,14 +408,14 @@ std::vector<float> RankerFeatures::ToVector44() const {
       original_length - correction_length,               // 32 sub(length o,c)
       geometry_distance_per_letter,   // 33 geometry_distance_per_letter
       geometry_distance_original,     // 34 geometry_distance_original
-      0.0f,                           // 35 geometry_distance_per_letter_original
+      geometry_distance_per_letter_original,  // 35
       geometry_distance_rel_gap,      // 36 geometry_distance_rel_gap
-      0.0f,                           // 37 geometry_distance_rel_gap_and_char_lm_per_letter
-      0.0f,                           // 38 geometry_distance_ngram_per_letter
-      0.0f,                           // 39 geometry_distance_ngram_and_char_lm
-      0.0f,                           // 40 geometry_distance_ngram_original
-      0.0f,                           // 41 geometry_distance_ngram_per_letter_original
-      0.0f,                           // 42 geometry_distance_ngram_rel_gap
+      geometry_distance_rel_gap_and_char_lm_per_letter,  // 37
+      geometry_distance_ngram_per_letter,                // 38
+      geometry_distance_ngram_and_char_lm,               // 39
+      geometry_distance_ngram_original,                  // 40
+      geometry_distance_ngram_per_letter_original,       // 41
+      geometry_distance_ngram_rel_gap,                   // 42
       neural_oov,                     // 43 neural_oov
   };
 }
@@ -200,6 +445,7 @@ void MLRanker::Reset() {
   diagnostics_ = "not_loaded";
   matrixnet_loaded_ = false;
   mn_num_trees_ = 0;
+  mn_feature_count_ = 0;
   mn_feat_.clear();
   mn_thr_.clear();
   mn_leaf_.clear();
@@ -355,6 +601,7 @@ float MLRanker::HeuristicScore(const RankerFeatures& f) const {
 Status MLRanker::LoadMatrixNet(const uint8_t* data, size_t size) {
   matrixnet_loaded_ = false;
   mn_num_trees_ = 0;
+  mn_feature_count_ = 0;
   mn_feat_.clear();
   mn_thr_.clear();
   mn_leaf_.clear();
@@ -377,8 +624,7 @@ Status MLRanker::LoadMatrixNet(const uint8_t* data, size_t size) {
   };
   const uint32_t n_trees = u32(4);
   const uint32_t n_feat = u32(8);
-  if (n_feat != RankerFeatures::kMatrixNetFeatureCount || n_trees == 0 ||
-      n_trees > 100000) {
+  if (n_feat == 0 || n_feat > 255 || n_trees == 0 || n_trees > 100000) {
     mn_diagnostics_ = "mn_invalid:counts";
     return Status::ParseError("MatrixNet: unexpected tree/feature count");
   }
@@ -390,7 +636,12 @@ Status MLRanker::LoadMatrixNet(const uint8_t* data, size_t size) {
       return Status::ParseError("MatrixNet: truncated border table");
     }
     const uint16_t nb = u16(o);
-    o += 2 + static_cast<size_t>(nb) * 4;
+    const size_t block_bytes = 2 + static_cast<size_t>(nb) * 4;
+    if (block_bytes > size - o) {
+      mn_diagnostics_ = "mn_invalid:borders_trunc";
+      return Status::ParseError("MatrixNet: truncated border values");
+    }
+    o += block_bytes;
   }
   // Trees: each = 6 x (u8 feat, f32 thr) + 64 x f32 leaf = 30 + 256 = 286 bytes.
   const size_t tree_bytes = 6 * 5 + 64 * 4;
@@ -406,7 +657,14 @@ Status MLRanker::LoadMatrixNet(const uint8_t* data, size_t size) {
       const uint8_t feat = data[o];
       const float thr = f32(o + 1);
       o += 5;
-      mn_feat_[t * 6 + i] = feat >= n_feat ? 0 : feat;
+      if (feat >= n_feat) {
+        mn_feat_.clear();
+        mn_thr_.clear();
+        mn_leaf_.clear();
+        mn_diagnostics_ = "mn_invalid:feature_id";
+        return Status::ParseError("MatrixNet: split feature is out of range");
+      }
+      mn_feat_[t * 6 + i] = feat;
       mn_thr_[t * 6 + i] = thr;
     }
     for (int l = 0; l < 64; ++l) {
@@ -415,8 +673,17 @@ Status MLRanker::LoadMatrixNet(const uint8_t* data, size_t size) {
     }
   }
   mn_num_trees_ = n_trees;
+  mn_feature_count_ = n_feat;
   matrixnet_loaded_ = true;
-  mn_diagnostics_ = "mn_loaded:trees=" + std::to_string(n_trees);
+  mn_diagnostics_ = "mn_loaded:trees=" + std::to_string(n_trees) +
+                    ",features=" + std::to_string(n_feat);
+  if (loaded_) {
+    diagnostics_ += "," + mn_diagnostics_;
+  } else if (diagnostics_ == "not_loaded") {
+    diagnostics_ = mn_diagnostics_;
+  } else {
+    diagnostics_ = mn_diagnostics_ + ",ms=" + diagnostics_;
+  }
   return Status::Ok();
 }
 
@@ -440,11 +707,19 @@ float MLRanker::EvalMatrixNet(const std::vector<float>& x) const {
   return static_cast<float>(sum);
 }
 
+float MLRanker::ScoreMatrixNet(const std::vector<float>& features) const {
+  if (!matrixnet_loaded_ || features.size() != mn_feature_count_) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  return EvalMatrixNet(features);
+}
+
 float MLRanker::ScoreOne(const RankerFeatures& features) const {
   // Reverse-engineered Yandex MatrixNet takes priority when available (pure C++,
   // works on host and device).
-  if (matrixnet_loaded_) {
-    return EvalMatrixNet(features.ToVector44());
+  if (matrixnet_loaded_ &&
+      mn_feature_count_ == RankerFeatures::kMatrixNetFeatureCount) {
+    return ScoreMatrixNet(features.ToVector44());
   }
 #ifdef MINDSPORE_LITE_AVAILABLE
   if (loaded_ && model_) {

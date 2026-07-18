@@ -411,6 +411,36 @@ std::vector<char32_t> TfmTrieDecoder::GetConfusable(char32_t ch) const {
   return result;
 }
 
+float TfmTrieDecoder::Proximity(std::string_view original,
+                                std::string_view correction) const {
+  const std::vector<char32_t> original_cp = DecodeUtf8(original);
+  const std::vector<char32_t> correction_cp = DecodeUtf8(correction);
+  const size_t aligned = std::min(original_cp.size(), correction_cp.size());
+
+  auto lookup = [this](char32_t from, char32_t to, float* weight) {
+    const auto cls_it = classes_.find(from);
+    if (cls_it == classes_.end()) return false;
+    const auto& cls = cls_it->second;
+    for (size_t i = 0; i < cls.companions.size(); ++i) {
+      if (cls.companions[i] == to) {
+        *weight = cls.weights[i];
+        return true;
+      }
+    }
+    return false;
+  };
+
+  float score = 0.0f;
+  for (size_t i = 0; i < aligned; ++i) {
+    float weight = 0.0f;
+    if (lookup(original_cp[i], correction_cp[i], &weight) ||
+        lookup(correction_cp[i], original_cp[i], &weight)) {
+      score += weight;
+    }
+  }
+  return score;
+}
+
 // Verified B1: GenerateCandidates logic is correct.
 // - Single-char substitution: iterates each position, queries GetConfusable(),
 //   looks up weight in both forward (anchor->companion) and reverse direction.

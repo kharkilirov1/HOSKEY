@@ -48,6 +48,8 @@ class DictionaryStore {
   [[nodiscard]] const LoadedFeatureConfig* FindFeatureConfig(std::string_view key) const;
   [[nodiscard]] const LoadedWordListAsset* FindWordList(std::string_view key) const;
   [[nodiscard]] std::vector<std::string> LoadedKeys() const;
+  [[nodiscard]] size_t BinaryPayloadBytes() const;
+  void ReleaseBinaryPayloads();
 
  private:
   std::map<std::string, LoadedBinaryAsset, std::less<>> binary_assets_;

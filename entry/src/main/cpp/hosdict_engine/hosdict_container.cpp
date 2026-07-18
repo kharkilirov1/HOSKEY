@@ -205,6 +205,10 @@ Status HosdictContainer::GetAssetData(std::string_view key,
   if (data == nullptr || size == nullptr) {
     return Status::InvalidArgument("HosdictContainer::GetAssetData: null output pointer");
   }
+  if (file_data_.empty()) {
+    return Status::InvalidState(
+        "HosdictContainer: source payload released after runtime load");
+  }
 
   const AssetEntry* entry = FindAsset(key);
   if (entry == nullptr) {
@@ -216,8 +220,12 @@ Status HosdictContainer::GetAssetData(std::string_view key,
   return Status::Ok();
 }
 
+void HosdictContainer::ReleasePayload() {
+  std::vector<uint8_t>().swap(file_data_);
+}
+
 void HosdictContainer::Close() {
-  file_data_.clear();
+  ReleasePayload();
   entries_.clear();
   manifest_json_.clear();
   package_name_.clear();

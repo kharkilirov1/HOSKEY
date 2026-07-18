@@ -101,6 +101,18 @@ std::vector<std::string> DictionaryStore::LoadedKeys() const {
   return result;
 }
 
+size_t DictionaryStore::BinaryPayloadBytes() const {
+  size_t total = 0;
+  for (const auto& [_, asset] : binary_assets_) total += asset.bytes.size();
+  return total;
+}
+
+void DictionaryStore::ReleaseBinaryPayloads() {
+  for (auto& [_, asset] : binary_assets_) {
+    std::vector<uint8_t>().swap(asset.bytes);
+  }
+}
+
 // ============================================================================
 // UTF-8 word list parser
 // ============================================================================

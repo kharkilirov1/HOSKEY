@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <unordered_map>
 
@@ -32,6 +33,12 @@ class TfmTrieDecoder {
 
   // Get all characters that could be confused with `ch`.
   std::vector<char32_t> GetConfusable(char32_t ch) const;
+
+  // Sum parsed transfeme weights for aligned character pairs. Extra suffix
+  // characters are intentionally ignored because completion length is modeled
+  // by separate ranker features.
+  float Proximity(std::string_view original,
+                  std::string_view correction) const;
 
   // Generate correction candidates for a word.
   std::vector<std::pair<std::string, float>> GenerateCandidates(

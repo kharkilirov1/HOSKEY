@@ -80,6 +80,129 @@ Status FindBalancedJsonEnd(const uint8_t* data, size_t size, size_t begin,
   return Status::ParseError("YnnlmV1Bundle: unterminated JSON config");
 }
 
+Status FindBalancedJsonArrayEnd(const uint8_t* data, size_t size, size_t begin,
+                                size_t* end) {
+  if (!data || !end || begin >= size || data[begin] != '[') {
+    return Status::ParseError("YnnlmV1Bundle: JSON array not found");
+  }
+  int depth = 0;
+  bool in_string = false;
+  bool escaped = false;
+  for (size_t i = begin; i < size; ++i) {
+    const char c = static_cast<char>(data[i]);
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+    } else if (c == '[') {
+      ++depth;
+    } else if (c == ']') {
+      --depth;
+      if (depth == 0) {
+        *end = i + 1U;
+        return Status::Ok();
+      }
+      if (depth < 0) {
+        return Status::ParseError("YnnlmV1Bundle: malformed JSON brackets");
+      }
+    }
+  }
+  return Status::ParseError("YnnlmV1Bundle: unterminated application map");
+}
+
+bool ParseJsonString(std::string_view json, size_t* pos, std::string* out) {
+  if (!pos || !out || *pos >= json.size() || json[*pos] != '"') return false;
+  out->clear();
+  ++*pos;
+  while (*pos < json.size()) {
+    const char c = json[(*pos)++];
+    if (c == '"') return true;
+    if (c != '\\') {
+      out->push_back(c);
+      continue;
+    }
+    if (*pos >= json.size()) return false;
+    const char escaped = json[(*pos)++];
+    switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        out->push_back(escaped);
+        break;
+      case 'b': out->push_back('\b'); break;
+      case 'f': out->push_back('\f'); break;
+      case 'n': out->push_back('\n'); break;
+      case 'r': out->push_back('\r'); break;
+      case 't': out->push_back('\t'); break;
+      default:
+        return false;
+    }
+  }
+  return false;
+}
+
+Status ParseApplicationMap(
+    std::string_view json,
+    std::unordered_map<std::string, uint32_t>* application_ids) {
+  if (!application_ids || json.size() < 2 || json.front() != '[' ||
+      json.back() != ']') {
+    return Status::ParseError("YnnlmV1Bundle: invalid application map");
+  }
+  size_t pos = 1;
+  const auto skip = [&]() {
+    while (pos < json.size() &&
+           (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\n' ||
+            json[pos] == '\r' || json[pos] == ',' || json[pos] == '{' ||
+            json[pos] == '}' || json[pos] == ':' || json[pos] == '[')) {
+      ++pos;
+    }
+  };
+  while (pos + 1 < json.size()) {
+    skip();
+    if (pos >= json.size() - 1 || json[pos] == ']') break;
+    std::string id_text;
+    if (!ParseJsonString(json, &pos, &id_text) || id_text.empty()) {
+      return Status::ParseError("YnnlmV1Bundle: malformed application id");
+    }
+    uint32_t id = 0;
+    for (char c : id_text) {
+      if (c < '0' || c > '9' ||
+          id > (std::numeric_limits<uint32_t>::max() - (c - '0')) / 10U) {
+        return Status::ParseError("YnnlmV1Bundle: invalid application id");
+      }
+      id = id * 10U + static_cast<uint32_t>(c - '0');
+    }
+    skip();
+    bool found_package = false;
+    while (pos < json.size() && json[pos] != ']') {
+      if (json[pos] == ',' || json[pos] == ' ' || json[pos] == '\t' ||
+          json[pos] == '\n' || json[pos] == '\r') {
+        ++pos;
+        continue;
+      }
+      std::string package_name;
+      if (!ParseJsonString(json, &pos, &package_name) || package_name.empty()) {
+        return Status::ParseError("YnnlmV1Bundle: malformed package name");
+      }
+      application_ids->emplace(std::move(package_name), id);
+      found_package = true;
+    }
+    if (pos >= json.size() || json[pos] != ']' || !found_package) {
+      return Status::ParseError("YnnlmV1Bundle: malformed package list");
+    }
+    ++pos;
+  }
+  return Status::Ok();
+}
+
 bool ExtractJsonInt(std::string_view json, std::string_view key, int* out) {
   if (!out) return false;
   const std::string needle = "\"" + std::string(key) + "\"";
@@ -370,6 +493,7 @@ void YnnlmV1Bundle::Reset() {
   subword_rank_to_lex_.clear();
   subword_lex_to_rank_.clear();
   word_rank_by_text_.clear();
+  application_id_by_package_.clear();
 }
 
 Status YnnlmV1Bundle::Parse(const uint8_t* data, size_t size) {
@@ -434,6 +558,20 @@ Status YnnlmV1Bundle::Parse(const uint8_t* data, size_t size) {
   subword_rank_to_lex_ = std::move(subword_table.rank_to_lex);
   subword_lex_to_rank_ = std::move(subword_table.lex_to_rank);
 
+  size_t app_begin = subword_table.end;
+  const size_t app_search_end = std::min(size, app_begin + 64U);
+  while (app_begin < app_search_end && IsJsonSpace(data[app_begin])) ++app_begin;
+  if (app_begin < app_search_end && data[app_begin] == '[') {
+    size_t app_end = 0;
+    st = FindBalancedJsonArrayEnd(data, size, app_begin, &app_end);
+    if (!st.ok()) return st;
+    st = ParseApplicationMap(
+        std::string_view(reinterpret_cast<const char*>(data + app_begin),
+                         app_end - app_begin),
+        &application_id_by_package_);
+    if (!st.ok()) return st;
+  }
+
   word_rank_by_text_.reserve(words_.size());
   for (size_t lex = 0; lex < words_.size(); ++lex) {
     const uint32_t rank = word_lex_to_rank_[lex];
@@ -449,6 +587,11 @@ int YnnlmV1Bundle::WordRank(const std::string& word) const {
     return -1;
   }
   return static_cast<int>(it->second);
+}
+
+uint32_t YnnlmV1Bundle::ApplicationId(const std::string& package_name) const {
+  const auto it = application_id_by_package_.find(package_name);
+  return it == application_id_by_package_.end() ? 0U : it->second;
 }
 
 }  // namespace hoskey::engine

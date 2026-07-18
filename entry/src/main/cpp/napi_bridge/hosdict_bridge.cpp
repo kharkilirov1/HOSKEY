@@ -12,6 +12,10 @@ namespace {
 
 using hoskey::engine::CheckWordRequest;
 using hoskey::engine::CheckWordResponse;
+using hoskey::engine::EmojiSearchRequest;
+using hoskey::engine::EmojiSearchResponse;
+using hoskey::engine::EmojiSuggestRequest;
+using hoskey::engine::EmojiSuggestResponse;
 using hoskey::engine::KeyboardEngine;
 using hoskey::engine::KeyboardDebugConfig;
 using hoskey::engine::LoadReport;
@@ -201,6 +205,8 @@ KeyboardDebugConfig ReadKeyboardDebugConfig(napi_env env, napi_value object) {
     config.override_predictor_split_allowlist = true;
     config.predictor_split_allowlist = enabled;
   }
+  config.run_model_negative_audit =
+      ReadBoolProperty(env, object, "runModelNegativeAudit", false);
   return config;
 }
 
@@ -220,6 +226,17 @@ SuggestRequest ReadSuggestRequest(napi_env env, napi_value object) {
   request.emoji_factor = ReadDoubleProperty(env, object, "emojiFactor", 0.0);
   request.package_name = ReadStringProperty(env, object, "packageName", "");
   request.is_urgent = ReadBoolProperty(env, object, "isUrgent", false);
+  request.is_gesture = ReadBoolProperty(env, object, "isGesture", false);
+  request.disable_ynnlm = ReadBoolProperty(env, object, "disableYnnlm", false);
+  request.disable_rnnt = ReadBoolProperty(env, object, "disableRnnt", false);
+  request.disable_tap_model =
+      ReadBoolProperty(env, object, "disableTapModel", false);
+  request.disable_autocc_model =
+      ReadBoolProperty(env, object, "disableAutoccModel", false);
+  request.autocc_variant =
+      ReadStringProperty(env, object, "autoccVariant", "default");
+  request.sensitive_context =
+      ReadBoolProperty(env, object, "sensitiveContext", false);
   request.field_action_id = ReadUInt32Property(env, object, "fieldActionId", 0);
   request.gender = ReadUInt32Property(env, object, "gender", 0);
   request.age = ReadUInt32Property(env, object, "age", 0);
@@ -276,6 +293,35 @@ CheckWordRequest ReadCheckWordRequest(napi_env env, napi_value object) {
   CheckWordRequest request;
   request.token = ReadStringProperty(env, object, "token", "");
   request.locale = ReadStringProperty(env, object, "locale", "ru-RU");
+  return request;
+}
+
+EmojiSearchRequest ReadEmojiSearchRequest(napi_env env, napi_value object) {
+  EmojiSearchRequest request;
+  request.query = ReadStringProperty(env, object, "query", "");
+  const uint32_t requested_max =
+      ReadUInt32Property(env, object, "maxResults", 64);
+  request.max_results = requested_max > 128u ? 128u : requested_max;
+  request.disable_model =
+      ReadBoolProperty(env, object, "disableModel", false);
+  return request;
+}
+
+EmojiSuggestRequest ReadEmojiSuggestRequest(napi_env env, napi_value object) {
+  EmojiSuggestRequest request;
+  request.completed_words =
+      ReadStringArrayProperty(env, object, "completedWords");
+  request.package_name =
+      ReadStringProperty(env, object, "packageName", "");
+  const uint32_t requested_max =
+      ReadUInt32Property(env, object, "maxResults", 3);
+  request.max_results = requested_max > 3u ? 3u : requested_max;
+  request.disable_model =
+      ReadBoolProperty(env, object, "disableModel", false);
+  request.sensitive_context =
+      ReadBoolProperty(env, object, "sensitiveContext", false);
+  request.generation =
+      ReadUInt32Property(env, object, "generation", 0);
   return request;
 }
 
@@ -377,6 +423,47 @@ napi_value MakeCheckWordResponse(napi_env env, const CheckWordResponse& response
   return object;
 }
 
+napi_value MakeEmojiSearchResponse(napi_env env,
+                                   const EmojiSearchResponse& response) {
+  napi_value object;
+  napi_create_object(env, &object);
+  SetNamedBool(env, object, "ok", response.status.ok());
+  SetNamedUInt32(env, object, "statusCode",
+                 static_cast<uint32_t>(response.status.code));
+  SetNamedString(env, object, "statusMessage", response.status.message);
+  napi_set_named_property(env, object, "emojis",
+                          MakeStringArray(env, response.emojis));
+  SetNamedBool(env, object, "modelEngaged", response.model_engaged);
+  SetNamedString(env, object, "diagnostics", response.diagnostics);
+  return object;
+}
+
+napi_value MakeEmojiSuggestResponse(napi_env env,
+                                    const EmojiSuggestResponse& response) {
+  napi_value object;
+  napi_create_object(env, &object);
+  SetNamedBool(env, object, "ok", response.status.ok());
+  SetNamedUInt32(env, object, "statusCode",
+                 static_cast<uint32_t>(response.status.code));
+  SetNamedString(env, object, "statusMessage", response.status.message);
+  SetNamedBool(env, object, "modelEngaged", response.model_engaged);
+  SetNamedUInt32(env, object, "generation", response.generation);
+  SetNamedString(env, object, "diagnostics", response.diagnostics);
+
+  napi_value candidates;
+  napi_create_array_with_length(env, response.candidates.size(), &candidates);
+  for (uint32_t index = 0; index < response.candidates.size(); ++index) {
+    napi_value candidate;
+    napi_create_object(env, &candidate);
+    SetNamedString(env, candidate, "emoji", response.candidates[index].emoji);
+    SetNamedDouble(env, candidate, "probability",
+                   response.candidates[index].probability);
+    napi_set_element(env, candidates, index, candidate);
+  }
+  napi_set_named_property(env, object, "candidates", candidates);
+  return object;
+}
+
 napi_value MakePredictorModeCompareResponse(napi_env env,
                                            const PredictorModeCompareResponse& response) {
   napi_value object;
@@ -419,6 +506,9 @@ napi_value NapiOpen(napi_env env, napi_callback_info info) {
       if (!package_diag.empty()) {
         diagnostics += ", reports=" + package_diag;
       }
+      const std::string& negative_audit =
+          g_engine.model_negative_audit_diagnostics();
+      if (!negative_audit.empty()) diagnostics += ", " + negative_audit;
     }
   }
   SetDiagnostics(diagnostics);
@@ -453,6 +543,9 @@ void ExecuteOpenAsync(napi_env /*env*/, void* data) {
     if (!package_diag.empty()) {
       work->diagnostics += ", reports=" + package_diag;
     }
+    const std::string& negative_audit =
+        g_engine.model_negative_audit_diagnostics();
+    if (!negative_audit.empty()) work->diagnostics += ", " + negative_audit;
   }
 }
 
@@ -550,7 +643,8 @@ napi_value NapiGetSuggestions(napi_env env, napi_callback_info info) {
     std::lock_guard<std::mutex> lock(g_mutex);
     response = g_engine.GetSuggestions(request);
     SetDiagnostics("getSuggestions(" + label + "): " + FormatStatus(response.status) + ", count=" +
-                   std::to_string(response.suggestions.size()));
+                   std::to_string(response.suggestions.size()) + ", diag=" +
+                   response.diagnostics);
   }
   if (argc == 0) {
     SetDiagnostics(response.status.message);
@@ -581,6 +675,59 @@ napi_value NapiCheckWord(napi_env env, napi_callback_info info) {
   }
 
   return MakeCheckWordResponse(env, response);
+}
+
+napi_value NapiSearchEmojis(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  EmojiSearchResponse response;
+  if (IsEngineOpening()) {
+    response.status = Status::InvalidArgument("engine opening");
+    response.diagnostics = "engine_opening";
+  } else if (argc == 0) {
+    response.status =
+        Status::InvalidArgument("searchEmojis requires request object");
+  } else {
+    const EmojiSearchRequest request = ReadEmojiSearchRequest(env, args[0]);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    response = g_engine.SearchEmojis(request);
+    SetDiagnostics("searchEmojis(" + request.query + "): " +
+                   FormatStatus(response.status) + ", count=" +
+                   std::to_string(response.emojis.size()) + ", diag=" +
+                   response.diagnostics);
+  }
+  if (argc == 0) SetDiagnostics(response.status.message);
+  return MakeEmojiSearchResponse(env, response);
+}
+
+napi_value NapiSuggestEmojis(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+  EmojiSuggestResponse response;
+  if (IsEngineOpening()) {
+    response.status = Status::InvalidArgument("engine opening");
+    response.diagnostics = "engine_opening";
+  } else if (argc == 0) {
+    response.status =
+        Status::InvalidArgument("suggestEmojis requires request object");
+  } else {
+    const EmojiSuggestRequest request = ReadEmojiSuggestRequest(env, args[0]);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    response = g_engine.SuggestEmojis(request);
+    // Context text is intentionally never copied into process diagnostics.
+    SetDiagnostics("suggestEmojis(generation=" +
+                   std::to_string(request.generation) + ", words=" +
+                   std::to_string(request.completed_words.size()) + "): " +
+                   FormatStatus(response.status) + ", count=" +
+                   std::to_string(response.candidates.size()) + ", diag=" +
+                   response.diagnostics);
+  }
+  if (argc == 0) SetDiagnostics(response.status.message);
+  return MakeEmojiSuggestResponse(env, response);
 }
 
 napi_value NapiComparePredictorModes(napi_env env, napi_callback_info info) {
@@ -708,6 +855,8 @@ napi_value InitModule(napi_env env, napi_value exports) {
       {"open", nullptr, NapiOpen, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"openAsync", nullptr, NapiOpenAsync, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getSuggestions", nullptr, NapiGetSuggestions, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"searchEmojis", nullptr, NapiSearchEmojis, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"suggestEmojis", nullptr, NapiSuggestEmojis, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"comparePredictorModes", nullptr, NapiComparePredictorModes, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"checkWord", nullptr, NapiCheckWord, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"close", nullptr, NapiClose, nullptr, nullptr, nullptr, napi_default, nullptr},

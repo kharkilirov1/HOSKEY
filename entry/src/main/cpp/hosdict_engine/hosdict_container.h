@@ -73,6 +73,11 @@ class HosdictContainer {
   [[nodiscard]] uint32_t version() const { return version_; }
   [[nodiscard]] bool is_open() const { return open_; }
   [[nodiscard]] const std::string& manifest_json() const { return manifest_json_; }
+  [[nodiscard]] size_t retained_payload_bytes() const { return file_data_.size(); }
+
+  // Keep the parsed manifest/index but release the duplicated source file once
+  // every runtime subsystem has copied or compiled the assets it needs.
+  void ReleasePayload();
 
   void Close();
 

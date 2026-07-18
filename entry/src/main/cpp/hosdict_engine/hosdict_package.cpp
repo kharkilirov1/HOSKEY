@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 #include "lemmer.h"
 #include "normdict_reader.h"
@@ -16,7 +17,8 @@ namespace {
 bool IsPackagedModelFormat(const std::string& format) {
   return format == "mindspore_model" || format == "ynnlm_v1_bundle" ||
          format == "tflite_model" || format == "catboost_model" ||
-         format == "tap_model_bundle" || format == "raw_model_blob";
+         format == "tap_model_bundle" || format == "oblivious_tree_v1" ||
+         format == "raw_model_blob";
 }
 
 }  // namespace
@@ -43,22 +45,35 @@ Status HosdictPackage::Open(const std::filesystem::path& container_path) {
 Status HosdictPackage::OpenFromDir(const std::filesystem::path& dir) {
   // Load .hosdict container
   std::filesystem::path container_path;
-  for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".hosdict") {
-      if (entry.path().stem().string().find("hoskey") != std::string::npos) {
-        container_path = entry.path();
-        break;
-      }
+  std::filesystem::path first_container;
+  std::error_code error;
+  std::filesystem::directory_iterator iterator(dir, error);
+  if (error) {
+    return error == std::errc::no_such_file_or_directory
+               ? Status::NotFound("Dictionary directory not found: " +
+                                  dir.string())
+               : Status::IoError("Cannot scan dictionary directory: " +
+                                 dir.string() + ": " + error.message());
+  }
+  const std::filesystem::directory_iterator end;
+  for (; iterator != end; iterator.increment(error)) {
+    if (error) break;
+    std::error_code entry_error;
+    const bool regular = iterator->is_regular_file(entry_error);
+    if (entry_error || !regular || iterator->path().extension() != ".hosdict") {
+      continue;
+    }
+    if (first_container.empty()) first_container = iterator->path();
+    if (iterator->path().stem().string().find("hoskey") != std::string::npos) {
+      container_path = iterator->path();
+      break;
     }
   }
-  if (container_path.empty()) {
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-      if (entry.is_regular_file() && entry.path().extension() == ".hosdict") {
-        container_path = entry.path();
-        break;
-      }
-    }
+  if (error) {
+    return Status::IoError("Cannot scan dictionary directory: " + dir.string() +
+                           ": " + error.message());
   }
+  if (container_path.empty()) container_path = first_container;
   
   if (container_path.empty()) {
     return Status::NotFound("No .hosdict container in: " + dir.string());
@@ -239,6 +254,11 @@ void HosdictPackage::Close() {
   container_.Close();
   raw_config_json_.clear();
   reports_.clear();
+}
+
+void HosdictPackage::ReleaseSourcePayloads() {
+  store_.ReleaseBinaryPayloads();
+  container_.ReleasePayload();
 }
 
 std::string HosdictPackage::DiagnosticsSummary() const {

@@ -130,8 +130,8 @@ bool StartsWith(std::string_view text, std::string_view prefix) {
 void AppendRawVocabDiagnostics(std::string* diagnostics, size_t vocab_size,
                                size_t subword_size = 0) {
   if (!diagnostics) return;
-  if (diagnostics->empty()) {
-    *diagnostics = "not_loaded";
+  if (diagnostics->empty() || *diagnostics == "not_loaded") {
+    *diagnostics = "vocab_only";
   }
   *diagnostics += ",raw_vocab=" + std::to_string(vocab_size);
   *diagnostics += ",subwords=" + std::to_string(subword_size);
@@ -351,8 +351,16 @@ int32_t NeuralLM::VocabularyWeight(std::string_view word) const {
   return static_cast<int32_t>(std::max<uint32_t>(100U, 1100U - decay));
 }
 
+int32_t NeuralLM::VocabularyRank(std::string_view word) const {
+  if (!vocabulary_loaded_ || word.empty()) return -1;
+  const auto it = vocabulary_rank_.find(std::string(word));
+  if (it == vocabulary_rank_.end()) return -1;
+  return static_cast<int32_t>(it->second);
+}
+
 std::vector<NeuralVocabCandidate> NeuralLM::VocabularyCompletions(
-    std::string_view prefix, size_t max_results) const {
+    std::string_view prefix, size_t max_results,
+    bool include_short_suffix) const {
   std::vector<NeuralVocabCandidate> results;
   if (!vocabulary_loaded_ || prefix.empty() || max_results == 0) {
     return results;
@@ -384,9 +392,12 @@ std::vector<NeuralVocabCandidate> NeuralLM::VocabularyCompletions(
     // Raw ynnlm_v1 vocabulary is a word/subword vocabulary.  For UI
     // completions, suppress very short suffix fragments; exact token signal is
     // still available via VocabularyContains().
-    if (prefix_cp >= 2 && suffix_cp < 2) continue;
-    if (prefix_cp >= 3 && suffix_cp <= 2 && VocabularyWeight(candidate) < 1050) {
-      continue;
+    if (!include_short_suffix) {
+      if (prefix_cp >= 2 && suffix_cp < 2) continue;
+      if (prefix_cp >= 3 && suffix_cp <= 2 &&
+          VocabularyWeight(candidate) < 1050) {
+        continue;
+      }
     }
 
     const int32_t weight = VocabularyWeight(candidate);

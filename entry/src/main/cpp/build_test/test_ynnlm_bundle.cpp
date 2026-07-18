@@ -53,6 +53,13 @@ int main() {
   Check(bundle.max_word_len() == 24, "MaxWordLen == 24");
   Check(bundle.word_count() == 107989, "word_count == 107989");
   Check(bundle.subword_count() == 7000, "subword_count == 7000");
+  Check(bundle.application_count() == 1000, "application_count == 1000");
+  Check(bundle.ApplicationId("org.telegram.messenger") == 1,
+        "Telegram application id == 1");
+  Check(bundle.ApplicationId("dev.virus.variable") == 1000,
+        "last application id == 1000");
+  Check(bundle.ApplicationId("com.opentech.openboard") == 0,
+        "unknown application id == 0");
 
   const auto& wr2l = bundle.word_rank_to_lex();
   const auto& wl2r = bundle.word_lex_to_rank();

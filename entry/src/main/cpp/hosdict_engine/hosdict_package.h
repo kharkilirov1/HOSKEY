@@ -28,6 +28,10 @@ class HosdictPackage {
   [[nodiscard]] const std::string& raw_config_json() const { return raw_config_json_; }
   [[nodiscard]] const std::vector<LoadReport>& reports() const { return reports_; }
   [[nodiscard]] std::string DiagnosticsSummary() const;
+  [[nodiscard]] size_t retained_source_payload_bytes() const {
+    return container_.retained_payload_bytes() + store_.BinaryPayloadBytes();
+  }
+  void ReleaseSourcePayloads();
 
  private:
   [[nodiscard]] Status LoadContainerAssets();
