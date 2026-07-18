@@ -1,0 +1,221 @@
+{
+  "schema": "hoskey-ranker-feature-reference/v1",
+  "captured_at": "2026-07-11",
+  "device": {
+    "model": "MI 9",
+    "android": "15",
+    "package": "ru.yandex.androidkeyboard",
+    "version_name": "121.13",
+    "version_code": 31211300
+  },
+  "capture": {
+    "method": "Frida Java getSuggestions hook followed by post-call rw-memory scan",
+    "contract": "features_ranker.json indices 0..43",
+    "validated_combos": [
+      "f28=f16+f8",
+      "f29=f16+f11",
+      "f30=f1-f8",
+      "f31=f2-f9",
+      "f32=f0-f7"
+    ]
+  },
+  "queries": [
+    {
+      "prefix": "кот",
+      "surface": "Android Settings global search",
+      "native_suggestions": [
+        "котики",
+        "коть",
+        "котик",
+        "который",
+        "которые",
+        "котёнок",
+        "которая",
+        "котя",
+        "котёл",
+        "которое",
+        "которую",
+        "коте",
+        "кота",
+        "коты",
+        "котята",
+        "котлеты",
+        "котов"
+      ],
+      "vectors": [
+        {
+          "role": "exact_no_change",
+          "features": [
+            3.0,
+            13.38831901550293,
+            13.870616912841797,
+            13.744216918945312,
+            13.744216918945312,
+            14.870771408081055,
+            1.0,
+            3.0,
+            13.38831901550293,
+            13.870616912841797,
+            13.744216918945312,
+            13.744216918945312,
+            14.870771408081055,
+            1.0,
+            1.0,
+            1.0,
+            0.6086180210113525,
+            0.20287267863750458,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            13.996936798095703,
+            14.352834701538086,
+            0.0,
+            0.0,
+            0.0,
+            12.52856159210205,
+            37.58568572998047,
+            12.52856159210205,
+            1.0,
+            5.290256023406982,
+            12.52856159210205,
+            52.45645523071289,
+            37.58568572998047,
+            12.52856159210205,
+            1.0,
+            0.0
+          ]
+        },
+        {
+          "role": "retained_len3_candidate",
+          "features": [
+            3.0,
+            13.38831901550293,
+            13.870616912841797,
+            13.744216918945312,
+            13.744216918945312,
+            14.870771408081055,
+            1.0,
+            3.0,
+            8.873350143432617,
+            10.089143753051758,
+            10.098434448242188,
+            10.098434448242188,
+            16.2557430267334,
+            1.0,
+            0.0,
+            0.0,
+            10.100251197814941,
+            3.366750478744507,
+            2.0,
+            0.6666666865348816,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.6666666269302368,
+            18.973602294921875,
+            20.198684692382812,
+            4.5149688720703125,
+            3.781473159790039,
+            0.0,
+            24.120895385742188,
+            37.58568572998047,
+            12.52856159210205,
+            1.9252724647521973,
+            5.59868049621582,
+            24.120895385742188,
+            87.23345184326172,
+            37.58568572998047,
+            12.52856159210205,
+            1.9252724647521973,
+            0.0
+          ],
+          "inferred_correction": "кто",
+          "inference_evidence": "length=3, levenshtein=2, is_permutation=1, kendall_tau=2/3; kto is the matching retained vocabulary correction"
+        }
+      ]
+    },
+    {
+      "prefix": "кот",
+      "surface": "Nekogram messenger compose field",
+      "native_suggestions": [
+        "который",
+        "которая",
+        "которые",
+        "котик"
+      ],
+      "vectors": [],
+      "note": "Observed by physical key taps; no message was sent. This context-specific order supersedes treating the Settings search result as a universal acceptance target."
+    }
+  ],
+  "harmony_calibration": {
+    "device": "HarmonyOS emulator x86_64, controlled empty-context getSuggestions(кот)",
+    "ngram": {
+      "transform": "android_feature = scale * -ln(hoskey_decoder_probability) + bias",
+      "scale": 0.7130374807096073,
+      "bias": -3.5576391952815456,
+      "pairs": [
+        {
+          "word": "кот",
+          "hoskey_nll": 23.765873,
+          "android_feature": 13.38831901550293
+        },
+        {
+          "word": "кто",
+          "hoskey_nll": 17.4338512,
+          "android_feature": 8.873350143432617
+        }
+      ]
+    },
+    "transfeme": {
+      "transform": "android_distance = scale * hoskey_tfm_similarity + bias",
+      "scale": -0.7758315357794268,
+      "bias": 26.738387517444036,
+      "pairs": [
+        {
+          "correction": "кот",
+          "hoskey_similarity": 33.679695,
+          "android_feature": 0.6086180210113525
+        },
+        {
+          "correction": "кто",
+          "hoskey_similarity": 21.445553,
+          "android_feature": 10.100251197814941
+        }
+      ]
+    },
+    "static_lm": {
+      "source": "ynnlm_v1 word rank",
+      "unigram_transform": "feature = scale * ln(rank + 1) + bias",
+      "unigram_scale": 1.4529097267868833,
+      "unigram_bias": 3.8357257144115255,
+      "ngram_transform": "feature = scale * ln(rank + 1) + bias",
+      "ngram_scale": 1.4007749333669195,
+      "ngram_bias": 4.069407954102232,
+      "pairs": [
+        {
+          "word": "кот",
+          "rank": 998,
+          "android_1gr": 13.870616912841797,
+          "android_ngram": 13.744216918945312
+        },
+        {
+          "word": "кто",
+          "rank": 73,
+          "android_1gr": 10.089143753051758,
+          "android_ngram": 10.098434448242188
+        }
+      ]
+    }
+  }
+}

@@ -277,8 +277,15 @@ def analyze_record(name: str, source: str, path: Path, analyzer,
     data = path.read_bytes()
     magic = read_magic(data)
     offsets = tfl3_offsets(data)
-    alias = find_alias_tflite(path.name, tflite_dir) or find_alias_tflite(name, tflite_dir)
-    parse_path: Path | None = path if magic == "TFL3" else alias
+    # A same-basename .tflite file is not byte provenance.  Several recovered
+    # aliases were carved from the wrong embedded component (notably emoji
+    # search vs NNLM emb_app), yet still expose plausible tensor signatures.
+    # Only analyze bytes that are themselves a TFLite graph; a future explicit
+    # provenance manifest may opt individual aliases back in.
+    implicit_alias = (find_alias_tflite(path.name, tflite_dir) or
+                      find_alias_tflite(name, tflite_dir))
+    alias: Path | None = None
+    parse_path: Path | None = path if magic == "TFL3" else None
 
     inputs: list[dict[str, Any]] = []
     outputs: list[dict[str, Any]] = []
@@ -296,6 +303,10 @@ def analyze_record(name: str, source: str, path: Path, analyzer,
             note = f"TFLite parse failed: {exc}"
     elif magic == "ynnlm_v1":
         note = "wrapper: parse embedded TFL3 components separately"
+    if implicit_alias is not None and parse_path is None:
+        rejected = ("implicit alias rejected: " + str(implicit_alias) +
+                    "; exact byte provenance required")
+        note = f"{note}; {rejected}" if note else rejected
 
     role = classify_role(name, inputs, outputs, magic)
     return ModelRecord(
@@ -386,6 +397,7 @@ def write_report(path: Path, hosdict_assets: list[HosdictAsset],
         "The real subword NNLM signature is the `[1x1] + [1x2500] -> [1x1x7000] + [1x2500]` decoder.",
         "The current generic `MLRanker` shape (`39 float features -> scalar`) is not matched by the observed Yandex TFLite aliases.",
         "`ynnlm_v1` raw blobs are wrappers with embedded TFLite components; extracting from first `TFL3` to EOF is not a valid model split.",
+        "Same-basename TFLite files are not treated as aliases without an explicit source-slice provenance record.",
     ]
 
     lines: list[str] = []

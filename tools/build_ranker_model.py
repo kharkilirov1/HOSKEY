@@ -1,71 +1,167 @@
-"""Decode the reverse-engineered Yandex MatrixNet ranker (KEYBOARD-13421_ranker)
-into HOSKEY's compact 'HRNK' format for the on-device evaluator.
+"""Decode Yandex MatrixNet blobs into HOSKEY's compact ``HRNK`` format.
 
-Witness of a correct decode: flat border-table length == max tree condition
-index + 1 (== 2274 for this asset).
+The same raw layout is used by the normal ranker and by the swipe,
+swipe-backoff, and swipe-blocker models:
 
-Output (per tree, 1000 depth-6 oblivious trees):
-  'HRNK', u32 n_trees, u32 44,
-  per feature f in 0..43: u16 n_borders, n_borders*f32   (border table)
-  per tree: 6 x (u8 feature_id, f32 threshold) + 64 x f32 leaf
+* fixed 560-byte depth-6 oblivious-tree records;
+* a feature-border catalog following the tree records;
+* six condition indices per tree into the flattened border catalog.
+
+The older converter hard-coded offsets from the 44-feature normal ranker.  This
+version discovers the catalog and therefore also handles the 47/42/31-feature
+swipe models.  A successful conversion proves the strongest structural
+invariant available in the blob: ``flat_border_count == max(condition)+1``.
+
+Environment variables:
+  RANKER_SRC       raw Yandex model blob
+  RANKER_FEATURES  matching feature JSON
+  RANKER_OUT       output HRNK path
 """
-import struct, sys, os
 
-SRC = os.environ.get(
-    "RANKER_SRC",
-    "C:/Users/Kharki/Desktop/yandex_extracted/extracted_sections/KEYBOARD-13421_ranker")
-OUT = os.environ.get(
-    "RANKER_OUT",
-    "C:/Users/Kharki/Desktop/yandex_extracted/ms_models/ranker_model.bin")
+from __future__ import annotations
 
-d = open(SRC, "rb").read()
-def u32(o): return struct.unpack_from("<I", d, o)[0]
-def u16(o): return struct.unpack_from("<H", d, o)[0]
-def f32(o): return struct.unpack_from("<f", d, o)[0]
-def f64(o): return struct.unpack_from("<d", d, o)[0]
+import json
+import math
+import os
+import struct
+from pathlib import Path
 
-# 1000 fixed 560-byte records anchored by the [*,528,4,64] signature.
-sig = [o for o in range(0, len(d) - 16, 4)
-       if u32(o + 4) == 528 and u32(o + 8) == 4 and u32(o + 12) == 64]
-T = sig[-1] + 560   # border-table base
 
-# Feature border blocks. feat 43..2 via the 0xFFFF-marker walk from T+180.
-borders = {}
-o = T + 180
-while o < len(d) - 16:
-    if (u32(o) >> 16) != 0xFFFF:
+YANDEX = Path("C:/Users/Kharki/Desktop/yandex_extracted")
+SRC = Path(os.environ.get(
+    "RANKER_SRC", YANDEX / "extracted_sections/KEYBOARD-13421_ranker"))
+FEATURES = Path(os.environ.get(
+    "RANKER_FEATURES", YANDEX / "extracted_sections/features_ranker.json"))
+OUT = Path(os.environ.get(
+    "RANKER_OUT", YANDEX / "ms_models/ranker_model.bin"))
+
+d = SRC.read_bytes()
+
+
+def u32(offset: int) -> int:
+    return struct.unpack_from("<I", d, offset)[0]
+
+
+def f32(offset: int) -> float:
+    return struct.unpack_from("<f", d, offset)[0]
+
+
+def f64(offset: int) -> float:
+    return struct.unpack_from("<d", d, offset)[0]
+
+
+def feature_count(path: Path) -> int:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload.get("Features"), list):
+        return len(payload["Features"]) + len(payload.get("Stats", [])) + \
+            len(payload.get("Combos", []))
+
+    # features_ranker.json groups the base and keyboard-specific catalogs.
+    count = 0
+    for section in payload.values():
+        if not isinstance(section, dict):
+            continue
+        count += len(section.get("Features", []))
+        count += len(section.get("Combos", []))
+        count += len(section.get("Stats", []))
+    return count
+
+
+def monotonic_floats(offset: int, count: int) -> list[float] | None:
+    end = offset + 4 * count
+    if count <= 0 or count > 4096 or end > len(d):
+        return None
+    values = [f32(offset + 4 * i) for i in range(count)]
+    if not all(math.isfinite(value) for value in values):
+        return None
+    if any(values[i] > values[i + 1] for i in range(len(values) - 1)):
+        return None
+    return values
+
+
+n_features = feature_count(FEATURES)
+assert 1 <= n_features <= 255, f"invalid feature count: {n_features}"
+
+# Every tree begins with [*, 528, 4, 64], followed by 64 f64 leaves and six
+# u32 condition indices.  Adjacent tree records are exactly 560 bytes apart.
+tree_offsets = [
+    offset for offset in range(0, len(d) - 16, 4)
+    if u32(offset + 4) == 528 and u32(offset + 8) == 4 and
+    u32(offset + 12) == 64
+]
+assert tree_offsets, "no MatrixNet tree records"
+assert all(b - a == 560 for a, b in zip(tree_offsets, tree_offsets[1:])), \
+    "non-contiguous MatrixNet tree records"
+tree_end = tree_offsets[-1] + 560
+
+# Features N-1..2 use a regular [0xFFFFxxxx, feature_id, 4, count] header.
+borders: dict[int, list[float]] = {}
+for offset in range(tree_end, len(d) - 16, 4):
+    marker, feature_id, item_size, count = (
+        u32(offset), u32(offset + 4), u32(offset + 8), u32(offset + 12))
+    if marker >> 16 != 0xFFFF or item_size != 4:
+        continue
+    if not 2 <= feature_id < n_features:
+        continue
+    values = monotonic_floats(offset + 16, count)
+    if values is not None:
+        borders[feature_id] = values
+
+# Feature 1 has the stable irregular [8, 1, 4, count] header.
+feature_one_end = tree_end
+for offset in range(tree_end, len(d) - 16, 4):
+    if (u32(offset), u32(offset + 4), u32(offset + 8)) != (8, 1, 4):
+        continue
+    count = u32(offset + 12)
+    values = monotonic_floats(offset + 16, count)
+    if values is not None:
+        borders[1] = values
+        feature_one_end = offset + 16 + 4 * count
         break
-    fid, c, n = u32(o + 4), u32(o + 8), u32(o + 12)
-    if c != 4 or n > 4096:
-        break
-    borders[fid] = [f32(o + 16 + 4 * k) for k in range(n)]
-    o = o + 16 + 4 * n
-# feat0 @ T+9944 ([.,.,4,n]+16), feat1 @ T+9692 (irregular tail; header [8][1][4][n]).
-o0 = T + 9944
-assert u32(o0 + 8) == 4, "feat0 header"
-borders[0] = [f32(o0 + 16 + 4 * k) for k in range(u32(o0 + 12))]
-assert u32(T + 9680) == 1 and u32(T + 9684) == 4, "feat1 header"
-n1 = u32(T + 9688)
-borders[1] = [f32(T + 9692 + 4 * k) for k in range(n1)]
 
-counts = [len(borders[f]) for f in range(44)]
-flat = [(f, t) for f in range(44) for t in borders[f]]
-condmax = max(u32(ro + 528 + 8 + 4 * c) for ro in sig for c in range(6))
-assert len(flat) == condmax + 1, f"INVARIANT FAIL {len(flat)} != {condmax + 1}"
-print(f"trees={len(sig)} borders={len(flat)} condmax+1={condmax + 1} INVARIANT OK")
+# Feature 0 follows feature 1 and uses [opaque, 8, 4, count].
+for offset in range(feature_one_end, len(d) - 16, 4):
+    if u32(offset + 4) != 8 or u32(offset + 8) != 4:
+        continue
+    count = u32(offset + 12)
+    values = monotonic_floats(offset + 16, count)
+    if values is not None:
+        borders[0] = values
+        break
+
+missing = [feature_id for feature_id in range(n_features)
+           if feature_id not in borders]
+assert not missing, f"missing border blocks: {missing}"
+
+flat = [(feature_id, threshold)
+        for feature_id in range(n_features)
+        for threshold in borders[feature_id]]
+condition_indices = [
+    u32(tree_offset + 528 + 8 + 4 * condition)
+    for tree_offset in tree_offsets
+    for condition in range(6)
+]
+condition_max = max(condition_indices)
+assert len(flat) == condition_max + 1, \
+    f"INVARIANT FAIL {len(flat)} != {condition_max + 1}"
 
 out = bytearray(b"HRNK")
-out += struct.pack("<II", len(sig), 44)
-for f in range(44):
-    out += struct.pack("<H", len(borders[f]))
-    for t in borders[f]:
-        out += struct.pack("<f", t)
-for ro in sig:
-    for c in range(6):
-        f, t = flat[u32(ro + 528 + 8 + 4 * c)]
-        out += struct.pack("<Bf", f, t)
-    for i in range(64):
-        out += struct.pack("<f", f64(ro + 16 + 8 * i))
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
-open(OUT, "wb").write(out)
+out += struct.pack("<II", len(tree_offsets), n_features)
+for feature_id in range(n_features):
+    out += struct.pack("<H", len(borders[feature_id]))
+    for threshold in borders[feature_id]:
+        out += struct.pack("<f", threshold)
+for tree_offset in tree_offsets:
+    for condition in range(6):
+        feature_id, threshold = flat[
+            u32(tree_offset + 528 + 8 + 4 * condition)]
+        out += struct.pack("<Bf", feature_id, threshold)
+    for leaf in range(64):
+        out += struct.pack("<f", f64(tree_offset + 16 + 8 * leaf))
+
+OUT.parent.mkdir(parents=True, exist_ok=True)
+OUT.write_bytes(out)
+print(
+    f"source={SRC.name} trees={len(tree_offsets)} features={n_features} "
+    f"borders={len(flat)} condmax+1={condition_max + 1} INVARIANT OK")
 print(f"wrote {OUT} ({len(out)} bytes)")

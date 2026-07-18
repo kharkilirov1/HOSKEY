@@ -43,6 +43,7 @@ def test_trie(path):
                 if res != -1:
                     print(f"  bv[{i}] at {off}: popcount={res[0]} (hdr says {res[1]})")
 
-test_trie(r"C:\Users\Kharki\Desktop\yandex_extracted\extracted_sections\trie")
-test_trie(r"C:\Users\Kharki\Desktop\yandex_extracted\extracted_sections\KEYBOARD-13421_trie")
+if __name__ == "__main__":
+    test_trie(r"C:\Users\Kharki\Desktop\yandex_extracted\extracted_sections\trie")
+    test_trie(r"C:\Users\Kharki\Desktop\yandex_extracted\extracted_sections\KEYBOARD-13421_trie")
 

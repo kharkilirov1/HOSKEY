@@ -49,12 +49,10 @@ class BitVector:
 
 def test_trie():
     with open(r"C:\Users\Kharki\Desktop\yandex_extracted\extracted_sections\trie", "rb") as f:
-        data = f.read()
-        
-    # Read BV0 (main louds) at 130744
-    f.seek(130744)
-    magic, size, ones, _ = struct.unpack("<IIII", f.read(16))
-    bv_data = f.read(size * 8)
+        # Read BV0 (main louds) at 130744.
+        f.seek(130744)
+        magic, size, ones, _ = struct.unpack("<IIII", f.read(16))
+        bv_data = f.read(size * 8)
     bv = BitVector(bv_data)
     
     # Read labels at 0x110000? Let's check where labels are.
@@ -65,4 +63,5 @@ def test_trie():
     for i in range(1, 20):
         print(f"Node {i} -> Parent {bv.parent(i)}")
 
-test_trie()
+if __name__ == "__main__":
+    test_trie()

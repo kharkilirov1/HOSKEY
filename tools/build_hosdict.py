@@ -7,6 +7,7 @@ Output: single .hosdict container for the HOSKEY engine.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import struct
@@ -20,11 +21,82 @@ ALIGNMENT = 16
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 YANDEX_DIR = os.path.join("C:/Users/Kharki/Desktop/yandex_extracted/extracted_sections")
 MS_MODELS_DIR = os.path.join("C:/Users/Kharki/Desktop/yandex_extracted/ms_models")
+YNNLM_1225_MS_MODELS_DIR = os.path.join(
+    "C:/Users/Kharki/Desktop/yandex_extracted/ms_models_ynnlm_1225"
+)
+YNNLM_1225_RAW = os.path.join(
+    PROJECT_ROOT, "build/reverse/yandex1225_neural/neural_model_1225.bin"
+)
 TFLITE_MODELS_DIR = os.path.join("C:/Users/Kharki/clawd/yandex_extracted/yandex_extracted")
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 DICT_OUTPUT = os.path.join(PROJECT_ROOT, "entry/src/main/resources/rawfile/dict")
 PREDICTOR_BINARY = os.path.join(TOOLS_DIR, "lexicon.predictor.hpt")
 WEIGHTED_WORDS = os.path.join(TOOLS_DIR, "words_with_weights.tsv")
+
+# Files with names that encode a verified semantic variant are pinned so a
+# later conversion cannot silently replace Default with an experiment.  The
+# Default ranker is recovered from extracted_sections/ranker
+# (SHA-256 77c74250...f6345b7f) by build_oblivious_tree_model.py, including the
+# compact first tree referenced by the outer pointer vector.
+PINNED_ASSET_SHA256 = {
+    # Exact Default YNNLM from installed Yandex Keyboard 122.5 / dictionary
+    # 67.0.  The previous 44,692,688-byte eight-model wrapper is stale and its
+    # vocabulary/model indices must not be mixed with this ten-model chain.
+    "neural_model_1225.bin":
+        "10d8e63f951b61b6084e13374d8f8b4ab0ae030600dfe0a7a4b11f55b761e80e",
+    "char_dec_exact.bin":
+        "5f7d30d283b0657e1332bf52acdd7c10264706f1dcc8956585130481defea6cf",
+    # Dedicated MindSpore predictor for RNNT swipe.  Do not alias this graph
+    # to neural.char.dec: that key is the exact native YCD1 scoring decoder.
+    "char_dec.ms":
+        "108229bfbd6bd4a57c29e563a64bd9a84fb0e76e58a381f79d99bdfd5f2daeed",
+    "subword_dec.ms":
+        "de2e116dc897b455aad9c6c45e5fdb3402f5706d793d173dcd444186542a43fd",
+    "word_dec.ms":
+        "a1e714e221cf665b579298cbbd98d1fda674d877bb64087891728099c5d017f2",
+    "emb_age.ms":
+        "769e06fd7bdf0d4badaea4561cc52f0a3029b89fcd86627dc70ee5626317d0c6",
+    "emb_app.ms":
+        "3ebd8fef86f41b2a5270b9b68ba7cf73996f983bce500e8f9bab64d416d531e7",
+    "emb_sex.ms":
+        "5471cd5bfa9ebcc1caed3c73e8c4278ff17599eeab4d70e81417e73244539fa5",
+    "word_emb.ms":
+        "3215321001f8e15e5f6a5950a4fb3e2a6d116d6183d0fad7d98618f70cb044ed",
+    "subword_enc_dec.ms":
+        "6f32800a4fd6d63f6867d455d1792bd3ef374dbdeb8cee597d460f261a18cf2b",
+    "word_enc_dec.ms":
+        "355b485368a16453c98f5c7463149739280b45b07348bec634ba08e5e1db0c89",
+    "enc.ms":
+        "79aae185cf5afc8a73181bcb789e029060b507fe3079a7d1060f9392f8916492",
+    "ranker_default_model.bin":
+        "0a39e2d555bd69eb8286b12e7debef797e9612716d5f498a0dec5f02bf6d48ad",
+    # Coherent Default TapModel chain extracted from the installed Yandex
+    # Keyboard 122.5 main_ru asset.  The previous dict_ru_full slices used a
+    # different 37/76 feature contract and must never be mixed with these
+    # exact 38/78 HOBL executors.
+    "tap_models_default_1225":
+        "062d4ae2e38a5d9e6bb0468b7d477dea702764d60f15a16746279cdff74c972b",
+    "features_tap_model_1225.json":
+        "2d3458062c05950df3676186c9f0beab33a34f774322b09b3cf79896a27fd72f",
+    "tap_model_ranker_1225.hobl":
+        "4aeebd80a6acec0c180b13edf3e10b81763b20c8fcfe4c0491eb837b7e02e4bb",
+    "tap_model_classifier_1225.hobl":
+        "8daea3d952d86f7663649bd494a50f8c4c8d95992dcfe38ab682f06967156978",
+    "context_emoji_wrapper_k13321.bin":
+        "43d528df4c31628f1bd83216268038c0b71a1aded1261d50d7bf76804d86c255",
+    "context_emoji_emb_age_k13321.ms":
+        "769e06fd7bdf0d4badaea4561cc52f0a3029b89fcd86627dc70ee5626317d0c6",
+    "context_emoji_emb_app_k13321.ms":
+        "3ebd8fef86f41b2a5270b9b68ba7cf73996f983bce500e8f9bab64d416d531e7",
+    "context_emoji_emb_sex_k13321.ms":
+        "5471cd5bfa9ebcc1caed3c73e8c4278ff17599eeab4d70e81417e73244539fa5",
+    "context_emoji_word_emb_k13321.ms":
+        "e9a5962c89a505059076790aae8741bbe6ff2678f642debf85b9601413ed91cf",
+    "context_emoji_encoder_k13321.ms":
+        "79aae185cf5afc8a73181bcb789e029060b507fe3079a7d1060f9392f8916492",
+    "context_emoji_decoder_k13321.ms":
+        "2ac2475da37aa324df7e0eebbb91c69123c1905c0812829ddcc0bee407e1b1e2",
+}
 
 
 @dataclass
@@ -74,6 +146,18 @@ def raw_model_format(path, fallback="raw_model_blob"):
     if len(head) >= 8 and head[4:8] == b"MSL2":
         return "mindspore_model"
     return fallback
+
+
+def validate_pinned_asset(label, data):
+    expected = PINNED_ASSET_SHA256.get(label)
+    if expected is None:
+        return
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            f"pinned asset {label} SHA-256 mismatch: "
+            f"expected {expected}, got {actual}"
+        )
 
 
 def is_cyrillic_or_hyphen(ch):
@@ -205,13 +289,18 @@ def append_raw_model_if_exists(assets, key, name, fmt=None):
 
 
 def append_tflite_model_if_exists(assets, key, name):
-    return append_asset_if_exists(
-        assets,
-        key,
-        "tflite_model",
+    path = find_file(
         os.path.join(TFLITE_MODELS_DIR, f"{name}.tflite"),
         os.path.join(TFLITE_MODELS_DIR, name),
     )
+    if not path:
+        return False
+    with open(path, "rb") as model_file:
+        head = model_file.read(8)
+    if len(head) < 8 or head[4:8] != b"TFL3":
+        raise ValueError(f"TFLite alias {path} has no TFL3 identifier")
+    assets.append(AssetSpec(key, "tflite_model", path, os.path.basename(path)))
+    return True
 
 
 def append_full_model_assets(assets):
@@ -227,7 +316,6 @@ def append_full_model_assets(assets):
         ("features.ranker_swipe", "features_ranker_swipe.json"),
         ("features.ranker_swipe_backoff", "features_ranker_swipe_backoff.json"),
         ("features.swipe_blocker", "features_swipe_blocker.json"),
-        ("features.experiments.KEYBOARD-13421_tap_model", "KEYBOARD-13421_features_tap_model"),
     ]
     for key, name in extra_features:
         append_asset_if_exists(
@@ -242,38 +330,32 @@ def append_full_model_assets(assets):
     raw_models = [
         ("neural.word_model", "neural_model", None),
         ("neural.subword_nnlm.KEYBOARD-13321", "KEYBOARD-13321_nnlm_model", None),
-        ("neural.char_model", "char_model", None),
         ("rnnt.model", "rnnt_model", None),
         ("ranking.catboost", "ranker", "catboost_model"),
         ("ranking.swipe", "ranker_swipe", "catboost_model"),
         ("ranking.swipe_backoff", "ranker_swipe_backoff", "catboost_model"),
         ("ranking.swipe_blocker", "swipe_blocker", "catboost_model"),
-        ("autocc.tree_model.raw", "tree_autocorrect_model", None),
         ("tap.model_ranker.raw", "tap_model_ranker", None),
         ("tap.model_classifier.raw", "tap_model_classifier", None),
         ("tap.models_default", "tap_models_default", "tap_model_bundle"),
-        ("emoji.search_model.raw", "search_emoji_model", None),
         ("emoji.suggest_model.raw", "emoji_model", None),
         ("emoji.suggest_model.KEYBOARD-13321", "KEYBOARD-13321_emoji_suggest", None),
-        ("autocc.tree_model.KEYBOARD-13321", "KEYBOARD-13321_autocc", None),
         ("ranking.catboost.KEYBOARD-13321", "KEYBOARD-13321_ranker", "catboost_model"),
         ("ranking.swipe.KEYBOARD-13321", "KEYBOARD-13321_ranker_swipe", "catboost_model"),
         ("ranking.swipe_backoff.KEYBOARD-13321", "KEYBOARD-13321_ranker_swipe_backoff", "catboost_model"),
         ("rnnt.model.KEYBOARD-13321", "KEYBOARD-13321_rnnt_model", None),
-        ("tap.model_ranker.KEYBOARD-13321", "KEYBOARD-13321_tap_model_ranker", None),
-        ("tap.model_classifier.KEYBOARD-13321", "KEYBOARD-13321_tap_model_classifier", None),
-        ("autocc.tree_model.KEYBOARD-13421", "KEYBOARD-13421_autocc", None),
         ("ranking.catboost.KEYBOARD-13421", "KEYBOARD-13421_ranker", "catboost_model"),
         ("ranking.swipe.KEYBOARD-13421", "KEYBOARD-13421_ranker_swipe", "catboost_model"),
         ("ranking.swipe_backoff.KEYBOARD-13421", "KEYBOARD-13421_ranker_swipe_backoff", "catboost_model"),
-        ("tap.model_ranker.KEYBOARD-13421", "KEYBOARD-13421_tap_model_ranker", None),
-        ("tap.model_classifier.KEYBOARD-13421", "KEYBOARD-13421_tap_model_classifier", None),
     ]
     for key, name, fmt in raw_models:
         append_raw_model_if_exists(assets, key, name, fmt)
 
-    # Direct TFLite aliases extracted from the same Yandex assets.  These are
-    # the practical inputs for future TFLite/MindSpore runner parity work.
+    # Direct TFLite aliases retained only for branches whose graph role was
+    # already used by the conversion/runtime work.  Emoji search/context,
+    # TapModel and autocorrect aliases are deliberately excluded: their role
+    # cannot be inferred from TFL3 magic alone, and the exact raw wrappers are
+    # already available for continued reverse engineering.
     tflite_models = [
         ("neural.word_model.tflite", "neural_model"),
         ("neural.subword_nnlm.KEYBOARD-13321.tflite", "KEYBOARD-13321_nnlm_model"),
@@ -282,23 +364,11 @@ def append_full_model_assets(assets):
         ("ranking.catboost.tflite", "ranker"),
         ("ranking.swipe.tflite", "ranker_swipe"),
         ("ranking.swipe_blocker.tflite", "swipe_blocker"),
-        ("autocc.tree_model.tflite", "tree_autocorrect_model"),
-        ("tap.model_ranker.tflite", "tap_model_ranker"),
-        ("tap.model_classifier.tflite", "tap_model_classifier"),
-        ("emoji.search_model.tflite", "search_emoji_model"),
-        ("emoji.suggest_model.tflite", "emoji_model"),
-        ("emoji.suggest_model.KEYBOARD-13321.tflite", "KEYBOARD-13321_emoji_suggest"),
-        ("autocc.tree_model.KEYBOARD-13321.tflite", "KEYBOARD-13321_autocc"),
         ("ranking.catboost.KEYBOARD-13321.tflite", "KEYBOARD-13321_ranker"),
         ("ranking.swipe.KEYBOARD-13321.tflite", "KEYBOARD-13321_ranker_swipe"),
         ("rnnt.model.KEYBOARD-13321.tflite", "KEYBOARD-13321_rnnt_model"),
-        ("tap.model_ranker.KEYBOARD-13321.tflite", "KEYBOARD-13321_tap_model_ranker"),
-        ("tap.model_classifier.KEYBOARD-13321.tflite", "KEYBOARD-13321_tap_model_classifier"),
-        ("autocc.tree_model.KEYBOARD-13421.tflite", "KEYBOARD-13421_autocc"),
         ("ranking.catboost.KEYBOARD-13421.tflite", "KEYBOARD-13421_ranker"),
         ("ranking.swipe.KEYBOARD-13421.tflite", "KEYBOARD-13421_ranker_swipe"),
-        ("tap.model_ranker.KEYBOARD-13421.tflite", "KEYBOARD-13421_tap_model_ranker"),
-        ("tap.model_classifier.KEYBOARD-13421.tflite", "KEYBOARD-13421_tap_model_classifier"),
     ]
     for key, name in tflite_models:
         append_tflite_model_if_exists(assets, key, name)
@@ -329,6 +399,17 @@ def build_asset_list(include_full_models=False, include_predictor_fallback=False
         # embedded UTF-8 vocabulary as an exact/vocab bridge when MindSpore
         # Lite inference is unavailable locally.
         ("neural.word_model.raw", "ynnlm_v1_bundle", "neural_model"),
+        # The exact Yandex 3GRM character LM is only 289 KB and is required by
+        # the 44-feature MatrixNet ranker, so it belongs in the lean core pack.
+        ("neural.char_model", "char_trigram_v1", "char_model"),
+        # The recovered emoji search asset is a 1.08 MB FlatBuffer catalog plus
+        # UTF-16BE compact trie. It now has a production C++ evaluator and is
+        # part of the default package rather than the audit-only full pack.
+        (
+            "emoji.search_model.raw",
+            "emoji_search_comptrie_v1",
+            "search_emoji_model",
+        ),
         ("lemma.hash", "chd_hash", "lemmer_mhash"),
         ("lemma.rules", "lemma_rules_program", "lemmer_rules"),
         ("policy.blacklist", "policy_blob", "blacklist"),
@@ -336,14 +417,64 @@ def build_asset_list(include_full_models=False, include_predictor_fallback=False
         ("policy.autocorrect_blocker", "policy_blob", "autocorrect_blocker"),
         ("policy.abbr", "policy_blob", "abbr"),
         ("features.autocc", "feature_json", "features_autocc.json"),
+        # Exact recovered Autocc forests. Yandex 122.5 dictionary 67.0 promotes
+        # the recovered K13421 forest to default; both keys intentionally carry
+        # the same pinned HOBL bytes. The old raw aliases are not packaged.
+        (
+            "autocc.tree.default.hobl",
+            "oblivious_tree_v1",
+            "autocc_default.hobl",
+        ),
+        (
+            "autocc.tree.k13321.hobl",
+            "oblivious_tree_v1",
+            "autocc_KEYBOARD-13321.hobl",
+        ),
+        (
+            "autocc.tree.k13421.hobl",
+            "oblivious_tree_v1",
+            "autocc_KEYBOARD-13421.hobl",
+        ),
         ("features.ranker", "feature_json", "features_ranker.json"),
-        ("features.tap_model", "feature_json", "features_tap_model.json"),
+        ("features.swipe", "feature_json", "features_ranker_swipe.json"),
+        (
+            "features.swipe_backoff",
+            "feature_json",
+            "features_ranker_swipe_backoff.json",
+        ),
+        ("features.swipe_blocker", "feature_json", "features_swipe_blocker.json"),
+        # Atomic Default TapModel 122.5 chain. All four assets are small enough
+        # for the production package and are consumed only as one validated
+        # unit by TapModelRunner.
+        (
+            "tap.models_default",
+            "tap_model_bundle",
+            "tap_models_default_1225",
+        ),
+        (
+            "features.tap_model",
+            "feature_json",
+            "features_tap_model_1225.json",
+        ),
+        (
+            "tap.ranker.hobl",
+            "oblivious_tree_v1",
+            "tap_model_ranker_1225.hobl",
+        ),
+        (
+            "tap.classifier.hobl",
+            "oblivious_tree_v1",
+            "tap_model_classifier_1225.hobl",
+        ),
     ]
     for key, fmt, name in core:
-        path = find_file(
-            os.path.join(YANDEX_DIR, name),
-            os.path.join(DICT_OUTPUT, name),
-        )
+        if key == "neural.word_model.raw":
+            path = find_file(YNNLM_1225_RAW)
+        else:
+            path = find_file(
+                os.path.join(YANDEX_DIR, name),
+                os.path.join(DICT_OUTPUT, name),
+            )
         if path:
             assets.append(AssetSpec(key, fmt, path, os.path.basename(path)))
 
@@ -368,39 +499,160 @@ def build_asset_list(include_full_models=False, include_predictor_fallback=False
                 PREDICTOR_BINARY,
             )
 
-    # MindSpore models.
+    # MindSpore models used by active runtime paths.
+    # TapModel .ms aliases are deliberately absent: they were generated from
+    # stale 37/76 wrappers and are not contract-compatible with the installed
+    # 122.5 ranker/classifier. The active path is the exact HOBL chain above.
     ms_models = [
-        ("ranking.ranker", "mindspore_model", "ranker.ms"),
-        ("ranking.neural_model", "mindspore_model", "neural_model.ms"),
-        ("ranking.tap_model_ranker", "mindspore_model", "tap_model_ranker.ms"),
-        ("ranking.tap_model_classifier", "mindspore_model", "tap_model_classifier.ms"),
         ("autocc.tree_model", "mindspore_model", "tree_autocorrect_model.ms"),
     ]
+    if include_full_models:
+        # Legacy fallbacks: MatrixNet and neural.word_model.raw take priority in
+        # production, so shipping these two by default only bloats the HAP.
+        ms_models.extend([
+            ("ranking.ranker", "mindspore_model", "ranker.ms"),
+            ("ranking.neural_model", "mindspore_model", "neural_model.ms"),
+        ])
     for key, fmt, name in ms_models:
         path = find_file(os.path.join(MS_MODELS_DIR, name))
         if path:
             assets.append(AssetSpec(key, fmt, path, os.path.basename(path)))
 
-    # Neural word-suggestion chain: the reverse-engineered Yandex word LM as a
-    # runnable composition. The RWKV encoder was int8-quantized in the original
-    # bundle (its MEAN/layer-norm op is unsupported by NNACL), so it ships here
-    # as float weights driven by the pure-C++ RwkvEncoder; the emb, enc_dec
-    # bridge and word decoder are dequantized/converted .ms that build on the
-    # device OH_AI runtime. Chain: chars -> emb -> encoder -> enc_dec -> dec.
-    neural_word = [
+    # Coherent K13321 context-emoji chain. Never package a partial mixture:
+    # the runner validates and activates these seven assets atomically.
+    context_emoji_models = [
+        (
+            "emoji.context.wrapper.k13321",
+            "ynnlm_v1_bundle",
+            "context_emoji_wrapper_k13321.bin",
+        ),
+        (
+            "emoji.context.emb_age.k13321",
+            "mindspore_model",
+            "context_emoji_emb_age_k13321.ms",
+        ),
+        (
+            "emoji.context.emb_app.k13321",
+            "mindspore_model",
+            "context_emoji_emb_app_k13321.ms",
+        ),
+        (
+            "emoji.context.emb_sex.k13321",
+            "mindspore_model",
+            "context_emoji_emb_sex_k13321.ms",
+        ),
+        (
+            "emoji.context.word_emb.k13321",
+            "mindspore_model",
+            "context_emoji_word_emb_k13321.ms",
+        ),
+        (
+            "emoji.context.encoder.k13321",
+            "mindspore_model",
+            "context_emoji_encoder_k13321.ms",
+        ),
+        (
+            "emoji.context.decoder.k13321",
+            "mindspore_model",
+            "context_emoji_decoder_k13321.ms",
+        ),
+    ]
+    context_paths = [
+        find_file(os.path.join(MS_MODELS_DIR, name))
+        for _, _, name in context_emoji_models
+    ]
+    if any(context_paths) and not all(context_paths):
+        missing = [
+            name
+            for (_, _, name), path in zip(context_emoji_models, context_paths)
+            if not path
+        ]
+        raise FileNotFoundError(
+            "incomplete K13321 context emoji chain: " + ", ".join(missing)
+        )
+    if all(context_paths):
+        for (key, fmt, name), path in zip(context_emoji_models, context_paths):
+            assets.append(AssetSpec(key, fmt, path, name))
+
+    # Neural word-suggestion chain from the same pinned 122.5 wrapper as the
+    # vocabulary above. Package it atomically: a partial chain or a stale model
+    # mixed with the live vocabulary silently corrupts rank indices and scores.
+    ynnlm_1225_models = [
+        ("neural.word.emb_age", "mindspore_model", "emb_age.ms"),
+        ("neural.word.emb_app", "mindspore_model", "emb_app.ms"),
+        ("neural.word.emb_sex", "mindspore_model", "emb_sex.ms"),
         ("neural.word.emb", "mindspore_model", "word_emb.ms"),
+        ("neural.word.enc", "mindspore_model", "enc.ms"),
         ("neural.word.enc_dec", "mindspore_model", "word_enc_dec.ms"),
         ("neural.word.dec", "mindspore_model", "word_dec.ms"),
-        ("neural.word.encoder", "raw_model_blob", "word_encoder.bin"),
-        # Reverse-engineered Yandex MatrixNet oblivious-tree ranker (HRNK), built
-        # by tools/build_ranker_model.py from KEYBOARD-13421_ranker. Pure-C++
-        # evaluator (MLRanker::LoadMatrixNet) — takes ranking priority on-device.
-        ("ranking.matrixnet", "raw_model_blob", "ranker_model.bin"),
+        ("neural.subword.enc_dec", "mindspore_model", "subword_enc_dec.ms"),
+        ("neural.subword.dec", "mindspore_model", "subword_dec.ms"),
+        ("neural.char.dec", "ynnlm_char_decoder_v1", "char_dec_exact.bin"),
+    ]
+    ynnlm_1225_paths = [
+        find_file(os.path.join(YNNLM_1225_MS_MODELS_DIR, name))
+        for _, _, name in ynnlm_1225_models
+    ]
+    if not all(ynnlm_1225_paths):
+        missing = [
+            name
+            for (_, _, name), path in zip(ynnlm_1225_models, ynnlm_1225_paths)
+            if not path
+        ]
+        raise FileNotFoundError(
+            "incomplete Yandex 122.5 YNNLM chain: " + ", ".join(missing)
+        )
+    for (key, fmt, name), path in zip(ynnlm_1225_models, ynnlm_1225_paths):
+        assets.append(AssetSpec(key, fmt, path, name))
+
+    # Other learned runtime assets remain in the shared model directory.
+    neural_word = [
+        # Coherent Default MatrixNet ranker.  Keep K13321/K13421 under separate
+        # filenames/routes; mixing the K13421 forest with the Default
+        # NNLM/swipe chain is not a valid variant.
+        ("ranking.matrixnet", "raw_model_blob", "ranker_default_model.bin"),
+        # Same recovered 500-tree MatrixNet format for gesture ranking.  The
+        # backoff catalog is the active HOSKEY path until RNNT swipe scores are
+        # available; primary and blocker stay packaged for one coherent bundle.
+        ("ranking.swipe.matrixnet", "raw_model_blob", "ranker_swipe_model.bin"),
+        (
+            "ranking.swipe_backoff.matrixnet",
+            "raw_model_blob",
+            "ranker_swipe_backoff_model.bin",
+        ),
+        (
+            "ranking.swipe_blocker.matrixnet",
+            "raw_model_blob",
+            "swipe_blocker_model.bin",
+        ),
+        # Learned RNNT swipe encoder/predictor/joint components.  The original
+        # positional graph is an untrained sinusoidal transform and is
+        # reproduced exactly in C++ because MindSpore Lite 2.6 hangs in that
+        # graph's SIN/COS path.
+        ("rnnt.sampling", "mindspore_model", "rnnt_sampling.ms"),
+        ("rnnt.pre0", "mindspore_model", "rnnt_pre0.ms"),
+        ("rnnt.pre1", "mindspore_model", "rnnt_pre1.ms"),
+        ("rnnt.pre2", "mindspore_model", "rnnt_pre2.ms"),
+        ("rnnt.pre3", "mindspore_model", "rnnt_pre3.ms"),
+        ("rnnt.post0", "mindspore_model", "rnnt_post0.ms"),
+        ("rnnt.post1", "mindspore_model", "rnnt_post1.ms"),
+        ("rnnt.post2", "mindspore_model", "rnnt_post2.ms"),
+        ("rnnt.post3", "mindspore_model", "rnnt_post3.ms"),
+        ("rnnt.joint", "mindspore_model", "rnnt_joint.ms"),
+        ("rnnt.predictor.char_dec", "mindspore_model", "char_dec.ms"),
     ]
     for key, fmt, name in neural_word:
         path = find_file(os.path.join(MS_MODELS_DIR, name))
         if path:
             assets.append(AssetSpec(key, fmt, path, os.path.basename(path)))
+
+    if include_full_models:
+        append_asset_if_exists(
+            assets,
+            "neural.word.encoder",
+            "raw_model_blob",
+            os.path.join(MS_MODELS_DIR, "word_encoder.bin"),
+        )
 
     if include_full_models:
         append_full_model_assets(assets)
@@ -424,6 +676,7 @@ def build_container(output_path, include_full_models=False,
         else:
             with open(asset.source, "rb") as f:
                 data = f.read()
+        validate_pinned_asset(asset.label, data)
         entries.append((key, fmt, data))
         size_mb = len(data) / 1024 / 1024
         label = f"{size_mb:.1f}MB" if size_mb > 1 else f"{len(data):,}B"
